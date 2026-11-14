@@ -334,6 +334,53 @@ class Server:
         present = discovery.gs_usb_ids()
         return present is not None and mine not in present
 
+    def read_vin(self, params):
+        """The connected car's VIN, read quietly: {"vin": str|None, "busy": bool}. Read-only (KWP 1A 90 /
+        22 F190 from the engine, else the gateway). Skipped (busy) while a job has the module or the
+        interface is in use, so it never gets in the way."""
+        adapter = params["adapter"]
+        if adapter["adapter"] == "demo":
+            from .demo import DEMO_VIN
+            return {"vin": DEMO_VIN, "busy": False}
+        if adapter["adapter"] == "simcar":
+            from .simcar import VIN
+            return {"vin": VIN, "busy": False}
+        if self.job is not None or not self.lock.acquire(blocking=False):
+            return {"vin": None, "busy": True}
+        try:
+            import argparse
+            from flasher.vag_protocols.tp2 import TP20Transport
+            from .scan import read_vin
+            args = argparse.Namespace(
+                adapter=adapter["adapter"], dll=adapter.get("dll"), channel=adapter.get("channel"),
+                serial=adapter.get("serial"), bus=int(adapter.get("bus") or 0),
+                baud=int(adapter.get("baud") or 500000))
+            log = lambda *_a, **_k: None  # quiet: it runs every few seconds while no car answers
+            try:
+                device = self._open_adapter(args)
+            except Exception as exc:
+                return {"vin": None, "busy": False, "error": f"{type(exc).__name__}: {exc}"}
+            try:
+                for module, source in ((0x01, "engine"), (0x1F, "gateway")):
+                    try:
+                        tp = TP20Transport(device, module=module, timeout=1.0, log_fn=log)
+                    except Exception:
+                        continue  # no answer (ignition off, not plugged into a car)
+                    try:
+                        vin = read_vin(tp, log)
+                    finally:
+                        try:
+                            tp.disconnect()
+                        except Exception:
+                            pass
+                    if vin:
+                        return {"vin": vin, "source": source, "busy": False}
+                return {"vin": None, "busy": False}
+            finally:
+                device.close()
+        finally:
+            self.lock.release()
+
     def _log(self, message, level="info"):
         self.emit({"event": "log", "level": level, "logger": "worker", "message": message})
 
@@ -357,6 +404,11 @@ class Server:
                 break
             if method == "run":
                 self.start_job(request)
+                continue
+            if method == "read_vin":  # quick and quiet, on its own thread (never holds up the others)
+                params = request.get("params") or {}
+                threading.Thread(target=self.answer, args=(request, lambda p=params: self.read_vin(p)),
+                                 daemon=True).start()
                 continue
             self.answer(request, lambda: self.dispatch(method, request.get("params") or {}))
         if self.job is not None:
@@ -570,8 +622,8 @@ class Server:
             self.lock.acquire()
             try:
                 for attempt in (1, 2):
+                    # The VIN is read every scan: the car may have changed since the last one.
                     results, gateway = scan(adapter, self.progress, self._open_adapter,
-                                            known_vehicle=self._vehicle,
                                             freeze_frames=bool(params.get("freeze_frames")))
                     if not _adapter_failed(results, gateway):
                         break

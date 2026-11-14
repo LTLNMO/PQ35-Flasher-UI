@@ -32,7 +32,8 @@ class DashboardButton(QPushButton):
         self.current = None  # name of the dashboard last loaded or saved (ticked in the menu)
         self.menu_ = QMenu(self)
         self.menu_.aboutToShow.connect(self._fill)
-        self.clicked.connect(lambda: self.menu_.exec(self.mapToGlobal(self.rect().bottomLeft())))
+        from .analyze_tools import popup_menu
+        self.clicked.connect(lambda: popup_menu(self.menu_, self))
         from . import theme
         self._restyle()
         theme.on_apply(self._restyle)

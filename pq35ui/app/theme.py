@@ -250,6 +250,7 @@ QPushButton {{ background: {surface2}; border: 1px solid {border}; border-radius
 QPushButton:hover {{ background: {border}; }}
 QPushButton:pressed {{ background: {accent_bg}; border-color: {accent}; }}
 QPushButton:focus {{ border-color: {accent}; }}
+QPushButton#iconTool:focus {{ border-color: {border}; }}  /* icon buttons: no outline left after a click */
 QPushButton:disabled {{ color: {muted}; background: {surface}; border-color: {border}; }}
 QToolButton {{ background: {surface2}; border: 1px solid {border}; border-radius: 8px;
     padding: 7px 12px; color: {text}; font-weight: 600; }}

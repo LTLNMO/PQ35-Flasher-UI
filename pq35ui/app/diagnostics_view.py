@@ -237,14 +237,18 @@ class AutoScanView(QWidget):
         self.info.setMinimumWidth(0)
         head.addWidget(self.info, 1)
         # Icon buttons like Analyze's toolbar.
-        from .analyze_tools import MenuIconButton, icon_button
-        copy_button = icon_button("content_copy", "Copy the whole log, e.g. to paste into a forum post")
-        copy_button.clicked.connect(lambda: QGuiApplication.clipboard().setText(self.text))
-        save_button = icon_button("save", "Save log…: save this log somewhere else (every scan is saved "
-                                          "to Documents/PQ35 Flasher/Scans on its own)")
-        save_button.clicked.connect(self.save_as)
+        from .analyze_tools import MenuIconButton, icon_button, menu_action
+
+        def fill_more(menu):
+            has = bool(self.text)
+            menu_action(menu, "Copy log", "content_copy", lambda: QGuiApplication.clipboard().setText(self.text),
+                        enabled=has, tip="Copy the whole log, e.g. to paste into a forum post")
+            menu_action(menu, "Export scan log…", "ios_share", self.save_as, enabled=has,
+                        tip="Copy this scan log somewhere else (every scan is saved to Documents/PQ35 Flasher/Scans "
+                            "on its own)")
+        self.more_button = MenuIconButton("more_vert", "More: copy or export the scan log", fill_more)
         self.history_button = MenuIconButton("history", "History: earlier scans of this car",
-                                             self._fill_history)
+                                             self._fill_history, dropdown=True)
         self.history_menu = self.history_button.menu_
         # Freeze frames: a toggle icon (frame_inspect: a captured frame, looked at closely; accent = on).
         self.freeze = icon_button("frame_inspect", "", checkable=True)
@@ -258,7 +262,7 @@ class AutoScanView(QWidget):
                 "a second extra per fault. Click to turn " + ("off" if on else "on") + ".")
         self.freeze.toggled.connect(freeze_toggled)
         freeze_toggled(self.freeze.isChecked())
-        for widget in (self.freeze, copy_button, save_button, self.history_button):
+        for widget in (self.freeze, self.history_button, self.more_button):
             head.addWidget(widget)
         right.add(head)
         self.compare = right.add(Banner())
@@ -416,7 +420,7 @@ class AutoScanView(QWidget):
             self.info.setText(f"{started}  ·  {scanlog._vin(result)}  ·  {elapsed // 60}:{elapsed % 60:02d}{saved}")
             self.info.setToolTip(self.info.text() + (f"\n{self.saved_path}" if self.saved_path else ""))
         else:
-            latest = self.store.history(self.state.vin() or None, 1) or self.store.history(None, 1)
+            latest = self.store.history(self.state.known_vin() or None, 1) or self.store.history(None, 1)
             if latest:
                 self.viewing = latest[0][0]
                 return self._fill_log()
@@ -570,7 +574,7 @@ class AutoScanView(QWidget):
     def _fill_history(self, menu=None):
         menu = menu if menu is not None else self.history_menu
         menu.clear()
-        vin = self.state.vin() or None
+        vin = self.state.known_vin() or None
         items = self.store.history(vin)
         if not items:
             menu.addAction("No saved scans yet").setEnabled(False)

@@ -154,6 +154,8 @@ class LayoutPicker(LayoutButton):
         action.setDefaultWidget(holder)
         self.menu_.addAction(action)
         self.setMenu(self.menu_)
+        from .analyze_tools import anchor_menu
+        anchor_menu(self.menu_, self)
         self.set_current(0)
 
     def _picked(self, index):
@@ -646,7 +648,7 @@ class LiveViewPage(QWidget):
         self.scale_combo = graphscale.combo(state.settings, self._scale_changed)
         self.scale_combo.setParent(self)
         self.scale_combo.hide()
-        self.options = T.MenuIconButton("settings", "Live View settings: time shown, scale",
+        self.options = T.MenuIconButton("instant_mix", "Live View settings: time shown, scale",
                                       self._fill_options)
         # Right side: how the panels look (layout, saved dashboards) next to ⚙.
         ctrl.addStretch(1)

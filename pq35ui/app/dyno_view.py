@@ -1,20 +1,15 @@
-"""Analyze's Dyno view: horsepower and torque against engine speed from full-throttle pulls in
-one gear (see dyno.py for the maths), plus the car profile (weight, drag, tyres) it needs,
-saved per VIN and optionally filled in by the user's AI."""
+"""The dyno sheet: horsepower and torque against engine speed from a log's full-throttle pulls in
+one gear (maths in dyno.py), for the Dyno tab. It's handed the log with set_log() and asks
+car_for(vin) for the car to work it out for (cars.py profiles)."""
 import json
-import re
 
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QVBoxLayout, QWidget,
-)
+from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
-from . import dyno, graphstyle, log_export, theme
+from . import dyno, graphstyle, theme
 from . import units as unitconv
-from .popups import MessageBox, OverlayDialog
 from .widgets import muted
 
 SETTING = "dyno"
@@ -22,114 +17,11 @@ SETTING = "dyno"
 
 def _opts(settings):
     o = dict(settings.get(SETTING) or {})
-    o.setdefault("cars", {})
     o.setdefault("mode", "wheel")
     o.setdefault("correction", "sae")
     o.setdefault("smoothing", "normal")
     o.setdefault("overlay", True)
     return o
-
-
-def car_key(vin):
-    return vin or "default"
-
-
-# Typical figures by VIN model code (characters 7-8), for the usual 2.0 TFSI / 1.8 TFSI front-drive
-# car with a DSG: (name, kerb kg, Cd, frontal area m², stock tyre). Starting points the AI (or
-# you) then refine; all-wheel drive (a Haldex module found) adds weight and drivetrain loss.
-MODEL_SPECS = {
-    "1K": ("VW Golf / Jetta Mk5-6", 1450, 0.32, 2.22, "225/45R17"),
-    "5K": ("VW Golf Mk6", 1400, 0.32, 2.22, "225/45R17"),
-    "AJ": ("VW Golf Mk6", 1400, 0.32, 2.22, "225/45R17"),
-    "5M": ("VW Golf Plus", 1400, 0.32, 2.35, "205/55R16"),
-    "1T": ("VW Touran", 1520, 0.32, 2.50, "205/55R16"),
-    "1F": ("VW Eos", 1550, 0.32, 2.10, "235/45R17"),
-    "1Q": ("VW Eos", 1550, 0.32, 2.10, "235/45R17"),
-    "13": ("VW Scirocco", 1370, 0.32, 2.12, "235/45R17"),
-    "5N": ("VW Tiguan", 1600, 0.37, 2.60, "235/55R17"),
-    "5C": ("VW Beetle", 1380, 0.37, 2.15, "235/45R18"),
-    "3C": ("VW Passat B6/B7", 1500, 0.28, 2.30, "235/45R17"),
-    "35": ("VW Passat CC", 1510, 0.29, 2.25, "235/40R18"),
-    "8P": ("Audi A3 (8P)", 1420, 0.32, 2.15, "225/45R17"),
-    "FM": ("Audi A3 (8P)", 1420, 0.32, 2.15, "225/45R17"),
-    "FH": ("Audi A3 Cabriolet", 1530, 0.32, 2.10, "225/45R17"),
-    "8J": ("Audi TT (8J)", 1300, 0.30, 2.00, "245/45R17"),
-    "1P": ("SEAT Leon Mk2", 1340, 0.32, 2.20, "225/45R17"),
-    "5P": ("SEAT Altea", 1360, 0.32, 2.30, "205/55R16"),
-    "1Z": ("Škoda Octavia Mk2", 1400, 0.30, 2.20, "225/45R17"),
-    "5L": ("Škoda Yeti", 1500, 0.36, 2.50, "225/50R17"),
-    "3T": ("Škoda Superb Mk2", 1500, 0.30, 2.30, "225/45R17"),
-}
-AWD_EXTRA_KG = 80.0
-
-
-def scan_facts(state):
-    """What Connect's scan says about the drivetrain: {"awd": bool|None, "dsg": bool|None}."""
-    entries = (getattr(state, "last_scan", None) or {}).get("result") or [] if state else []
-    if not entries:
-        return {"awd": None, "dsg": None}
-    ok = {e.get("family") for e in entries if e.get("status") == "ok"}
-    return {"awd": any("haldex" in (f or "") for f in ok), "dsg": "transmission" in ok}
-
-
-def guess_car(vin, facts=None):
-    """A car profile from the VIN (and the scan) alone, or None for a car the table doesn't know."""
-    from .vehicle import decode
-    d = decode(vin) if vin else {}
-    spec = MODEL_SPECS.get((vin or "")[6:8])
-    if not spec:
-        return None
-    name, curb, cd, area, tyre = spec
-    facts = facts or {}
-    awd = bool(facts.get("awd"))
-    car = dict(dyno.DEFAULT_CAR, curb_kg=curb + (AWD_EXTRA_KG if awd else 0.0), cd=cd, area_m2=area, tyre=tyre,
-               loss_pct=19.0 if awd else 15.0 if facts.get("dsg") is not False else 13.0)
-    year = d.get("year")
-    car["label"] = " ".join(str(x) for x in (year, name, "AWD" if awd else "") if x)
-    car["notes"] = ("Filled in automatically: typical figures for this model"
-                    + (" with all-wheel drive (Haldex found)" if awd else "") + ".")
-    car["source"] = "built-in"
-    return car
-
-
-def load_car(settings, vin, state=None):
-    """This car's profile: saved for the VIN, else typical figures from the VIN, else the no-VIN
-    one, else the defaults."""
-    cars = _opts(settings)["cars"]
-    saved = cars.get(car_key(vin))
-    if saved:
-        return dict(dyno.DEFAULT_CAR, **saved)
-    guess = guess_car(vin, scan_facts(state)) if vin else None
-    if guess:
-        return guess
-    return dict(dyno.DEFAULT_CAR, **(cars.get("default") or {}))
-
-
-def apply_ai(car, data):
-    """car updated with the AI's answer (checked, out-of-range numbers ignored): (car, filled keys)."""
-    out, filled = dict(car), []
-    for key, lo, hi in (("curb_kg", 500, 6000), ("cd", 0.15, 0.8), ("area_m2", 1.2, 4.0), ("loss_pct", 0, 40)):
-        try:
-            v = float(data[key])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if lo <= v <= hi:
-            out[key] = v
-            filled.append(key)
-    if isinstance(data.get("tyre"), str) and dyno.tyre_radius(data["tyre"]) != 0.31:
-        out["tyre"] = data["tyre"].strip()
-        filled.append("tyre")
-    if isinstance(data.get("label"), str) and data["label"].strip():
-        out["label"] = data["label"].strip()[:80]
-    note = str(data.get("notes") or "").strip()
-    out["notes"] = ("AI: " + note) if note else "Filled in by AI."
-    return out, filled
-
-
-def save_car(settings, vin, car):
-    o = _opts(settings)
-    o["cars"] = dict(o["cars"], **{car_key(vin): car})
-    settings.set(SETTING, o)
 
 
 def imperial(settings):
@@ -141,12 +33,17 @@ def _num(v, nd=0):
 
 
 class DynoView(QWidget):
-    """page = the Analyze page (times, columns, headers, csv_path, source_path, state)."""
+    """settings: the app's; car_for(vin) -> (the car for dyno.analyse, whether it's a saved car)."""
 
-    def __init__(self, page):
-        super().__init__(page)
-        self.page = page
-        self.settings = page.state.settings
+    def __init__(self, settings, car_for, parent=None):
+        super().__init__(parent)
+        self.settings = settings
+        self.car_for = car_for
+        self.times = None
+        self.columns = None
+        self.vin = ""
+        self.live_state = None   # None, "waiting" (recording, no rows yet) or "recording"
+        self.chans = {}
         self.pulls = []
         self.results = {}
         lay = QVBoxLayout(self)
@@ -203,6 +100,9 @@ class DynoView(QWidget):
         self.details = muted("")
         self.details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         lay.addWidget(self.details)
+        self.check = QLabel("")
+        self.check.setWordWrap(True)
+        lay.addWidget(self.check)
         self.warn = QLabel("")
         self.warn.setWordWrap(True)
         self.warn.hide()
@@ -242,18 +142,24 @@ class DynoView(QWidget):
 
     # --- data ---
 
-    def _vin(self):
-        path = getattr(self.page, "source_path", None) or getattr(self.page, "csv_path", None)
-        vin = log_export.log_vin(path) if path else None
-        return vin or self.page.state.vin() or ""
+    def set_log(self, times, columns, vin="", live=None, new=True):
+        """Show a log: its times and columns (None: nothing to show), the car's VIN, and whether it's a
+        recording in progress (live "waiting" / "recording"). new=False: rows were added to the same
+        recording (the finished pulls keep their results)."""
+        self.times, self.columns, self.vin, self.live_state = times, columns, vin or "", live
+        if new:
+            self.log_changed()
+            self.draw()
+        else:
+            self.live_update()
 
     def car(self):
-        return load_car(self.settings, self._vin(), self.page.state)
+        return self.car_for(self.vin)[0]
 
     def log_changed(self):
         """A log was opened (or reloaded): find its pulls again."""
         self.results = {}
-        times, columns = self.page.times, self.page.columns
+        times, columns = self.times, self.columns
         self.chans = dyno.find_channels(list(columns or {})) if columns else {}
         self.pulls = dyno.find_pulls(times, columns, self.chans) if times is not None else []
         self._fill_pulls()
@@ -267,21 +173,31 @@ class DynoView(QWidget):
         for i, (a, b) in enumerate(self.pulls):
             text = f"Pull {i + 1}"
             if speed_h:
-                t = self.page.times
-                v = dyno.to_si(self.page.columns[speed_h], speed_h, "speed")
+                t = self.times
+                v = dyno.to_si(self.columns[speed_h], speed_h, "speed")
                 m = (t >= a) & (t <= b) & np.isfinite(v)
                 if m.any():
                     f = 2.23694 if imp else 3.6
                     text += f" · {v[m].min() * f:.0f}–{v[m].max() * f:.0f} {'mph' if imp else 'km/h'}"
             text += f" · {b - a:.1f} s"
-            if self.live() and i == len(self.pulls) - 1 and b >= float(self.page.times[-1]) - 0.5:
+            if self.live() and i == len(self.pulls) - 1 and b >= float(self.times[-1]) - 0.5:
                 text += " · recording"
+            else:  # finished pulls: how trustworthy (cached, so cheap after the first time)
+                r = self._result((a, b), self.car())
+                if "quality" in r:
+                    text += f" · {r['quality'][0].lower()}"
             self.pull_combo.addItem(text, f"pull:{i}")
         if len(self.pulls) > 1:
             self.pull_combo.addItem(f"Average of all {len(self.pulls)} pulls", "avg")
             self.pull_combo.setItemData(self.pull_combo.count() - 1,
                                         "Pulls both ways on the same road, averaged, cancel out slope and wind",
                                         Qt.ItemDataRole.ToolTipRole)
+        if 2 < len(self.pulls) <= 12:  # back-to-back pulls are usually there and back
+            for i in range(len(self.pulls) - 1):
+                self.pull_combo.addItem(f"Pulls {i + 1} + {i + 2} averaged", f"pair:{i}")
+                self.pull_combo.setItemData(self.pull_combo.count() - 1,
+                                            "Two back-to-back pulls, e.g. one each way on the same road: "
+                                            "averaging cancels slope and wind", Qt.ItemDataRole.ToolTipRole)
         rng = self._selection()
         if rng is not None:
             self.pull_combo.addItem(f"Selection · {rng[0]:.1f}–{rng[1]:.1f} s", "sel")
@@ -292,15 +208,12 @@ class DynoView(QWidget):
         self.pull_combo.blockSignals(False)
 
     def _selection(self):
-        """The blue Selection band (Stats → Selection), if on: offered as a pull. Zooming doesn't count."""
-        page = self.page
-        if page.times is None or page.stats_mode.currentData() != "sel":
-            return None
-        return page._stats_range()
+        """A hand-picked stretch offered as a pull (none on the Dyno tab)."""
+        return None
 
     def range_changed(self):
         """The Selection band moved (or the view was shown): offer it as a pull."""
-        if self.page.times is None:
+        if self.times is None:
             return
         sel = self._selection()
         if sel != getattr(self, "_last_sel", None) or self.pull_combo.count() == 0:
@@ -309,18 +222,18 @@ class DynoView(QWidget):
         self.draw()
 
     def live(self):
-        return bool(getattr(self.page, "_live", None))
+        return bool(self.live_state)
 
     def live_update(self):
         """Rows were added to a recording being followed: find the pulls again (finished pulls keep
         their cached results; the one in progress is redrawn), and keep showing the newest pull
         while it was the one shown."""
-        if self.page.times is None:
+        if self.times is None:
             return
         was = self.pull_combo.currentData()
         newest = was is None or (was.startswith("pull:") and int(was[5:]) >= len(self.pulls) - 1)
-        self.chans = dyno.find_channels(list(self.page.columns))
-        self.pulls = dyno.find_pulls(self.page.times, self.page.columns, self.chans)
+        self.chans = dyno.find_channels(list(self.columns))
+        self.pulls = dyno.find_pulls(self.times, self.columns, self.chans)
         if len(self.results) > 200:
             self.results = {}
         self._fill_pulls()
@@ -343,7 +256,7 @@ class DynoView(QWidget):
         key = (tuple(pull), json.dumps(car, sort_keys=True), self.corr_combo.currentData(),
                self.smooth_combo.currentData())
         if key not in self.results:
-            self.results[key] = dyno.analyse(self.page.times, self.page.columns, pull, car,
+            self.results[key] = dyno.analyse(self.times, self.columns, pull, car,
                                              self.corr_combo.currentData(), self.smooth_combo.currentData(),
                                              self.chans)
         return self.results[key]
@@ -355,29 +268,26 @@ class DynoView(QWidget):
         self.hover.hide()
         self.headline.setText("")
         self.details.setText("")
+        self.check.setText("")
         self.warn.hide()
         self.empty.setText(text)
         self.empty.show()
         self.shown = None
 
     def draw(self):
-        live = getattr(self.page, "_live", None)
-        if live and not live.get("started"):  # following a recording that has no rows yet
+        if self.live_state == "waiting":  # recording, no rows yet
             self._show_empty("● Recording. Waiting for the first full-throttle pull: floor it in one gear "
                              "(3rd is ideal) and horsepower and torque appear here.")
             return
-        if self.page.times is None:
+        if self.times is None:
             self._show_empty("● Recording. Waiting for the first full-throttle pull…" if self.live() else
-                             "Open a log to see its dyno curve, or record one with the Logger's Dyno mode.")
+                             "Press Record and floor it in one gear, or pick a session on the left (Open… for any log).")
             return
-        if not hasattr(self, "chans"):
-            self.log_changed()
         missing = [n for n, k in (("engine speed", "rpm"), ("vehicle speed", "speed")) if not self.chans.get(k)]
         if missing:
             self._show_empty(f"The dyno needs {' and '.join(missing)} in the log.\n\n"
-                             "In the Logger, tick engine speed, vehicle speed and the accelerator pedal, then "
-                             "record a full-throttle pull in one gear (3rd is ideal) from low rpm to near "
-                             "redline, on a flat road.")
+                             "Record with this tab's Record button (it reads what the dyno needs), flooring it "
+                             "in one gear (3rd is ideal) from low rpm to near redline, on a flat road.")
             return
         choice = self.pull_combo.currentData()
         if choice is None and self.live():
@@ -386,8 +296,7 @@ class DynoView(QWidget):
             return
         if choice is None:
             self._show_empty("No full-throttle pull found in this log.\n\nA pull is floored in one gear with "
-                             "engine speed climbing for at least a few seconds. Or select a stretch on the "
-                             "Single graph (Shift-drag) and pick “Selection” here.")
+                             "engine speed climbing for at least a few seconds.")
             return
         car = self.car()
         kind, _, num = choice.partition(":")
@@ -395,6 +304,8 @@ class DynoView(QWidget):
         sel = self._selection()
         if kind == "avg" and self.pulls:
             res = dyno.average([self._result(p, car) for p in self.pulls])
+        elif kind == "pair" and arg is not None and arg + 1 < len(self.pulls):
+            res = dyno.average([self._result(p, car) for p in self.pulls[arg:arg + 2]])
         elif kind == "sel" and sel is not None:
             res = self._result(sel, car)
         elif self.pulls:
@@ -420,6 +331,30 @@ class DynoView(QWidget):
                     others.append(r)
         self._plot(res, others)
         self._texts(res, car, kind)
+        self._consistency(res, kind)
+
+    def _consistency(self, res, kind):
+        """Pulls in the same gear that disagree point at slope, wind or heat soak: say so (and how to
+        cancel it out) under the other warnings."""
+        if kind not in ("pull", "avg", "pair") or len(self.pulls) < 2:
+            return
+        car = self.car()
+        rs = [self._result(p, car) for p in self.pulls]
+        group = dyno.same_gear(rs, res)
+        if len(group) < 2:
+            return
+        spread = dyno.spread_pct(group)
+        if spread < 4.0:
+            return
+        text = (f"This log's pulls in the same gear differ by {spread:.0f}% in peak power. That's usually road "
+                "slope or wind (or heat soak after several pulls). Pull once each way on the same stretch and "
+                "pick an average.")
+        if kind in ("avg", "pair"):
+            text = (f"The pulls averaged here differ by {res.get('spread_pct', spread):.0f}% in peak power: "
+                    "averaging one each way cancels slope and wind, but not heat soak.")
+        lines = [t for t in self.warn.text().split("\n") if t]
+        self.warn.setText("\n".join(lines + [text]))
+        self.warn.show()
 
     def _series(self, res):
         engine = self.mode_combo.currentData() == "engine"
@@ -451,6 +386,9 @@ class DynoView(QWidget):
             ecu = res["ecu_tq_nm"] * (dyno.NM_LBFT if imp else 1)
             self.tq_box.addItem(pg.PlotDataItem(res["rpm"], ecu, pen=pg.mkPen(tq_col, width=w,
                                                                                style=Qt.PenStyle.DashLine)))
+        if engine and res.get("maf_hp") is not None:
+            item.addItem(pg.PlotDataItem(res["rpm"], res["maf_hp"], pen=pg.mkPen(hp_col, width=w,
+                                                                                 style=Qt.PenStyle.DotLine)))
         item.setLabel("left", "Power (whp)" if not engine else "Power (hp, estimate)", color=hp_col)
         item.setLabel("right", f"Torque ({'lb-ft' if imp else 'Nm'})", color=tq_col)
         # Both axes from zero with headroom, ticks lining up roughly like a dyno sheet.
@@ -478,7 +416,8 @@ class DynoView(QWidget):
             f"<span style='color:{hp_col}; font-size:17pt; font-weight:800'>{_num(hp)}</span> "
             f"<b>{hp_word}</b> <span style='color:{theme.colors()['muted']}'>@ {_num(hp_rpm)} rpm</span>"
             f"&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:{tq_col}; font-size:17pt; font-weight:800'>{_num(tq)}</span> "
-            f"<b>{tq_unit}</b> <span style='color:{theme.colors()['muted']}'>@ {_num(tq_rpm)} rpm</span>")
+            f"<b>{tq_unit}</b> <span style='color:{theme.colors()['muted']}'>@ {_num(tq_rpm)} rpm</span>"
+            + self._quality_html(res))
         ratio = res["kmh_per_1000"]
         gearing = f"{ratio * 0.621371:.1f} mph" if imp else f"{ratio:.1f} km/h"
         air = res["air"]
@@ -487,26 +426,78 @@ class DynoView(QWidget):
         weight = f"{res['mass_kg'] * dyno.KG_LB:,.0f} lb" if imp else f"{res['mass_kg']:,.0f} kg"
         corr = self.corr_combo.currentData()
         corr_txt = "uncorrected" if corr == "none" else f"{self.corr_combo.currentText()} ×{res['cf']:.3f}"
-        what = f"average of {res.get('count', 1)} pulls" if kind == "avg" else \
+        what = f"average of {res['count']} pulls" if kind in ("avg", "pair") and res.get("count", 1) > 1 else \
             f"{res['pull'][0]:.1f}–{res['pull'][1]:.1f} s"
         label = car.get("label") or "car profile not set"
+        g = res.get("gear")
+        if g and g["used"] == "gearbox":
+            gearing = f"{gearing} per 1,000 rpm ({g['box']} gear {g['gear']} + tyre size; speed signal " \
+                      f"{g['speed_err_pct']:+.1f}%)"
+        elif g and g["used"] == "blend":
+            gearing = (f"{gearing} per 1,000 rpm (best estimate: speed signal {g['speed_err_pct']:+.1f}% vs gear "
+                       f"{g['gear']} + tyre size, weighted {1 - g['weight']:.0%} / {g['weight']:.0%})")
+        elif g:
+            gearing = f"{gearing} per 1,000 rpm (measured: gear {g['gear']}, speed signal {g['speed_err_pct']:+.1f}%)"
+        else:
+            gearing = f"{gearing} per 1,000 rpm (measured, overall {res['overall_ratio']:.2f}:1)"
         self.details.setText(
-            f"{what} · {gearing} per 1,000 rpm (measured) · engine speed read {res['rate_hz']:.1f}×/s · "
-            f"air {temp}, {press} ({'from the log' if air['source'] == 'log' else 'partly from the profile' if air['source'] != 'profile' else 'from the car profile'}) · "
+            f"{what} · {gearing} · engine speed read {res['rate_hz']:.1f}×/s · "
+            f"air {temp}, {press} ({'from the ECU' if air['source'] == 'log' else 'partly standard air: not all of it was logged' if air['source'] != 'profile' else 'standard air: not in this log'}) · "
             f"{corr_txt} · {weight} · {label}")
         warnings = list(res["warnings"])
         if kind == "avg" and res.get("skipped"):
             n = res["skipped"]
-            warnings.append(f"{n} pull{'s' if n > 1 else ''} in another gear left out of the average.")
-        if not car.get("label") and self._vin() not in _opts(self.settings)["cars"] and \
-                "default" not in _opts(self.settings)["cars"]:
-            warnings.insert(0, "Using a typical Golf GTI's weight and drag. Set this car's in the Logger: "
-                               "Dyno ▾ → Car (weight matters most: 5% off is 5% off).")
-        if engine and res.get("ecu_tq_nm") is not None:
-            warnings.append("Dashed line: the engine ECU's own torque estimate, for comparison (on a tuned car "
-                            "it often reads wrong).")
+            warnings.append(f"{n} pull{'s' if n > 1 else ''} left out of the average (another gear, or too short).")
+        if not self.car_for(self.vin)[1]:
+            warnings.insert(0, "No saved car for this log: using a typical Golf GTI's weight and drag. Pick the "
+                               "car above, or add it in Cars… (weight matters most: 5% off is 5% off).")
+        self._check_text(res, engine)
         self.warn.setText("\n".join(warnings))
         self.warn.setVisible(bool(warnings))
+
+    def _quality_html(self, res):
+        """' · Good pull' after the headline, coloured, with the reasons in the headline's tooltip."""
+        q = res.get("quality")
+        if not q:
+            self.headline.setToolTip("")
+            return ""
+        label, score, why = q
+        c = theme.colors()
+        col = {"Good": c["ok"], "Fair": c["warn"]}.get(label, c["err"])
+        self.headline.setToolTip(f"Pull quality {score}/100" + (": " + "; ".join(why) if why else
+                                                                  ": nothing to fault"))
+        return f"&nbsp;&nbsp;&nbsp;&nbsp;<span style='color:{col}; font-weight:700'>● {label} pull</span>"
+
+    def _check_text(self, res, engine):
+        """The cross-check line: peak engine power from this dyno, the ECU's torque and the airflow."""
+        chk = res.get("check")
+        c = theme.colors()
+        if not chk:
+            self.check.setText("Cross-check: add engine torque and mass air flow to the log (the Dyno preset "
+                               "has them) to check every pull against the ECU and the airflow.")
+            self.check.setStyleSheet(f"color: {c['muted']};")
+            return
+        parts = [f"this dyno {_num(chk['ours'])} hp"]
+        if chk["ecu"]:
+            parts.append(f"ECU torque {_num(chk['ecu'])} hp")
+        if chk["maf"]:
+            parts.append(f"airflow ~{_num(chk['maf'])} hp")
+        worst = chk["worst_pct"]
+        if worst <= 8:
+            verdict, col = f"✓ agree within {max(worst, 1):.0f}%", c["ok"]
+        elif worst <= 15:
+            verdict, col = (f"⚠ {worst:.0f}% apart: check the weight, tyre size and speed signal (on a tuned car "
+                            "the ECU's torque can read wrong)"), c["warn"]
+        else:
+            verdict, col = (f"✗ {worst:.0f}% apart: something's off (weight, gear, speed signal, or a pull "
+                            "that isn't flat out)"), c["err"]
+        legend = "  (dashed: ECU torque · dotted: airflow power)" if engine else ""
+        self.check.setText(f"Cross-check, engine peak uncorrected: {' · '.join(parts)}  {verdict}{legend}")
+        self.check.setToolTip("Three independent estimates of peak engine power. This dyno's comes from the "
+                              "car's acceleration, weight and drag; the ECU's from its own torque model; airflow "
+                              f"from mass air flow × {dyno.HP_PER_GS} hp per g/s (good to about ±10%). Close "
+                              "agreement means the car profile and the pull are sound.")
+        self.check.setStyleSheet(f"color: {col};")
 
     def _mouse_moved(self, pos):
         res = self.shown
@@ -532,7 +523,7 @@ class DynoView(QWidget):
 
     def showEvent(self, event):
         """Coming into view (the Analyze tab opened, or this view picked): catch up on anything
-        that happened while hidden, e.g. pulls recorded while you were on the Logger."""
+        that happened while hidden, e.g. pulls recorded while you were on another tab."""
         super().showEvent(event)
         from PySide6.QtCore import QTimer
         QTimer.singleShot(0, self._catch_up)
@@ -540,15 +531,53 @@ class DynoView(QWidget):
     def _catch_up(self):
         if not self.isVisible():
             return
-        if self.page.times is not None:
+        if self.times is not None:
             self.live_update() if self.live() else self.draw()
         else:
             self.draw()
 
+    def units_changed(self):
+        """Metric / imperial was switched in Settings: relabel the pulls and redraw."""
+        if self.times is not None:
+            self._fill_pulls()
+        self.draw()
+
+    # --- export ---
+
+    def can_export(self):
+        return self.shown is not None
+
+    def sheet_image(self):
+        """The dyno sheet as shown (headline, details, warnings and the graph; not the controls)."""
+        top = self.headline.geometry().top()
+        bottom = self.plot.geometry().bottom()
+        from PySide6.QtCore import QRect
+        return self.grab(QRect(0, top, self.width(), bottom - top + 1))
+
+    def export_csv(self, path):
+        """The curves shown, one row per rpm step: wheel and engine power and torque, in the units
+        chosen in Settings."""
+        import csv
+        res = self.shown
+        imp = imperial(self.settings)
+        tq_f, tq_u = (dyno.NM_LBFT, "lb-ft") if imp else (1.0, "Nm")
+        cols = [("Engine speed (rpm)", res["rpm"], 1.0), ("Wheel power (whp)", res["whp"], 1.0),
+                (f"Wheel torque ({tq_u})", res["wtq_nm"], tq_f), ("Engine power (hp, estimate)", res["ehp"], 1.0),
+                (f"Engine torque ({tq_u}, estimate)", res["etq_nm"], tq_f)]
+        if res.get("ecu_tq_nm") is not None:
+            cols.append((f"ECU torque ({tq_u})", res["ecu_tq_nm"], tq_f))
+        if res.get("maf_hp") is not None:
+            cols.append(("Airflow power (hp, estimate)", res["maf_hp"], 1.0))
+        with open(path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow([name for name, _v, _f in cols])
+            for i in range(len(res["rpm"])):
+                w.writerow([f"{float(v[i]) * k:.1f}" if np.isfinite(v[i]) else "" for _n, v, k in cols])
+
     def car_changed(self):
-        """The car profile was edited (in the Logger): work everything out again."""
+        """The car profile was edited: work everything out again."""
         self.results = {}
-        if self.page.times is not None:
+        if self.times is not None:
             self.draw()
 
 
@@ -557,198 +586,3 @@ def _alpha(colour, a):
     q = QColor(colour)
     q.setAlpha(a)
     return q
-
-
-# --- the car profile dialog --------------------------------------------------------
-
-AI_SYSTEM = (
-    "You give vehicle specifications for a virtual dyno. Answer with ONE JSON object and nothing "
-    "else, with these keys: label (short name: year, model, engine, gearbox), curb_kg (kerb weight "
-    "in kg with fluids, no driver, for this exact model, engine, gearbox and drivetrain), cd (drag "
-    "coefficient), area_m2 (frontal area in square metres), tyre (stock tyre size like 225/45R17), "
-    "drivetrain (FWD or AWD), loss_pct (typical drivetrain loss in percent for this gearbox and "
-    "drivetrain on a chassis dyno), notes (one or two short sentences: where the figures come from and "
-    "anything the owner should check, e.g. options that change the weight). Use published "
-    "manufacturer figures where you know them; otherwise give your best estimate and say so in notes."
-)
-
-
-def ai_prompt(state, vin, car):
-    from .vehicle import decode
-    lines = []
-    if vin:
-        d = decode(vin)
-        lines.append(f"VIN: {vin}")
-        if d.get("label"):
-            lines.append(f"Decoded from the VIN: {d['label']}" + (f", built in {d['plant']}" if d.get("plant") else ""))
-    entries = (getattr(state, "last_scan", None) or {}).get("result") or []
-    found = []
-    for e in entries:
-        if e.get("status") != "ok":
-            continue
-        fam = state.family_by_name(e.get("family")) if hasattr(state, "family_by_name") else None
-        ident = e.get("identity") or {}
-        part = ident.get("software_part_number") or ident.get("part_number") or ""
-        desc = (ident.get("system_desc") or "").replace(" (demo)", "")
-        found.append(" ".join(x for x in ((fam or {}).get("label", e.get("family", "")), part, desc) if x))
-    if found:
-        lines.append("Modules found on the car: " + "; ".join(found))
-    if car.get("label"):
-        lines.append(f"Described so far as: {car['label']}")
-    if not lines:
-        lines.append("Unknown car: assume a 2006-2009 VW Golf GTI (Mk5) 2.0 TFSI with a DSG gearbox.")
-    return "\n".join(lines) + "\n\nGive the JSON object."
-
-
-def parse_ai(text):
-    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", (text or "").strip())
-    start = text.find("{")
-    if start < 0:
-        raise ValueError("no JSON in the reply")
-    data = json.JSONDecoder().raw_decode(text[start:])[0]
-    if not isinstance(data, dict):
-        raise ValueError("unexpected reply")
-    return data
-
-
-class CarDialog(OverlayDialog):
-    CARD_ICON = "directions_car"
-
-    def __init__(self, state, vin, car, parent=None):
-        super().__init__(parent)
-        self.state = state
-        self.settings = state.settings
-        self.vin = vin
-        self.car = dict(car)
-        self.req = None
-        self.setWindowTitle("Car for the dyno")
-        self.setMinimumWidth(520)
-        imp = imperial(self.settings)
-        self.kg = dyno.KG_LB if imp else 1.0
-        wunit = "lb" if imp else "kg"
-        lay = QVBoxLayout(self)
-        from .vehicle import decode
-        who = decode(vin).get("label") if vin else ""
-        lay.addWidget(muted((f"{who or 'VIN'} · {vin}" if vin else "No VIN for this log: this profile is used "
-                             "for logs without one.") + "  Saved for this car; every pull uses it."))
-        form = QFormLayout()
-        form.setVerticalSpacing(8)
-
-        def spin(value, lo, hi, decimals, step, suffix=""):
-            s = QDoubleSpinBox()
-            s.setRange(lo, hi)
-            s.setDecimals(decimals)
-            s.setSingleStep(step)
-            s.setValue(value)
-            if suffix:
-                s.setSuffix(" " + suffix)
-            return s
-
-        self.label = QLineEdit(self.car.get("label", ""))
-        self.label.setPlaceholderText("e.g. 2008 Golf GTI 2.0 TFSI DSG")
-        form.addRow("Car", self.label)
-        self.curb = spin(self.car["curb_kg"] * self.kg, 500, 6000, 0, 10, wunit)
-        self.curb.setToolTip("Kerb weight: full fluids, no driver. A weighbridge beats any spec sheet.")
-        form.addRow("Kerb weight", self.curb)
-        self.extra = spin(self.car["extra_kg"] * self.kg, 0, 1000, 0, 5, wunit)
-        self.extra.setToolTip("Driver, passengers, cargo, and fuel above what kerb weight includes")
-        form.addRow("Driver + load", self.extra)
-        self.cd = spin(self.car["cd"], 0.15, 0.8, 3, 0.005)
-        self.cd.setToolTip("Drag coefficient (Cd), e.g. 0.32 for a Mk5 Golf GTI")
-        form.addRow("Drag coefficient", self.cd)
-        self.area = spin(self.car["area_m2"], 1.2, 4.0, 2, 0.01, "m²")
-        self.area.setToolTip("Frontal area, about 0.84 × width × height")
-        form.addRow("Frontal area", self.area)
-        self.crr = spin(self.car["crr"], 0.005, 0.03, 4, 0.001)
-        self.crr.setToolTip("Rolling resistance coefficient: 0.010 to 0.015 for road tyres; small effect")
-        form.addRow("Rolling resistance", self.crr)
-        self.tyre = QLineEdit(self.car.get("tyre", ""))
-        self.tyre.setPlaceholderText("225/45R17")
-        self.tyre.setToolTip("Only used for the engine estimate (how much the wheels and drivetrain "
-                             "soak up); the gearing itself is measured from the log")
-        form.addRow("Tyre size", self.tyre)
-        self.loss = spin(self.car["loss_pct"], 0, 40, 1, 0.5, "%")
-        self.loss.setToolTip("For the engine estimate only. FWD DSG about 13–15%, Haldex AWD about 18–20%")
-        form.addRow("Drivetrain loss", self.loss)
-        tunit = "°F" if imp else "°C"
-        air_c = self.car["air_c"] * 9 / 5 + 32 if imp else self.car["air_c"]
-        self.air_t = spin(air_c, -40, 140, 0, 1, tunit)
-        self.air_t.setToolTip("Used when the log has no ambient temperature")
-        form.addRow("Air temperature", self.air_t)
-        self.air_p = spin(self.car["air_mbar"], 600, 1100, 0, 1, "mbar")
-        self.air_p.setToolTip("Used when the log has no atmospheric pressure (sea level ≈ 1013)")
-        form.addRow("Air pressure", self.air_p)
-        lay.addLayout(form)
-        self.notes = muted(self.car.get("notes", ""))
-        lay.addWidget(self.notes)
-
-        ai_row = QHBoxLayout()
-        self.ai_button = QPushButton("Fill in with AI")
-        self.ai_button.setToolTip("Ask your AI (Settings → AI) for this car's weight, drag and tyres "
-                                  "from its VIN and modules. You can still change every value.")
-        self.ai_button.clicked.connect(self._ask_ai)
-        ai_row.addWidget(self.ai_button)
-        self.ai_status = muted("")
-        ai_row.addWidget(self.ai_status, 1)
-        lay.addLayout(ai_row)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        lay.addWidget(buttons)
-        self.finished.connect(lambda _: self.req.stop() if self.req is not None else None)
-
-    def values(self):
-        imp = imperial(self.settings)
-        air_c = (self.air_t.value() - 32) * 5 / 9 if imp else self.air_t.value()
-        return {
-            "label": self.label.text().strip(), "curb_kg": self.curb.value() / self.kg,
-            "extra_kg": self.extra.value() / self.kg, "cd": self.cd.value(), "area_m2": self.area.value(),
-            "crr": self.crr.value(), "tyre": self.tyre.text().strip() or dyno.DEFAULT_CAR["tyre"],
-            "loss_pct": self.loss.value(), "air_c": air_c, "air_mbar": self.air_p.value(),
-            "notes": self.notes.text(),
-        }
-
-    def _ask_ai(self):
-        from . import ai
-        if not ai.enabled(self.settings):
-            MessageBox.information(self, "AI is off", "Choose an AI in Settings → AI first.")
-            return
-        provider, kind, *_ = ai.resolved(self.settings)
-        if kind == "chat":
-            MessageBox.information(self, "Needs an AI that answers in the app",
-                                   "“My AI chat in the browser” can't send the answer back. Pick an API key, "
-                                   "Claude Code, Gemini CLI, Codex CLI or a local model in Settings → AI.")
-            return
-        prompt = ai_prompt(self.state, self.vin, self.values())
-        if not ai.confirm_send(self, self.settings, AI_SYSTEM + "\n\n" + prompt):
-            return
-        self.ai_button.setEnabled(False)
-        self.ai_status.setText("Asking…")
-        self._reply = ""
-        self.req = ai.Ask(self.settings, AI_SYSTEM, [{"role": "user", "content": prompt}], "low", self)
-        self.req.text.connect(lambda t: setattr(self, "_reply", self._reply + t))
-        self.req.done.connect(self._ai_done)
-        self.req.failed.connect(self._ai_failed)
-        self.req.start()
-
-    def _ai_failed(self, error):
-        self.ai_button.setEnabled(True)
-        self.ai_status.setText(f"Couldn't fill in: {error}")
-
-    def _ai_done(self):
-        self.ai_button.setEnabled(True)
-        try:
-            data = parse_ai(self._reply)
-        except ValueError as e:
-            self.ai_status.setText(f"Couldn't read the answer ({e}).")
-            return
-        car, filled = apply_ai(self.values(), data)
-        self.curb.setValue(car["curb_kg"] * self.kg)
-        self.cd.setValue(car["cd"])
-        self.area.setValue(car["area_m2"])
-        self.loss.setValue(car["loss_pct"])
-        self.tyre.setText(car["tyre"])
-        self.label.setText(car.get("label", ""))
-        self.notes.setText(car["notes"])
-        self.ai_status.setText("Filled in. Check the values, add your own weight, then Save."
-                               if filled else "The answer had no usable numbers.")

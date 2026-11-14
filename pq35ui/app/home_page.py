@@ -279,11 +279,11 @@ class HomePage(Page):
             self.modules.setRowCount(1)
             self.modules.setItem(0, 0, QTableWidgetItem("None yet: connect to a module on the Connect tab."))
         # Logs
-        # Recent recordings (kept automatically) and exported logs in Datalogs, newest first
-        from .storage import recent_logs_dir
-        found = list(recent_logs_dir().glob("*.csv"))
+        # Logs in Datalogs (every recording lands there) and dyno sessions, newest first
+        found = []
         if datalogs_dir().is_dir():
             found += datalogs_dir().glob("*.csv")
+            found += (datalogs_dir() / "Dyno").glob("*.csv")
         logs = sorted(found, key=lambda p: p.stat().st_mtime, reverse=True)[:8]
         self._log_paths = logs
         self.logs.setRowCount(len(logs))
@@ -316,8 +316,7 @@ class HomePage(Page):
             for c, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 if c == 0:
-                    item.setToolTip(f"{p.name}\n" + ("In Recent logs (Export… in the Logger or Analyze keeps a copy)"
-                                                      if p.parent == recent_logs_dir() else str(p.parent)))
+                    item.setToolTip(f"{p.name}\n{p.parent}")
                 self.logs.setItem(r, c, item)
         # Projects
         from .projects import Project

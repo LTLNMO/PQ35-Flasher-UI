@@ -28,7 +28,7 @@ BACKUP_CAPABLE = {HALDEX, BCM}
 # Tabs you can turn off in Settings → Features (Dashboard, Connect, Help and Settings always stay).
 OPTIONAL_FEATURES = (("projects", "Projects"), ("backup", "Back up"), ("flash", "Flash"),
                      ("patches", "Patches"), ("diagnostics", "Diagnostics"), ("liveview", "Live View"),
-                     ("logger", "Logger"), ("playback", "Analyze"), ("maps", "Maps"))
+                     ("logger", "Logger"), ("playback", "Analyze"), ("dyno", "Dyno"), ("maps", "Maps"))
 DEFAULT_HIDDEN = ("maps",)  # Maps is read-only and not much use yet
 
 
@@ -302,6 +302,8 @@ class ConnectPage(Page):
         self.pick_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.pick_menu = QMenu(self)
         self.pick_button.setMenu(self.pick_menu)
+        from .analyze_tools import anchor_menu
+        anchor_menu(self.pick_menu, self.pick_button)
         row.addWidget(self.pick_button)
         self.adapter_text = muted("")
         row.addWidget(self.adapter_text, 1)

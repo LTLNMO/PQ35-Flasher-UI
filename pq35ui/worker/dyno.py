@@ -24,21 +24,23 @@ WHEEL_R = 0.309                # m, 225/40 R18 rolling radius
 KMH_PER_RPM = 2 * math.pi * WHEEL_R / RATIO * 0.06   # ≈ 0.02177 km/h per rpm in 3rd
 MASS = 1575.0                  # kg, car + driver
 INERTIA = 1.10                 # rotating parts in 3rd (quattro: a bit more than front drive)
-DRIVE_EFF = 0.85               # S tronic + Haldex: about 15 % lost on the way to the wheels
+DRIVE_EFF = 0.83               # S tronic + Haldex: about 17 % lost on the way to the wheels
 CDA = 0.33 * 2.15              # drag coefficient × frontal area, m²
 CRUISE_RPM = 2900.0           # part throttle before the pull (the real log rolled 2,560 → 3,040)
 PULL_TO_RPM = 6700.0          # lift here (the real pull shifted at 6,720)
 CRUISE_V = CRUISE_RPM * KMH_PER_RPM / 3.6   # m/s
 GEAR4_OVER_3 = 0.902 / 1.300   # DSG: the preselected 4th gear shaft turns at this share
 
-# Full-throttle maps by rpm, from the real 3rd-gear pull (medians per 250 rpm)
-TORQUE = ((2000, 260), (2500, 320), (3500, 343), (4500, 341), (4750, 322), (5000, 306), (5500, 302),
-          (6000, 282), (6250, 270), (6500, 250), (6800, 236))   # Nm, the ECU's own estimate
+# Full-throttle torque: a stock S3's factory curve (265 PS at 6,000, 350 Nm flat from 2,500 to
+# 5,000 rpm), which real stock 8P S3s match on a chassis dyno (~210-220 whp). The other maps below
+# (boost, timing, lambda ...) keep the shape of the real logged pull.
+TORQUE = ((2000, 290), (2500, 350), (5000, 350), (5500, 337), (6000, 311), (6250, 297), (6500, 282),
+          (6800, 262))   # Nm at the crank
 BOOST_SPEC = ((2500, 2000), (3000, 2240), (3500, 2260), (3750, 2370), (4000, 2450), (5000, 2470),
               (5500, 2440), (5750, 2350), (6000, 2260), (6250, 2200), (6500, 2130), (6800, 2080))  # mbar abs
-SPOOL = ((2500, 1500), (3000, 1900), (3500, 2200), (3800, 2250), (4100, 2430), (4600, 2450),
-         (5000, 2370), (5500, 2290), (5750, 2210), (6000, 2130), (6250, 2050), (6500, 2030),
-         (6800, 2000))  # what the turbo actually makes (falls short of the request up top)
+SPOOL = ((2500, 1500), (3000, 2000), (3500, 2300), (3800, 2400), (4100, 2480), (4600, 2500),
+         (5000, 2500), (5500, 2470), (5750, 2380), (6000, 2290), (6250, 2230), (6500, 2160),
+         (6800, 2110))  # what the turbo can make (a little over the request once spooled: load holds)
 LOAD_SPEC = ((2000, 191), (6800, 191))  # % (specified load sits on its 191 % cap)
 TIMING_WOT = ((3000, 9.5), (3500, 8.0), (4000, 8.0), (4250, 12.0), (4500, 10.5), (4750, 7.5),
               (5000, 7.5), (5250, 10.0), (5500, 9.5), (5750, 12.0), (6000, 14.0), (6250, 15.0),
@@ -184,7 +186,8 @@ class DynoPull:
             self.rail += (rail_spec - self.rail) * dt / 0.15
         rail = self.rail - max(0.0, rpm - 4800.0) * 0.012 * blend   # the pump falls a little behind
         inj = 0.0 if overrun else load * 0.039 * (1 - 0.18 * clip((rpm - 4500.0) / 2000.0))
-        maf = load * rpm * 1.93e-4
+        # airflow follows power (a turbo petrol at full throttle makes ~1.3 hp per g/s), plus idle air
+        maf = 3.5 + max(torque, 0.0) * rpm / 7121.0 / 1.33
 
         # wastegate (N75), cam, throttle
         if blend > 0.5:

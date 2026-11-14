@@ -66,8 +66,7 @@ class ChannelSidebar(QWidget):
             self.pick_row.addWidget(select_button, 1)
         self.columns_button = T.icon_button("avg_pace", columns_tip or "Choose which values the "
                                             "list shows")
-        self.columns_button.clicked.connect(lambda: self.columns_menu().exec(
-            self.columns_button.mapToGlobal(self.columns_button.rect().bottomLeft())))
+        self.columns_button.clicked.connect(lambda: T.popup_menu(self.columns_menu(), self.columns_button))
         self.pick_row.addWidget(self.columns_button)
         self.bars_button = T.icon_button("notes", bars_tip or "Show or hide the bars under each "
                                          "channel", checkable=True)

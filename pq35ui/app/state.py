@@ -24,6 +24,7 @@ class AppState(QObject):
     modules_scanned = Signal(dict)        # Connect's scan finished (scan result)
     faults_changed = Signal(int)          # fault codes found by the last check (all modules)
     request_scan = Signal()               # "Scan" from anywhere (Diagnostics): Connect runs it
+    car_changed = Signal(str)             # the car connected now: its VIN once read, "" when it's gone
 
     def __init__(self, pool, settings, parent=None):
         super().__init__(parent)
@@ -44,6 +45,9 @@ class AppState(QObject):
         self.hello = {}
         # The car: {"vin", "label", ...} from the last scan that read a VIN (kept between runs).
         self.vehicle = settings.get("vehicle") or None
+        # Whether that VIN was read from the car connected NOW (this run, this interface). Only then
+        # is it the car: recordings are tagged with it, its profile and project load (car_watch).
+        self.vin_live = False
         pool.event.connect(self._event)
 
     def _event(self, message):
@@ -70,6 +74,7 @@ class AppState(QObject):
             self.last_scan = None  # a different (or no) adapter: what was found no longer applies
             self.fault_summary = {}
             self.extra_families = {}
+            self.car_gone()
             self.changed.emit()
 
     def select_module(self, family, identity=None):
@@ -95,17 +100,34 @@ class AppState(QObject):
         self.changed.emit()
 
     def set_vehicle(self, vin, source=""):
-        """Remember the car a scan identified by its VIN."""
+        """The car connected now, read by its VIN (a scan, or car_watch's quick read)."""
         if not vin:
             return
         from .vehicle import decode
         vehicle = dict(decode(vin), source=source)
-        if vehicle != self.vehicle:
+        was = self.vin()
+        if vehicle.get("vin") != (self.vehicle or {}).get("vin"):
             self.vehicle = vehicle
             self.settings.set("vehicle", vehicle)
+        self.vin_live = True
+        if vin != was:
+            self.car_changed.emit(vin)
+            self.changed.emit()
+
+    def car_gone(self):
+        """No car answers any more (unplugged, ignition off, another interface)."""
+        if self.vin_live:
+            self.vin_live = False
+            self.car_changed.emit("")
             self.changed.emit()
 
     def vin(self) -> str:
+        """The VIN of the car connected now, or "" (not read yet this run, or no car answering).
+        Recordings are tagged with this, never with a car from an earlier run."""
+        return (self.vehicle or {}).get("vin", "") if self.vin_live else ""
+
+    def known_vin(self) -> str:
+        """The last car read, even if it isn't connected now (e.g. which scans to list offline)."""
         return (self.vehicle or {}).get("vin", "")
 
     def part(self) -> str:

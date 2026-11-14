@@ -34,13 +34,18 @@ KG_LB = 2.20462
 # A 2008-ish Golf GTI / A3 2.0T: a sensible start until the car profile is filled in.
 DEFAULT_CAR = {
     "label": "",
-    "curb_kg": 1420.0,       # kerb weight (full fluids, no driver)
-    "extra_kg": 90.0,        # driver, passenger, fuel above kerb, cargo
+    "curb_kg": 1420.0,       # kerb weight (full fluids and a full tank, no driver)
+    "people": 1,             # driver + passengers (PERSON_KG each)
+    "cargo_kg": 0.0,
+    "fuel_frac": 1.0,        # how full the tank is (kerb weight assumes full)
+    "tank_l": 55.0,
     "cd": 0.32,
     "area_m2": 2.22,
     "crr": 0.012,
     "tyre": "225/45R17",
-    "loss_pct": 15.0,        # drivetrain loss for the engine estimate (FWD DSG ~13-15, Haldex AWD ~18-20)
+    "loss_pct": 15.0,        # drivetrain loss for the engine estimate (FWD DSG ~13-15, Haldex AWD ~16-19)
+    "gearbox": "unknown",    # a key of GEARBOXES, "manual" or "unknown": for the speed-signal check
+    "speed_from": "auto",    # "auto": both blended (gearbox known); "log": measured; "gearbox": ratio + tyre
     "air_c": 20.0,           # used when the log has no air temperature
     "air_mbar": 1013.0,      # used when the log has no air pressure
     "notes": "",
@@ -53,6 +58,50 @@ CORRECTIONS = (
     ("none", "Uncorrected", "As measured, in the day's air"),
 )
 SMOOTHING = (("low", "Light", 0.8), ("normal", "Normal", 1.2), ("high", "Strong", 1.6))  # window half-width, s
+
+PERSON_KG = 80.0
+FUEL_KG_L = 0.745        # petrol
+# Full-throttle crank power per gram a second of air for a turbo petrol running rich (lambda ~0.8):
+# the usual rule of thumb (10 hp per lb/min of air is 1.32). Good to about ±10%: a sanity check.
+HP_PER_GS = 1.30
+
+# Overall ratios (engine turns per wheel turn) of gearboxes whose ratios are known, to check the
+# speed signal against: 6-speed S tronic / DSG 02E as fitted to the 2.0 TFSI (gears 1-4 and 5-6 run
+# on final drives 4.118 and 3.043).
+GEARBOXES = {
+    "dsg6": ("6-speed DSG (02E)", tuple(round(g * f, 3) for g, f in (
+        (3.462, 4.118), (2.050, 4.118), (1.300, 4.118), (0.902, 4.118), (0.914, 3.043), (0.756, 3.043)))),
+}
+# How far each road-speed scale can typically be off (%, one sigma): the ABS speed (its stored tyre
+# circumference) and gear ratio + tyre size (wear, pressure, growth at speed). "auto" weights them by
+# these; further apart than BLEND_MAX_PCT one of them is plainly wrong, so it isn't blended.
+SIGMA_ABS_PCT = 2.0
+SIGMA_TYRE_PCT = 1.2
+BLEND_MAX_PCT = 4.0
+SPEED_FROM = (("auto", "Automatic (best estimate)"), ("log", "Speed signal (measured from the log)"),
+              ("gearbox", "Gear ratio + tyre size"))
+GEARBOX_CHOICES = (("dsg6", "6-speed DSG (S tronic)"), ("manual", "Manual / other"), ("unknown", "Don't know"))
+
+
+def car_mass(car):
+    """Car + people + cargo, less the fuel missing from a full tank (kg). Profiles saved before
+    people / fuel existed have one extra_kg (driver, load and fuel together)."""
+    if "people" not in car and "extra_kg" in car:
+        return float(car["curb_kg"]) + float(car["extra_kg"])
+    full = float(car.get("tank_l", 55.0)) * FUEL_KG_L
+    fuel = min(max(float(car.get("fuel_frac", 1.0)), 0.0), 1.0)
+    return (float(car["curb_kg"]) + int(car.get("people", 1)) * PERSON_KG + float(car.get("cargo_kg", 0.0))
+            - (1 - fuel) * full)
+
+
+def match_gear(overall, gearbox):
+    """(gear number, its overall ratio, speed signal error %) for the gear of a known gearbox nearest
+    the measured overall ratio, or None. Error > 0: the speed signal reads high."""
+    box = GEARBOXES.get(gearbox)
+    if not box or not overall or not math.isfinite(overall):
+        return None
+    k = int(np.argmin([abs(math.log(overall / g)) for g in box[1]]))
+    return k + 1, box[1][k], (box[1][k] / overall - 1) * 100
 
 
 # --- reading the log ---------------------------------------------------------
@@ -73,7 +122,7 @@ def _find(headers, patterns, avoid=()):
 
 
 def find_channels(headers):
-    """Which columns the dyno uses: {rpm, speed, pedal, throttle, pressure, air_temp, ecu_torque}."""
+    """Which columns the dyno uses: {rpm, speed, pedal, throttle, pressure, air_temp, ecu_torque, maf}."""
     hs = [h for h in headers if not h.startswith("ƒ ")]  # skip math channels
     return {
         "rpm": _find(hs, [r"^engine speed\b", r"engine speed", r"^rpm\b", r"\brpm\b"],
@@ -88,6 +137,8 @@ def find_channels(headers):
         "air_temp": _find(hs, [r"ambient temperature", r"ambient air temp", r"outside temp"]),
         "ecu_torque": _find(hs, [r"engine torque \(actual", r"^engine torque\b", r"actual torque"],
                             avoid=[r"specified", r"request", r"loss", r"limit"]),
+        "maf": _find(hs, [r"mass air ?flow", r"air mass", r"\bmaf\b"],
+                     avoid=[r"specified", r"sensor voltage", r"adapt", r"\(v\)$"]),
     }
 
 
@@ -102,6 +153,8 @@ def to_si(values, header, kind):
         return v * factor
     if kind == "temp":
         return (v - 32.0) * 5 / 9 if unit in ("°f", "f", "degf") else v
+    if kind == "airflow":  # g/s
+        return v / 3.6 if unit == "kg/h" else v * 7.5599 if unit in ("lb/min", "lbs/min") else v
     return v
 
 
@@ -245,13 +298,24 @@ def gearing(st, sv, rt, rv, half):
     return plain, 0.0, plain * rpm_at
 
 
+TYRE_RE = r"\s*(\d{3})\s*/\s*(\d{2})\s*[A-Za-z]*\s*(\d{2})"
+
+
+def tyre_ok(tyre):
+    return bool(re.match(TYRE_RE, tyre or ""))
+
+
+def tyre_diameter_mm(tyre):
+    """Unloaded diameter from '225/45R17': rim + two sidewalls (width x profile %)."""
+    width, aspect, rim = (int(x) for x in re.match(TYRE_RE, tyre).groups())
+    return rim * 25.4 + 2 * width * aspect / 100.0
+
+
 def tyre_radius(tyre):
     """Rolling radius in metres from '225/45R17' (about 3% under the unloaded radius)."""
-    m = re.match(r"\s*(\d{3})\s*/\s*(\d{2})\s*[A-Za-z]*\s*(\d{2})", tyre or "")
-    if not m:
+    if not tyre_ok(tyre):
         return 0.31
-    width, aspect, rim = (int(x) for x in m.groups())
-    return (rim * 25.4 / 2 + width * aspect / 100.0) / 1000.0 * 0.97
+    return tyre_diameter_mm(tyre) / 2 / 1000.0 * 0.97
 
 
 def correction_factor(kind, temp_c, pressure_pa):
@@ -326,6 +390,36 @@ def analyse(times, columns, pull, car=None, correction="sae", smoothing="normal"
         warnings.append(f"Road speed and engine speed disagree by about {slip:.0f}% through the pull: "
                         "clutch slip, wheelspin or a gear change. Treat this pull's numbers with care.")
 
+    radius = tyre_radius(car.get("tyre"))
+    measured_overall = (2 * math.pi / 60.0) / (ratio / radius)  # engine turns per wheel turn
+    gear = None
+    match = match_gear(measured_overall, car.get("gearbox"))
+    if match and abs(match[2]) < 10:  # further off than that it's a different gearbox (or tyre)
+        n, expect, err = match
+        box = GEARBOXES[car["gearbox"]][0]
+        mode = car.get("speed_from", "auto")
+        geared = (2 * math.pi / 60.0) * radius / expect  # m/s per rpm from the gear ratio + tyre
+        gear = {"gear": n, "expected": expect, "measured": measured_overall, "speed_err_pct": err,
+                "box": box, "used": "log", "weight": 0.0}
+        if mode == "gearbox":
+            ratio, lag = geared, 0.0
+            gear.update(used="gearbox", weight=1.0)
+        elif mode == "auto" and abs(err) <= BLEND_MAX_PCT:
+            w = SIGMA_ABS_PCT ** 2 / (SIGMA_ABS_PCT ** 2 + SIGMA_TYRE_PCT ** 2)  # inverse-variance weight
+            ratio = math.exp(w * math.log(geared) + (1 - w) * math.log(ratio))
+            gear.update(used="blend", weight=w)
+        elif mode == "auto":
+            warnings.append(
+                f"The speed signal and {box} gear {n} on {car.get('tyre')} tyres disagree by {abs(err):.1f}%, "
+                "too much to blend, so the measured speed is used. Check the tyre size in the car profile "
+                "(Cars…).")
+        elif abs(err) >= 2.5:
+            warnings.append(
+                f"The speed signal reads {abs(err):.1f}% {'high' if err > 0 else 'low'} against {box} gear {n} "
+                f"on {car.get('tyre')} tyres, which makes power about {2 * abs(err):.0f}% "
+                f"{'high' if err > 0 else 'low'}. If the tyre size is right, set Speed from → Gear ratio in the "
+                "car profile (Cars…).")
+
     grid = np.arange(a, b, 0.025)
     if len(grid) < 8:
         return {"error": "This pull is too short."}
@@ -350,12 +444,12 @@ def analyse(times, columns, pull, car=None, correction="sae", smoothing="normal"
         temp = None
     source = "log" if press is not None and temp is not None else \
         "log + profile" if press is not None or temp is not None else "profile"
-    press = press if press is not None else float(car["air_mbar"]) * 100.0
-    temp = temp if temp is not None else float(car["air_c"])
+    # Not logged: standard air (the profile no longer asks; older saved profiles' values are ignored)
+    press = press if press is not None else float(DEFAULT_CAR["air_mbar"]) * 100.0
+    temp = temp if temp is not None else float(DEFAULT_CAR["air_c"])
     rho = press / (287.05 * (temp + 273.15))
 
-    mass = float(car["curb_kg"]) + float(car["extra_kg"])
-    radius = tyre_radius(car.get("tyre"))
+    mass = car_mass(car)
     overall = (2 * math.pi / 60.0) / (ratio / radius)  # engine turns per wheel turn
     rot = 1.04 + 0.0025 * overall ** 2                # Gillespie: rotating parts as extra mass
     drag = 0.5 * rho * float(car["cd"]) * float(car["area_m2"]) * v * v
@@ -383,13 +477,19 @@ def analyse(times, columns, pull, car=None, correction="sae", smoothing="normal"
     wtq = whp * HP_W / omega
     etq = ehp * HP_W / omega
 
-    ecu = None
-    tq_h = chans.get("ecu_torque")
-    if tq_h:
-        et, ev = readings(t_all[m], np.asarray(columns[tq_h], float)[m])
-        if len(et) >= 4:
-            at_t = np.interp(tr, et, ev)  # ECU torque at each moment, then onto the rpm grid
-            ecu = np.interp(rpm_axis, rpm_r, at_t)
+    def on_grid(header, kind=None):
+        """Another logged value at each moment of the pull, then onto the rpm grid."""
+        if not header:
+            return None
+        vals = np.asarray(columns[header], float)[m]
+        et, ev = readings(t_all[m], to_si(vals, header, kind) if kind else vals)
+        if len(et) < 4:
+            return None
+        return np.interp(rpm_axis, rpm_r, np.interp(tr, et, ev))
+
+    ecu = on_grid(chans.get("ecu_torque"))
+    maf = on_grid(chans.get("maf"), "airflow")
+    maf_hp = maf * HP_PER_GS * cf if maf is not None else None  # corrected like ours, to draw alongside
 
     def peak(y):
         k = int(np.nanargmax(y))
@@ -398,18 +498,105 @@ def analyse(times, columns, pull, car=None, correction="sae", smoothing="normal"
     pk = {}
     for key, arr in (("whp", whp), ("wtq", wtq), ("ehp", ehp), ("etq", etq)):
         pk[key], pk[key + "_rpm"] = peak(arr)
-    if pk["whp_rpm"] >= rpm_axis[-1] - 2 * step_rpm:
+    cut_off = pk["whp_rpm"] >= rpm_axis[-1] - 2 * step_rpm
+    if cut_off:
         warnings.append(f"Power was still climbing when this pull ended ({rpm_axis[-1]:,.0f} rpm), so the real "
                         "peak is probably higher: hold it flat closer to redline.")
-    return {
+    out = {
         "rpm": rpm_axis, "whp": whp, "wtq_nm": wtq, "ehp": ehp, "etq_nm": etq, "ecu_tq_nm": ecu,
+        "maf_hp": maf_hp, "check": cross_check(rpm_axis, ehp / cf, ecu, maf_hp / cf if maf_hp is not None else None),
+        "gear": gear,
         "peaks": pk, "kmh_per_1000": ratio * 3.6 * 1000, "slip_pct": slip, "rate_hz": float(rate),
         "speed_lag_s": lag,
-        "mass_kg": mass, "rot_factor": rot, "overall_ratio": overall, "cf": cf,
+        "mass_kg": mass, "speed_from": gear["used"] if gear else "log", "rot_factor": rot, "overall_ratio": overall, "cf": cf,
         "air": {"temp_c": temp, "mbar": press / 100.0, "source": source, "density": rho},
         "pull": (float(a), float(b)), "rpm_range": (float(rpm_axis[0]), float(rpm_axis[-1])),
-        "warnings": warnings,
+        "warnings": warnings, "cut_off": cut_off,
     }
+    out["quality"] = quality(out)
+    return out
+
+
+def quality(res):
+    """(label Good / Fair / Poor, score 0-100, [reasons]) for how far a result can be trusted."""
+    score, why = 100, []
+
+    def ding(points, text):
+        nonlocal score
+        score -= points
+        why.append(text)
+    rate = res.get("rate_hz", 0)
+    if rate < 6:
+        ding(30, f"engine speed read only {rate:.1f}×/s")
+    elif rate < 12:
+        ding(10, f"engine speed read {rate:.0f}×/s (more is better)")
+    slip = res.get("slip_pct", 0)
+    if slip > 3:
+        ding(40, f"{slip:.0f}% slip or wheelspin")
+    elif slip > 1.5:
+        ding(15, f"{slip:.1f}% slip")
+    span = res["rpm"][-1] - res["rpm"][0]
+    if span < 2000:
+        ding(25, f"only {span:,.0f} rpm covered")
+    elif span < 3000:
+        ding(10, f"{span:,.0f} rpm covered (3,000+ is better)")
+    if res.get("cut_off"):
+        ding(15, "cut off before peak power")
+    chk = res.get("check")
+    if chk and chk["worst_pct"] > 15:
+        ding(40, f"cross-check {chk['worst_pct']:.0f}% apart")
+    elif chk and chk["worst_pct"] > 8:
+        ding(20, f"cross-check {chk['worst_pct']:.0f}% apart")
+    g = res.get("gear")
+    if g and abs(g["speed_err_pct"]) > BLEND_MAX_PCT:
+        ding(20, f"speed signal and gear ratio {abs(g['speed_err_pct']):.0f}% apart")
+    elif g and g["used"] == "log" and abs(g["speed_err_pct"]) >= 2.5:
+        ding(10, f"speed signal {abs(g['speed_err_pct']):.1f}% off the gear ratio (Speed from: Automatic would help)")
+    score = max(score, 0)
+    label = "Good" if score >= 80 else "Fair" if score >= 55 else "Poor"
+    return label, score, why
+
+
+def cross_check(rpm, ehp, ecu_tq, maf_hp):
+    """Peak engine power three ways, all uncorrected: this dyno's estimate, the ECU's own torque
+    figure, and airflow x HP_PER_GS. {ours, ecu, maf, worst_pct} or None if the log has neither."""
+    if ecu_tq is None and maf_hp is None:
+        return None
+    out = {"ours": float(np.nanmax(ehp)), "ecu": None, "maf": None}
+    if ecu_tq is not None:
+        out["ecu"] = float(np.nanmax(ecu_tq * rpm * 2 * math.pi / 60.0 / HP_W))
+    if maf_hp is not None:
+        out["maf"] = float(np.nanmax(maf_hp))
+    others = [v for v in (out["ecu"], out["maf"]) if v]
+    out["worst_pct"] = max(abs(out["ours"] / v - 1) * 100 for v in others) if others else 0.0
+    return out
+
+
+def same_gear(results, ref):
+    """The results in the same gear as ref (gearing within 3%)."""
+    return [r for r in results if "error" not in r and abs(r["kmh_per_1000"] / ref["kmh_per_1000"] - 1) < 0.03]
+
+
+def full_pulls(results):
+    """Leave out pulls covering under 60% of the longest one's rpm (a recording stopped mid-pull, a
+    short burst): compared or averaged with the rest they'd mislead or cut the shared range."""
+    span = lambda r: r["rpm"][-1] - r["rpm"][0]
+    longest = max((span(r) for r in results), default=0)
+    return [r for r in results if span(r) >= 0.6 * longest]
+
+
+def spread_pct(results):
+    """How far apart same-gear pulls are: mean wheel power over the rpm range they share (max - min,
+    % of the mean). Short pulls are left out."""
+    good = full_pulls(results)
+    if len(good) < 2:
+        return 0.0
+    lo, hi = max(r["rpm"][0] for r in good), min(r["rpm"][-1] for r in good)
+    if hi - lo < 400:
+        return 0.0
+    rpm = np.linspace(lo, hi, 50)
+    means = [float(np.mean(np.interp(rpm, r["rpm"], r["whp"]))) for r in good]
+    return (max(means) - min(means)) / (sum(means) / len(means)) * 100
 
 
 def average(results):
@@ -421,11 +608,11 @@ def average(results):
     # Only pulls in the same gear (gearing within 3%): in a taller gear less power goes into spinning
     # up the engine, so its wheel figures run a little higher. The gear with the most pulls wins.
     groups = [[r for r in good if abs(r["kmh_per_1000"] / g["kmh_per_1000"] - 1) < 0.03] for g in good]
-    same = max(groups, key=len)
+    same = full_pulls(max(groups, key=len))
     skipped = len(good) - len(same)
     good = same
     if len(good) == 1:
-        return dict(good[0], skipped=skipped)
+        return dict(good[0], skipped=skipped, count=1)
     lo = max(r["rpm"][0] for r in good)
     hi = min(r["rpm"][-1] for r in good)
     if hi - lo < 400:
@@ -435,8 +622,9 @@ def average(results):
     out = dict(good[0])
     for key in ("whp", "wtq_nm", "ehp", "etq_nm"):
         out[key] = np.mean([np.interp(rpm, r["rpm"], r[key]) for r in good], axis=0)
-    ecus = [np.interp(rpm, r["rpm"], r["ecu_tq_nm"]) for r in good if r.get("ecu_tq_nm") is not None]
-    out["ecu_tq_nm"] = np.mean(ecus, axis=0) if ecus else None
+    for key in ("ecu_tq_nm", "maf_hp"):
+        arrs = [np.interp(rpm, r["rpm"], r[key]) for r in good if r.get(key) is not None]
+        out[key] = np.mean(arrs, axis=0) if arrs else None
     out["rpm"] = rpm
     pk = {}
     for key, arr in (("whp", out["whp"]), ("wtq", out["wtq_nm"]), ("ehp", out["ehp"]), ("etq", out["etq_nm"])):
@@ -449,4 +637,10 @@ def average(results):
     out["warnings"] = sorted({w for r in good for w in r["warnings"]})
     out["count"] = len(good)
     out["skipped"] = skipped
+    out["spread_pct"] = spread_pct(good)
+    out["cut_off"] = any(r.get("cut_off") for r in good)
+    cf = out["cf"]
+    out["check"] = cross_check(rpm, out["ehp"] / cf, out["ecu_tq_nm"],
+                               out["maf_hp"] / cf if out["maf_hp"] is not None else None)
+    out["quality"] = quality(out)
     return out

@@ -36,6 +36,8 @@ def _code(p_number, text, intermittent=False, sticky=False):
         entry["sticky"] = True
     return entry
 
+DEMO_VIN = "WAUZZZ8P2BA000123"  # the pretend car: a 2011 Audi S3 (8P)
+
 
 # Several codes so the fault lists can be looked through; a few are sticky ("still active").
 DEMO_DTCS = {
@@ -239,7 +241,7 @@ class DemoModule:
         """(results, gateway) like scan.scan: one pass over the pretend gateway list."""
         from .scan import address_name, annotate
         gateway = self._gateway()
-        gateway["vehicle"] = {"vin": "WAUZZZ8P2BA000123", "source": "engine"}  # pretend 2011 Audi S3 (8P)
+        gateway["vehicle"] = {"vin": DEMO_VIN, "source": "engine"}
         results = annotate(self._families(), gateway)
         by_tp2 = {e["module"]: e for e in results}
         entries = gateway.get("entries") or []

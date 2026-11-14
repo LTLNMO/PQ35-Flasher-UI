@@ -18,11 +18,10 @@ from PySide6.QtWidgets import (
 from . import ai, graphscale, graphstyle, log_export, log_import, mathchannels, recent_logs, units
 from . import analyze_tools, legend_strip, smart_presets
 from .heatmap import HeatmapView
-from .dyno_view import DynoView
 from .split_view import SplitView
 from .channel_list import COLOR_ROLE, FRAC_ROLE, HIDDEN_ROLE, ChannelPicker
 from .channel_sidebar import ChannelSidebar
-from .storage import datalogs_dir, recent_logs_dir
+from .storage import datalogs_dir
 from .widgets import Banner, ElidedLabel, muted, pair
 
 GRAPH_SLOTS = 6
@@ -182,11 +181,6 @@ class PlaybackPage(QWidget):
                                              "COBB, MHD, VCDS, ME7Logger, Torque, MegaLogViewer, "
                                              "Integrated Engineering …)", dropdown=True)
         self.open_button.clicked.connect(self._open_menu)
-        self.export_button = self._icon_button("ios_share", "Export…: save this log to Datalogs (or "
-                                               "anywhere) as Standard CSV, Integrated Engineering, "
-                                               "MegaLogViewer or generic CSV")
-        self.export_button.clicked.connect(self._export)
-        self.export_button.setEnabled(False)
         # speed_4_progress, by codepoint: the glyph is in the font but its name ligature draws junk
         self.sidebar_button = self._icon_button("\U000ffe94", "Show or hide the channels "
                                                 "sidebar", checkable=True)
@@ -217,8 +211,7 @@ class PlaybackPage(QWidget):
         self.presets_button = self._icon_button("bookmark", "Presets: put a ready-made set of "
                                                 "channels on the graph, or save your own",
                                                 dropdown=True)
-        self.presets_button.clicked.connect(lambda: self._presets_menu().exec(
-            self.presets_button.mapToGlobal(self.presets_button.rect().bottomLeft())))
+        self.presets_button.clicked.connect(lambda: analyze_tools.popup_menu(self._presets_menu(), self.presets_button))
         self.smart_button = self._icon_button("auto_awesome", "Smart presets: show or hide the row of "
                                               "ready-made layouts above the graph", checkable=True)
         self.smart_button.setChecked(bool(state.settings.get(smart_presets.BAR_KEY, True)))
@@ -231,13 +224,10 @@ class PlaybackPage(QWidget):
                                     "and large values both fill the graph.\n"
                                     "In Shared, click a line to give that channel its own y axis.\n"
                                     "Applies to the Single graph and to Split rows holding several channels.")
-        self.axis_button.clicked.connect(lambda: self._axis_menu().exec(
-            self.axis_button.mapToGlobal(self.axis_button.rect().bottomLeft())))
+        self.axis_button.clicked.connect(lambda: analyze_tools.popup_menu(self._axis_menu(), self.axis_button))
         ctrl.addWidget(self.axis_button)
         self.more_button = self._icon_button("more_vert", "Log details, edit, reset view, download")
-        self.more_button.clicked.connect(lambda: self._more_menu().exec(
-            self.more_button.mapToGlobal(self.more_button.rect().bottomRight())
-            - QPoint(self._more_menu_width, 0)))
+        self.more_button.clicked.connect(lambda: analyze_tools.popup_menu(self._more_menu(), self.more_button))
         self._more_menu_width = 0
         ctrl.addWidget(self.more_button)
         rl.addLayout(ctrl)
@@ -359,14 +349,12 @@ class PlaybackPage(QWidget):
             ("heatmap", self.heatmap, "Heatmap", "grid_on"),
             ("scatter", self._build_scatter(c), "Scatter", "scatter_plot"),
             ("raw", self._build_raw(), "Raw", "description"),
-            ("dyno", self._build_dyno(), "Dyno", "rocket_launch"),
         )
         for _key, widget, label, _glyph in self._views:
             self.tabs.addTab(widget, label)
         # The views are picked with buttons styled like the app's top-bar tabs, always showing
         # their icon and name (no hover animation); the tab bar itself is hidden.
         self.tabs.tabBar().hide()
-        self._fit_views()
 
         view_row = QHBoxLayout()
         view_row.setContentsMargins(0, 0, 0, 0)
@@ -400,8 +388,6 @@ class PlaybackPage(QWidget):
         view_row.addWidget(self.file_label, 1)  # takes the rest of the row; long names get …
         view_row.addSpacing(6)
         view_row.addWidget(self.open_button)
-        view_row.addSpacing(6)
-        view_row.addWidget(self.export_button)
         view_row.addSpacing(6)
         view_row.addWidget(self.compare_button)
         rl.addLayout(view_row)
@@ -610,11 +596,10 @@ class PlaybackPage(QWidget):
             menu.addAction("No recordings yet").setEnabled(False)
         for path, entry in items:
             act = T.menu_action(menu, f"{path.stem}   {recent_logs.describe(entry)}",
-                                "check_circle" if entry.get("exported") else "description",
+                                "speed" if entry.get("mode") == "dyno" else "description",
                                 lambda _=False, p=path: self.load_csv(p))
-            act.setToolTip("Exported" if entry.get("exported") else "Not exported yet")
-        b = self.open_button
-        menu.exec(b.mapToGlobal(b.rect().bottomLeft()))
+            act.setToolTip(str(path))
+        analyze_tools.popup_menu(menu, self.open_button)
 
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -645,7 +630,6 @@ class PlaybackPage(QWidget):
         self.curve_data = {}
         self.csv_path = path
         self._update_title()
-        self.export_button.setEnabled(True)
         if self.source_format and not reload:
             self.banner.show_message(f"Converted from {self.source_format} to the Standard format "
                                      "(the original file isn't changed).", "info")
@@ -817,7 +801,6 @@ class PlaybackPage(QWidget):
             self.cursor_idx = len(self.times) - 1
             self.cursor_line.setValue(new_end)
         self._update_stats()
-        self.dyno.live_update()
         if at_end:
             if showing_all:
                 self._show_all()
@@ -1171,7 +1154,7 @@ class PlaybackPage(QWidget):
             what = "the selection"
         trim.setText(f"Save {what} ({rng[0]:.1f} \u2013 {rng[1]:.1f} s) as a new log; this one is kept")
         trim.toggled.connect(lambda on: name_edit.setText(shown + "_part" if on else shown))
-        if imported:  # the original belongs to the other tool; parts go to Recent logs
+        if imported:  # the original belongs to the other tool; parts go to Datalogs
             rename.setEnabled(False)
             rename.setToolTip("A log from another tool isn't renamed here: Export… saves it under any name.")
             trim.setChecked(True)
@@ -1187,8 +1170,10 @@ class PlaybackPage(QWidget):
         if not stem or any(ch in stem for ch in "/\\:"):
             MessageBox.warning(self, "Edit log", "Please enter a file name without / \\ or :.")
             return
-        # Parts of an imported or recent log become new recent logs; others go beside the log.
-        folder = recent_logs_dir() if imported or recent_logs.is_recent(path) else path.parent
+        # Parts of an imported log go to Datalogs; others beside the log. Parts of the app's own
+        # recordings (and of imported logs) join Recent logs.
+        folder = datalogs_dir() if imported else path.parent
+        register = imported or recent_logs.is_recent(path)
         new = folder / (stem + ".csv") if trim.isChecked() else path.with_name(stem + ".csv")
         if new != path and new.exists():
             MessageBox.warning(self, "Edit log", f"There's already a log called {new.name}.")
@@ -1199,7 +1184,7 @@ class PlaybackPage(QWidget):
                     MessageBox.warning(self, "Edit log", "Give the new log a different name.")
                     return
                 rows = analyze_tools.trim_csv(path, new, *rng)
-                if recent_logs.is_recent(new):
+                if register:
                     recent_logs.add_existing(new, like=path)
                 self.load_csv(new)
                 self.banner.show_message(f"Saved {rows:,} rows as {new.name}", "ok")
@@ -1937,7 +1922,6 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
         fill(self.scatter_y, names, pick=1)
         fill(self.scatter_color, names, none="None")
         self.heatmap.set_names(names)
-        self.dyno.log_changed()
 
     def _stats_range(self):
         """(a, b) the stats use: the zoomed part of the log, or None for the whole log."""
@@ -2016,21 +2000,9 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
             self._draw_scatter(mask)
         elif view == "raw":
             self._update_raw()
-        elif view == "dyno":
-            self.dyno.range_changed()
-
-    def _build_dyno(self):
-        self.dyno = DynoView(self)
-        return self.dyno
-
-    def show_view(self, key):
-        """Switch to a view by key (e.g. "dyno" from the Logger's Open Dyno)."""
-        index = next((i for i, (k, *_r) in enumerate(self._views) if k == key), None)
-        if index is not None:
-            self.tabs.setCurrentIndex(index)
 
     def _view(self):
-        """Key of the view showing: single, split, heatmap, scatter, raw or dyno."""
+        """Key of the view showing: single, split, heatmap, scatter or raw."""
         widget = self.tabs.currentWidget()
         return next((k for k, w, _l, _g in getattr(self, "_views", ()) if w is widget), "single")
 
@@ -2052,20 +2024,7 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
             self._split_dirty = False
         getattr(self.split, method)()
 
-    def _fit_views(self):
-        """Views that aren't showing don't set the page's minimum width (the stack would otherwise
-        take the widest one's, e.g. Heatmap's row of controls, and every view got a sideways
-        scrollbar on a narrower window)."""
-        from PySide6.QtWidgets import QSizePolicy
-        current = self.tabs.currentWidget()
-        for _k, widget, _l, _g in self._views:
-            pol = widget.sizePolicy()
-            pol.setHorizontalPolicy(QSizePolicy.Policy.Preferred if widget is current else QSizePolicy.Policy.Ignored)
-            widget.setSizePolicy(pol)
-        self.tabs.updateGeometry()
-
     def _view_changed(self):
-        self._fit_views()
         # The timeline sits under whichever of Single / Split is showing.
         view = self._view()
         graph = view in ("single", "split")
@@ -2227,14 +2186,15 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
         form = QFormLayout()
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(6)
-        where = "Recent logs (export to keep a copy)" if recent_logs.is_recent(path) else str(path.parent)
+        where = str(path.parent)
         rows = [("Folder", where), ("Length", f"{int(secs // 60)}:{int(secs % 60):02d}"
                                               f"  ({len(self.times):,} rows)")]
         if self.source_format:
             rows.append(("Format", f"{self.source_format}, converted to Standard"))
         elif recent_logs.is_recent(path):
             entry = recent_logs.info(path)
-            rows.append(("Exported", ", ".join(Path(x).name for x in entry.get("exported", [])) or "Not yet"))
+            if entry.get("exported"):
+                rows.append(("Exported", ", ".join(Path(x).name for x in entry["exported"])))
         if car:
             rows += [("Car", car["label"]), ("VIN", vin)]
         if self.compare is not None:

@@ -3,7 +3,12 @@ labelled tune versions, datalogs, the modules' backup/flash history and notes.
 
 Stored under Documents/PQ35 Flasher/Projects/<name>/project.json. Tune versions
 are copied into the project's Versions folder so they can't go missing;
-datalogs are linked where they already are."""
+datalogs are linked where they already are.
+
+A project belongs to one of your Cars (data "car_id", a cars.py id). Each car can have one active
+project (the car's "active_project", a project folder name): every new log and dyno session
+recorded on that car is linked into it (attach → recent_logs.on_finished), and Recent logs keeps
+any log a project links to."""
 import json
 import re
 import shutil
@@ -14,10 +19,11 @@ from PySide6.QtCore import QTimer, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QHeaderView, QLineEdit, QListWidget, QListWidgetItem,
-    QPlainTextEdit, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
+    QCheckBox, QComboBox, QPlainTextEdit, QPushButton, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
     QVBoxLayout, QWidget,
 )
 
+from . import cars, recent_logs
 from .storage import EcuRecord, datalogs_dir, modules_dir, user_dir
 from .widgets import Banner, h1, muted, scrollable
 from .popups import InputDialog, MessageBox
@@ -94,6 +100,55 @@ class Project:
         return sorted(rows, key=lambda e: e.get("time", ""), reverse=True)
 
 
+# --- projects and cars ---
+
+def linked_logs():
+    """Every log some project links to."""
+    return {p for project in Project.all() for p in project.data.get("logs", [])}
+
+
+def project_for_log(path):
+    """The first project that links this log, or None."""
+    return next((p for p in Project.all() if str(path) in p.data.get("logs", [])), None)
+
+
+def active_project(settings, car_id):
+    """The car's active project, or None (also None if its folder is gone)."""
+    car = cars.get(settings, car_id) if car_id else None
+    name = (car or {}).get("active_project")
+    if not name or not (projects_dir() / name / "project.json").is_file():
+        return None
+    return Project(projects_dir() / name)
+
+
+def set_active(settings, car_id, project):
+    """Make project the car's active one (None: no active project)."""
+    car = cars.get(settings, car_id)
+    if car is None:
+        return
+    car["active_project"] = project.root.name if project else ""
+    cars.save(settings, car_id, car, touch=False)
+
+
+def auto_link(settings, path, entry):
+    """A recording finished: link it into its car's active project. Returns that project or None."""
+    project = active_project(settings, cars.for_vin(settings, entry.get("vin")))
+    if project is None or str(path) in project.data["logs"]:
+        return None
+    project.data["logs"].append(str(path))
+    project.save()
+    return project
+
+
+def attach(state):
+    """Once, at start-up: file new recordings into projects and keep the logs projects link to."""
+    if getattr(state, "_projects_attached", False):
+        return
+    state._projects_attached = True
+    recent_logs.on_finished(lambda path, entry: auto_link(state.settings, path, entry))
+    recent_logs.keep_also(linked_logs)
+
+
 def _table(headers):
     table = QTableWidget(0, len(headers))
     table.setHorizontalHeaderLabels(headers)
@@ -134,6 +189,10 @@ class ProjectsPage(QWidget):
         self.rename_button = QPushButton("Rename…")
         self.rename_button.clicked.connect(self._rename)
         row.addWidget(self.rename_button)
+        self.delete_button = QPushButton("Delete…")
+        self.delete_button.setToolTip("Move this project's folder (its notes and tune version copies) to the Trash")
+        self.delete_button.clicked.connect(self._delete)
+        row.addWidget(self.delete_button)
         sb.addLayout(row)
         folder = QPushButton("Open projects folder")
         folder.clicked.connect(lambda: (projects_dir().mkdir(parents=True, exist_ok=True),
@@ -149,11 +208,26 @@ class ProjectsPage(QWidget):
         rl.addWidget(self.heading)
         car_row = QHBoxLayout()
         car_row.addWidget(muted("Car"))
-        self.car = QLineEdit()
-        self.car.setPlaceholderText("e.g. 2008 Golf R32, DSG, Haldex Gen4")
-        self.car.editingFinished.connect(self._save_fields)
-        car_row.addWidget(self.car, 1)
+        self.car_combo = QComboBox()
+        self.car_combo.setMinimumContentsLength(24)
+        self.car_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.car_combo.setToolTip("The car this project is for (one of your Cars)")
+        self.car_combo.currentIndexChanged.connect(self._car_picked)
+        car_row.addWidget(self.car_combo)
+        self.cars_button = QPushButton("Cars…")
+        self.cars_button.setToolTip("Your saved cars: add one, or change its weight, tyres, gearbox…")
+        self.cars_button.clicked.connect(self._open_cars)
+        car_row.addWidget(self.cars_button)
+        self.active = QCheckBox("Active project for this car")
+        self.active.setToolTip("New logs and dyno sessions recorded on this car are added to this project "
+                               "automatically (one active project per car). Untick to stop.")
+        self.active.toggled.connect(self._active_toggled)
+        car_row.addWidget(self.active)
+        car_row.addStretch(1)
         rl.addLayout(car_row)
+        self.car_info = muted("")
+        self.car_info.setWordWrap(True)
+        rl.addWidget(self.car_info)
         self.banner = Banner()
         rl.addWidget(self.banner)
 
@@ -207,8 +281,9 @@ class ProjectsPage(QWidget):
         # Logs
         lbox = QWidget()
         ll = QVBoxLayout(lbox)
-        self.logs = _table(["Log", "Size", "Saved"])
-        self.logs.setToolTip("Datalogs that belong to this project (they stay where they are).")
+        self.logs = _table(["Log", "Kind", "Size", "Saved"])
+        self.logs.setToolTip("Datalogs and dyno sessions that belong to this project (they stay where they are, "
+                             "in Datalogs). The active project gets new ones by itself.")
         ll.addWidget(self.logs, 1)
         lrow = QHBoxLayout()
         for text, slot in (("Add logs…", self._add_logs), ("Open in Analyze", self._play_log),
@@ -235,6 +310,8 @@ class ProjectsPage(QWidget):
         rl.addWidget(self.tabs, 1)
         split.addWidget(scrollable(right))
         split.setSizes([280, 800])
+        cars.filler(state).changed.connect(lambda _cid: self._fill_cars() if self.project else None)
+        state.car_changed.connect(self._car_connected)
         self.reload()
 
     # --- list ---
@@ -244,7 +321,12 @@ class ProjectsPage(QWidget):
         self.list.blockSignals(True)
         self.list.clear()
         for p in Project.all():
-            item = QListWidgetItem(p.name + (f"\n{p.data['car']}" if p.data.get("car") else ""))
+            car = cars.get(self.state.settings, p.data.get("car_id"))
+            second = cars.title(car) if car else p.data.get("car", "")
+            star = "  ★" if car and car.get("active_project") == p.root.name else ""
+            item = QListWidgetItem(p.name + star + (f"\n{second}" if second else ""))
+            item.setToolTip("★ the active project for its car: new logs and dyno sessions are added here" if star
+                            else "")
             item.setData(Qt.ItemDataRole.UserRole, str(p.root))
             self.list.addItem(item)
         self.list.blockSignals(False)
@@ -263,8 +345,9 @@ class ProjectsPage(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        if self.project:
-            self._fill()
+        if self.project:  # read it again: new recordings may have been filed into it meanwhile
+            self._save_fields()
+            self.reload(self.project.root)
 
     def _new(self):
         name, ok = InputDialog.getText(self, "New project", "Project name (e.g. R32 Stage 1):")
@@ -272,7 +355,11 @@ class ProjectsPage(QWidget):
             project = Project.create(name.strip())
             if self.state.record:
                 project.data["modules"].append(self.state.record.key)
-                project.save()
+            car_id = cars.for_vin(self.state.settings, self.state.vin())
+            if car_id:  # the connected car; the new project becomes its active one
+                project.data["car_id"] = car_id
+                set_active(self.state.settings, car_id, project)
+            project.save()
             self.reload(project.root)
 
     def _rename(self):
@@ -284,6 +371,33 @@ class ProjectsPage(QWidget):
             self.project.save()
             self.reload()
 
+    def _delete(self):
+        """The project's folder goes to the Trash (it holds the tune version copies), so it can be put
+        back. Linked logs stay where they are (in Datalogs)."""
+        if not self.project:
+            return
+        from PySide6.QtCore import QFile
+        d = self.project.data
+        n = len(d.get("versions", []))
+        extra = f" and its {n} tune version cop{'ies' if n != 1 else 'y'}" if n else ""
+        if MessageBox.question(self, "Delete project",
+                               f"Move “{self.project.name}” (its notes{extra}) to the Trash? The original tune files "
+                               "and the logs it links stay where they are.") != MessageBox.StandardButton.Yes:
+            return
+        car_id = d.get("car_id")
+        car = cars.get(self.state.settings, car_id) if car_id else None
+        root = self.project.root
+        result = QFile.moveToTrash(str(root))
+        moved = result[0] if isinstance(result, tuple) else bool(result)
+        if not moved:
+            self.banner.show_message(f"Couldn't move {root.name} to the Trash. Nothing was deleted.", "error")
+            return
+        if car and car.get("active_project") == root.name:
+            set_active(self.state.settings, car_id, None)
+        self.project = None
+        self.reload()
+        self.banner.show_message(f"“{d['name']}” moved to the Trash.", "ok")
+
     def _open(self, item):
         self._save_fields()
         self.project = Project(Path(item.data(Qt.ItemDataRole.UserRole))) if item else None
@@ -292,8 +406,10 @@ class ProjectsPage(QWidget):
     def _fill(self):
         on = self.project is not None
         self.tabs.setEnabled(on)
-        self.car.setEnabled(on)
+        for w in (self.car_combo, self.cars_button, self.active):
+            w.setEnabled(on)
         self.rename_button.setEnabled(on)
+        self.delete_button.setEnabled(on)
         if not on:
             self.heading.setText("No project yet")
             self.banner.show_message("Press New project… to start one. The module you're connected to "
@@ -301,11 +417,12 @@ class ProjectsPage(QWidget):
             for table in (self.versions, self.history, self.logs):
                 table.setRowCount(0)
             self.modules.clear()
+            self.car_info.setText("")
             return
         self.banner.hide()
         d = self.project.data
         self.heading.setText(d["name"])
-        self.car.setText(d.get("car", ""))
+        self._fill_cars()
         self.notes.blockSignals(True)
         self.notes.setPlainText(d.get("notes", ""))
         self.notes.blockSignals(False)
@@ -332,7 +449,8 @@ class ProjectsPage(QWidget):
             exists = p.is_file()
             size = f"{p.stat().st_size / 1024:.0f} KiB" if exists else "missing"
             saved = time.strftime("%Y-%m-%d %H:%M", time.localtime(p.stat().st_mtime)) if exists else ""
-            for c, text in enumerate((p.name, size, saved)):
+            kind = "Dyno session" if recent_logs.info(p).get("mode") == "dyno" else "Log"
+            for c, text in enumerate((p.name, kind, size, saved)):
                 self.logs.setItem(r, c, QTableWidgetItem(text))
         self._update_buttons()
         self.refresh()
@@ -340,11 +458,83 @@ class ProjectsPage(QWidget):
     def _save_fields(self):
         if not self.project:
             return
-        car, notes = self.car.text().strip(), self.notes.toPlainText()
-        if car != self.project.data.get("car") or notes != self.project.data.get("notes"):
-            self.project.data["car"] = car
+        notes = self.notes.toPlainText()
+        if notes != self.project.data.get("notes"):
             self.project.data["notes"] = notes
             self.project.save()
+
+    # --- the car ---
+
+    def _fill_cars(self):
+        """The car picker, the active tick and the car's summary for the project shown."""
+        d = self.project.data
+        settings = self.state.settings
+        self.car_combo.blockSignals(True)
+        self.car_combo.clear()
+        self.car_combo.addItem("No car", "")
+        for cid, car in cars.all_cars(settings).items():
+            self.car_combo.addItem(cars.title(car), cid)
+        i = self.car_combo.findData(d.get("car_id", ""))
+        self.car_combo.setCurrentIndex(i if i >= 0 else 0)
+        self.car_combo.blockSignals(False)
+        car = cars.get(settings, d.get("car_id"))
+        self.active.blockSignals(True)
+        self.active.setChecked(bool(car and car.get("active_project") == self.project.root.name))
+        self.active.setEnabled(car is not None)
+        self.active.blockSignals(False)
+        if car:
+            bits = [car.get("vin") or "no VIN", f"{car['curb_kg']:,.0f} kg", car.get("tyre", "")]
+            others = [p.name for p in Project.all() if p.data.get("car_id") == d.get("car_id") and
+                      p.root != self.project.root]
+            info = " · ".join(b for b in bits if b)
+            if others:
+                info += f" · also in: {', '.join(others)}"
+        elif d.get("car"):
+            info = f"Was described as “{d['car']}”: pick the car above (add it in Cars… if it isn't there)."
+        else:
+            info = "Pick the car this project is for: then its new logs and dyno sessions can come here by themselves."
+        self.car_info.setText(info)
+
+    def _car_picked(self, *_):
+        if not self.project:
+            return
+        settings = self.state.settings
+        old = self.project.data.get("car_id", "")
+        new = self.car_combo.currentData() or ""
+        if old == new:
+            return
+        if old and (cars.get(settings, old) or {}).get("active_project") == self.project.root.name:
+            set_active(settings, old, None)  # it was the old car's active project
+        self.project.data["car_id"] = new
+        if new and active_project(settings, new) is None:
+            set_active(settings, new, self.project)  # the car had none: this is it
+        self.project.save()
+        self.reload(self.project.root)
+
+    def _active_toggled(self, on):
+        car_id = self.project.data.get("car_id") if self.project else None
+        if not car_id:
+            return
+        set_active(self.state.settings, car_id, self.project if on else None)
+        self.reload(self.project.root)
+
+    def _car_connected(self, vin):
+        """A car was plugged in: show its active project (or its newest one)."""
+        car_id = cars.for_vin(self.state.settings, vin) if vin else None
+        if not car_id:
+            return
+        project = active_project(self.state.settings, car_id) or next(
+            (p for p in Project.all() if p.data.get("car_id") == car_id), None)
+        if project is not None and (self.project is None or self.project.root != project.root):
+            self._save_fields()
+            self.reload(project.root)
+
+    def _open_cars(self):
+        from .cars_dialog import CarsDialog
+        CarsDialog(self.state, cars.filler(self.state), select=self.project.data.get("car_id") or None,
+                   parent=self.window()).exec()
+        if self.project:
+            self.reload(self.project.root)
 
     # --- versions ---
 

@@ -790,6 +790,14 @@ class MapsPage(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+        # Top row: the sidebar button, then the tool switch (stays when the setup is hidden)
+        top = QHBoxLayout()
+        top.setContentsMargins(16, 16, 16, 0)
+        top.setSpacing(8)
+        from .analyze_tools import icon_button
+        self.sidebar_button = icon_button("tune", "Show or hide the map setup", checkable=True)
+        top.addWidget(self.sidebar_button)
+        outer.addLayout(top)
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setHandleWidth(6)
         outer.addWidget(self.splitter, 1)
@@ -799,7 +807,7 @@ class MapsPage(QWidget):
         sidebar.setObjectName("page")
         sidebar.setMinimumWidth(300)
         sb = QVBoxLayout(sidebar)
-        sb.setContentsMargins(16, 16, 8, 16)
+        sb.setContentsMargins(16, 10, 8, 16)
         sb.setSpacing(10)
         self.tabs = QTabBar()  # Map viewer | Compare files
         self.tabs.setToolTip("Look inside ECU files. Read-only: nothing is written to a file or a module.")
@@ -807,7 +815,8 @@ class MapsPage(QWidget):
         self.tabs.setDrawBase(False)
         self.tabs.addTab("Map viewer")
         self.tabs.addTab("Compare files")
-        sb.addWidget(self.tabs)
+        top.addWidget(self.tabs)
+        top.addStretch(1)
         self.side_stack = QStackedWidget()
         sb.addWidget(self.side_stack, 1)
         self.splitter.addWidget(scrollable(sidebar))
@@ -827,7 +836,11 @@ class MapsPage(QWidget):
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes([420, 880])
         self.splitter.setCollapsible(1, False)
-        collapsible_sidebar(self.splitter, state.settings, "maps", "Map setup", self.tabs)
+        toggle = collapsible_sidebar(self.splitter, state.settings, "maps", "Map setup", button=self.sidebar_button)
+        # Setup hidden: the tool keeps the page's 16 px edge
+        edge = lambda shown: self.content_stack.setContentsMargins(0 if shown else 8, 0, 0, 0)
+        toggle.shown_changed.connect(edge)
+        edge(self.sidebar_button.isChecked())
         state.open_in_maps.connect(self._open_pair)
 
     def ai_context(self):

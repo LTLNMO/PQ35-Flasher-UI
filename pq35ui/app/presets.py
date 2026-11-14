@@ -43,13 +43,6 @@ BUILTIN_PRESETS = {
             "engine.fuel_rail.actual", "engine.fuel_rail.spec", "engine.fuel_pump_duty",
             "engine.lambda.control.bank1",
         ],
-        # Dyno pulls (the Logger's Dyno mode loads this): only what the virtual dyno needs, so engine
-        # speed is read as often as possible. Air pressure and outside temperature are for the
-        # standard-air correction; Dyno mode reads their groups only every few seconds.
-        "Dyno": [
-            "engine.rpm", "vehicle.speed", "engine.pedal_position",
-            "engine.atmospheric_pressure", "ambient.temperature",
-        ],
         # Diagnosing poor fuel economy: mixture and fuel trims (the main driver of
         # MPG), the operating point (rpm, load, speed, gear, throttle), fuelling
         # (injection, MAF, rail), warm-up state (coolant, intake) and timing.
@@ -81,7 +74,8 @@ class PresetButton(QPushButton):
         self.setToolTip("Presets: load a ready-made or saved set of channels, or save the ticked ones")
         self.setFixedSize(50, 34)
         self.setIconSize(QSize(36, 22))
-        self.clicked.connect(lambda: self.menu().exec(self.mapToGlobal(self.rect().bottomLeft())))
+        from .analyze_tools import popup_menu
+        self.clicked.connect(lambda: popup_menu(self.menu(), self))
         self._tint()
         from . import theme
         theme.on_apply(self._tint)

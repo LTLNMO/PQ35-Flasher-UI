@@ -164,8 +164,9 @@ def _lazy(module, name):
 
 LiveViewPage = _lazy(".liveview_page", "LiveViewPage")
 LoggerPage = _lazy(".logger_page", "LoggerPage")
+DynoPage = _lazy(".dyno_page", "DynoPage")
 # Tabs that stay usable while a hardware job runs (by job): the rest are locked until it ends.
-BUSY_OPEN_TABS = {"log": ("logger", "liveview", "playback", "help")}
+BUSY_OPEN_TABS = {"log": ("logger", "liveview", "playback", "dyno", "help")}
 PlaybackPage = _lazy(".playback_page", "PlaybackPage")
 MapsPage = _lazy(".maps_page", "MapsPage")
 HelpPage = _lazy(".help_page", "HelpPage")
@@ -192,6 +193,7 @@ NAV = (
     ("liveview",    "\ue9e4", "Live View",   LiveViewPage),           # speed
     ("logger",      "timeline", "Logger",     LoggerPage),
     ("playback",    "troubleshoot", "Analyze", PlaybackPage),
+    ("dyno",        "rocket_launch", "Dyno",    DynoPage),
     ("maps",        "\ue55b", "Maps",        MapsPage),               # map
     ("help",        "\ue887", "Help",        HelpPage),               # help
     ("settings",    "\ue8b8", "Settings",    SettingsPage),           # settings
@@ -350,6 +352,13 @@ class MainWindow(QMainWindow):
         self.state.request_scan.connect(lambda: self._ensure_page("connect")[0].scan())
         self.state.faults_changed.connect(self._set_fault_count)
         self.state.faults_changed.connect(self._refresh_car)
+        from . import cars
+        cars.filler(self.state)  # every scan that reads a VIN keeps that car's profile up to date
+        from . import projects
+        projects.attach(self.state)  # new recordings go into their car's active project
+        from . import car_watch
+        car_watch.watch(self.state, self)  # reads the plugged-in car's VIN by itself
+        self.state.car_changed.connect(self._refresh_car)
 
         # Select first tab
         self._switch_tab("home")
@@ -484,7 +493,8 @@ class MainWindow(QMainWindow):
         # The car the last scan identified by its VIN (a scan on Connect).
         self.car_label = QLabel("")
         self.car_label.setObjectName("muted")
-        self.car_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.car_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.car_label.installEventFilter(self)  # a click opens Cars (_open_cars)
         layout.addSpacing(8)
         layout.addWidget(self.car_label)
         layout.addStretch(1)
@@ -494,6 +504,8 @@ class MainWindow(QMainWindow):
         self.interface_button.setToolTip("CAN interface")
         self.interface_menu = QMenu(self)
         self.interface_button.setMenu(self.interface_menu)
+        from .analyze_tools import anchor_menu
+        anchor_menu(self.interface_menu, self.interface_button)
         self.interface_group = QActionGroup(self)
         layout.addWidget(self.interface_button)
         self.status = ElidedButton("No module", suffix="  \u25BE", tip="Switch module")
@@ -841,7 +853,8 @@ class MainWindow(QMainWindow):
             find.triggered.connect(lambda: (self.navigate("connect"), connect.scan()))
             find.setEnabled(bool(state.adapter))
         menu.addAction("Open Connect").triggered.connect(lambda: self.navigate("connect"))
-        menu.exec(self.status.mapToGlobal(self.status.rect().bottomLeft()))
+        from .analyze_tools import popup_menu
+        popup_menu(menu, self.status)
 
     # --- state ---
 
@@ -849,11 +862,24 @@ class MainWindow(QMainWindow):
     GEARBOXES = {"02E": "DSG 6-speed (DQ250)", "0AM": "DSG 7-speed (DQ200)", "0D9": "DSG 6-speed (DQ250)",
                  "09G": "6-speed automatic (09G)", "09M": "6-speed automatic (09M)"}
 
+    def eventFilter(self, obj, event):
+        from PySide6.QtCore import QEvent
+        if obj is getattr(self, "car_label", None) and event.type() == QEvent.Type.MouseButtonRelease \
+                and event.button() == Qt.MouseButton.LeftButton:
+            self._open_cars()
+            return True
+        return super().eventFilter(obj, event)
+
+    def _open_cars(self):
+        from . import cars
+        from .cars_dialog import CarsDialog
+        CarsDialog(self.state, cars.filler(self.state), parent=self).exec()
+
     def _refresh_car(self, *_):
         """Top-bar car label + tooltip: only while connected and read from the car this session
         (the VIN is remembered for naming logs)."""
         state = self.state
-        car = (state.vehicle or {}) if state.adapter and state.last_scan else {}
+        car = (state.vehicle or {}) if state.vin() else {}  # the car connected now (VIN read this run)
         if not car.get("vin"):
             self.car_label.setText("")
             self.car_label.setToolTip("")
@@ -892,7 +918,7 @@ class MainWindow(QMainWindow):
             if state.fault_summary:
                 text += f" \u00B7 {faulty} with fault codes" if faulty else " \u00B7 no fault codes"
             lines.append(text)
-        self.car_label.setToolTip("\n".join(lines))
+        self.car_label.setToolTip("\n".join(lines + ["", "Click to open Cars: your saved car profiles"]))
 
     def _state_changed(self):
         state = self.state
@@ -1051,14 +1077,18 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         logger = self.pages.get("logger")
         liveview = self.pages.get("liveview")
+        dyno = self.pages.get("dyno")
         logger_running = logger is not None and logger.running
         liveview_running = liveview is not None and liveview.running
-        if logger_running or liveview_running:
+        dyno_running = dyno is not None and dyno.recorder.running
+        if logger_running or liveview_running or dyno_running:
             self.close_when_idle = True
             if logger_running:
                 logger.stop()
             if liveview_running:
                 liveview._stop()
+            if dyno_running:
+                dyno.recorder.stop()  # saves the pulls recorded so far
             event.ignore()
             return
         if self.state.busy:

@@ -245,22 +245,12 @@ class _ModeButton(QPushButton):
         p.end()
 
 
-# Dyno mode: what it ticks, which of those are read only every few seconds, and its trigger.
-DYNO_VALUES = ("engine.rpm", "vehicle.speed", "engine.pedal_position", "engine.throttle_position",
-               "engine.atmospheric_pressure", "ambient.temperature")
-DYNO_SLOW = ("engine.atmospheric_pressure", "ambient.temperature")
-DYNO_SLOW_MS = 3000
-DYNO_PEDAL = 90.0   # % pedal: a pull
-DYNO_PRE_S, DYNO_POST_S = 2.0, 1.0
-
-
 class RecordingModePicker(QWidget):
     """Continuous | Triggered | Rolling (key "loop"), styled like Analyze's view buttons (Single, Split…): icon +
     name, the current one filled with the accent colour. Triggered has a ▾: picking it opens its
     settings right under it. Keeps the bit of QComboBox's API the logger uses (currentData,
     findData, setCurrentIndex, currentIndexChanged)."""
     currentIndexChanged = Signal(int)
-    dyno_clicked = Signal()
     MODES = (
         ("continuous", "Continuous", "all_inclusive", "Record everything from Start to Stop"),
         ("trigger", "Triggered", "bolt_boost", "Record only around moments when a value crosses a limit "
@@ -268,22 +258,18 @@ class RecordingModePicker(QWidget):
                                         "Click to set it up."),
         ("loop", "Rolling", "autorenew", "Keep only the last few minutes, saved when you press Stop "
                                          "(how long: ⚙ → Keep last)"),
-        ("dyno", "Dyno", "rocket_launch", "Dyno pulls: ticks what the dyno needs and records each "
-                                          "full-throttle pull (pedal over 90 %, 2 s before, 1 s after). "
-                                          "Then Open Dyno shows horsepower and torque."),
     )
 
-    def __init__(self, open_trigger_settings, open_dyno_settings=None, parent=None):
+    def __init__(self, open_trigger_settings, parent=None):
         super().__init__(parent)
         self._open_trigger = open_trigger_settings
-        self._open_dyno = open_dyno_settings or (lambda anchor: None)
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(2)
         self.buttons = []
         self._index = 0
         for i, (_key, label, _glyph, tip) in enumerate(self.MODES):
-            b = _ModeButton(label, dropdown=_key in ("trigger", "dyno"))
+            b = _ModeButton(label, dropdown=_key == "trigger")
             b.setObjectName("viewTab")
             b.setFixedHeight(34)  # same height as every toolbar button
             b.setToolTip(tip)
@@ -302,9 +288,6 @@ class RecordingModePicker(QWidget):
         self.setCurrentIndex(index)
         if self.MODES[index][0] == "trigger":
             self._open_trigger(self.buttons[index])
-        elif self.MODES[index][0] == "dyno":
-            self.dyno_clicked.emit()
-            self._open_dyno(self.buttons[index])
 
     def _restyle(self):
         """Look: QPushButton#viewTab in theme.py, like Analyze's view buttons."""
@@ -353,7 +336,7 @@ class LoggerPage(QWidget):
         self.raw_groups = set()
         self.running = False
         self.writer = None
-        self.last_log = None  # the last recording (in Recent logs): what Export… saves
+        self.last_log = None  # the last recording (in Datalogs): what Export… copies
         self.logged = set()   # column keys being logged (shown in the list)
         self.seen_at = {}     # column key -> time.time() of its last reading ("no data" check)
         self.periods = {}     # group -> read interval (s) while logging
@@ -431,8 +414,7 @@ class LoggerPage(QWidget):
         # Recording mode (continuous, triggered, rolling) as view buttons on their own row under
         # the toolbar, like Analyze's Single / Split / … row; Triggered's ▾ opens its settings.
         # Everything else is in the ⚙ menu.
-        self.mode = RecordingModePicker(self._open_trigger_settings, self._open_dyno_settings)
-        self.mode.dyno_clicked.connect(self._dyno_setup)
+        self.mode = RecordingModePicker(self._open_trigger_settings)
         ctrl.addStretch(1)
         # The list's buttons (as on Analyze's sidebar): which values show, gauge bars on/off
         ctrl.addWidget(self.sidebar.columns_button)
@@ -447,7 +429,7 @@ class LoggerPage(QWidget):
         self.presets = PresetButton(state, lambda: {v["id"] for v in self._checked_values()},
                                     lambda ids: self._build_tree(ids), on_loaded=self._preset_loaded)
         ctrl.addWidget(self.presets)
-        self.options = T.MenuIconButton("settings", "Logger settings: rate, group rates, how long Rolling keeps",
+        self.options = T.MenuIconButton("instant_mix", "Logger settings: rate, group rates, how long Rolling keeps",
                                         self._fill_options)
         ctrl.addWidget(self.options)
         # The settings' values live in these; the ⚙ menu and the Triggered popup set them.
@@ -483,30 +465,32 @@ class LoggerPage(QWidget):
         mode_row.setSpacing(8)  # the toolbar's gap
         mode_row.addWidget(self.mode)
         mode_row.addSpacing(12)
-        # Right of the mode row: every recording is kept in Recent logs automatically; Export…
-        # is how one gets out (to Datalogs or anywhere), 📁 opens Datalogs.
+        # Right of the mode row: every recording saves itself into Datalogs; Recent logs ▾ lists
+        # them, ⋮ exports (another format or place) and opens Datalogs.
         from .widgets import ElidedLabel
         self.name_preview = ElidedLabel("")  # the log being recorded, or the last one
         self.name_preview.setObjectName("muted")
         self.name_preview.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.recent_button = T.MenuIconButton(
-            "history", f"Recent logs: every recording is kept here automatically (the last "
-            f"{recent_logs.KEEP}, and all from the last {recent_logs.KEEP_DAYS} days). Open, export "
-            "or discard them.", self._fill_recent)
-        self.export_button = T.icon_button("ios_share", "Export…: save the last log to Datalogs "
-                                           "(or anywhere) as Standard CSV, Integrated Engineering, "
-                                           "MegaLogViewer or generic CSV")
-        self.export_button.clicked.connect(lambda: self._export(self.last_log))
-        self.folder_button = T.icon_button("folder_open", "Open the Datalogs folder (where exports go)")
-        self.folder_button.clicked.connect(self._open_datalogs)
+            "history", "Recent logs: your recordings, newest first (each one is saved in Datalogs as "
+            "it records). Open, export or discard them.", self._fill_recent, dropdown=True)
+        self._export_ok = False
+
+        def fill_more(menu):
+            T.menu_action(menu, "Export last log…", "ios_share", lambda: self._export(self.last_log), self._export_ok,
+                          tip="Save the last log to Datalogs (or anywhere) as Standard CSV, Integrated "
+                              "Engineering, MegaLogViewer or generic CSV")
+            T.menu_action(menu, "Open Datalogs folder", "folder_open", self._open_datalogs,
+                          tip="Where exports go")
+        self.more_button = T.MenuIconButton("more_vert", "More: export the last log, open the Datalogs folder",
+                                            fill_more)
         mode_row.addWidget(self.name_preview, 1)
-        for b in (self.recent_button, self.export_button, self.folder_button):
+        for b in (self.recent_button, self.more_button):
             mode_row.addWidget(b)
         cl.addLayout(mode_row)
         self._load_recording()
         for w in (self.mode, self.trigger_op):
             w.currentIndexChanged.connect(self._recording_changed)
-        self.mode.currentIndexChanged.connect(self._mode_switched)
         self.trigger_channel.currentIndexChanged.connect(self._recording_changed)
         for w in (self.trigger_value, self.pre_s, self.post_s, self.keep_min):
             w.valueChanged.connect(self._recording_changed)
@@ -582,6 +566,7 @@ class LoggerPage(QWidget):
     def _build_tree(self, checked=()):
         """Every named value as a row (known by its group.field key), plus each raw group as an
         always-on row; the ticked ones show with a colour, the reading now and a range bar."""
+        self._units_built = unitconv.system(self.state.settings)
         self.tree.blockSignals(True)
         self.tree.clear()
         order = []
@@ -609,6 +594,13 @@ class LoggerPage(QWidget):
         self.tree.blockSignals(False)
         self._channels_changed()
         self.channels.refresh()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Units may have been switched on the Settings page: the names carry the unit
+        if getattr(self, "_units_built", None) not in (None, unitconv.system(self.state.settings)) \
+                and not self.running and self.catalog:
+            self._build_tree(self._checked_ids())
 
     def _channels_changed(self):
         """After switching values on or off, or a preset: colours, summary, preview."""
@@ -672,11 +664,7 @@ class LoggerPage(QWidget):
 
     def _preset_loaded(self, name, builtin):
         """The Integrated Engineering Logger preset also makes Export… start on Integrated
-        Engineering CSV (it remembers the format you pick there). The Dyno preset picks Dyno mode."""
-        if builtin and name == "Dyno" and self.mode.currentData() != "dyno":
-            self.mode.setCurrentIndex(self.mode.findData("dyno"))
-            self._dyno_setup()
-            return
+        Engineering CSV (it remembers the format you pick there)."""
         if builtin and name == "Integrated Engineering Logger" and \
                 self.state.settings.get("export_format") != "ie":
             self.state.settings.set("export_format", "ie")
@@ -770,7 +758,7 @@ class LoggerPage(QWidget):
         choices("Rate", "speed", RATES, self.rate.currentData(),
                 lambda v: self.rate.setCurrentIndex(max(self.rate.findData(v), 0)),
                 "How often each group is read")
-        T.menu_action(menu, "Group rates…", "tune", self._edit_rates, idle,
+        T.menu_action(menu, "Group rates…", "pace", self._edit_rates, idle,
                       tip="Read some groups faster than others")
         T.menu_header(menu, "Rolling")
         lengths = [(f"{m:g} min", float(m)) for m in (1, 2, 5, 10, 15, 30, 60)]
@@ -779,20 +767,22 @@ class LoggerPage(QWidget):
         choices("Keep last", "autorenew", lengths, self.keep_min.value(), self.keep_min.setValue,
                 "Rolling recording keeps this much, saved when you press Stop")
         T.menu_header(menu, "Saving")
-        # Every log is kept in Recent logs (Standard format, the app's own copy). Auto-export
+        # Every log is saved in Datalogs (Standard format) as it records. Auto-export
         # also puts a copy in your format into Datalogs at every Stop, without the dialog.
         choices("Auto-export", "ios_share",
-                [("Off", None)] + [(label, key) for key, label, _ext, _f in log_export.FORMATS],
+                [("Off", None)] + [(label, key) for key, label, _ext, _f in log_export.FORMATS
+                                   if key != "datazap"],  # the log itself is already Standard, in Datalogs
                 self._auto_export_format(),
                 lambda v: self.state.settings.set("logger:auto_export", v),
                 "When you stop, also save a copy in this format to Datalogs (no dialog). "
-                "The log is always kept in Recent logs too.", enabled=True)
+                "The log itself is always saved in Datalogs (Standard CSV) too.", enabled=True)
 
     # --- recent logs and export ---
 
     def _auto_export_format(self):
         fmt = self.state.settings.get("logger:auto_export")
-        return fmt if any(f[0] == fmt for f in log_export.FORMATS) else None
+        # Standard isn't offered any more: every recording is already a Standard CSV in Datalogs
+        return fmt if fmt != "datazap" and any(f[0] == fmt for f in log_export.FORMATS) else None
 
     def _do_auto_export(self, path):
         """Auto-export at Stop: (message, written path or None); ("", None) when it's off."""
@@ -816,11 +806,11 @@ class LoggerPage(QWidget):
             self.last_log = None
             self.name_preview.setText("")
             self.name_preview.setToolTip("")
-            self.export_button.setEnabled(False)
+            self._export_ok = False
             return
         self.name_preview.setText(prefix + name)
-        self.name_preview.setToolTip(f"{prefix}{name}\nKept in Recent logs; Export… to keep a copy.")
-        self.export_button.setEnabled(not self.running)
+        self.name_preview.setToolTip(f"{prefix}{name}\nSaved in Datalogs. Export… for another format or place.")
+        self._export_ok = not self.running
 
     def _fill_recent(self, menu):
         """Recent logs ▾: each recording (newest first) with Open in Analyze / Export… / Discard."""
@@ -838,266 +828,11 @@ class LoggerPage(QWidget):
             T.menu_action(sub, "Export…", "ios_share", lambda _=False, p=path: self._export(p), idle)
             T.menu_action(sub, "Discard…", "delete", lambda _=False, p=path: self._discard(p))
         menu.addSeparator()
-        note = menu.addAction(f"Kept: the last {recent_logs.KEEP} and all from the last "
-                              f"{recent_logs.KEEP_DAYS} days")
+        note = menu.addAction("Saved in Datalogs; nothing is deleted unless you discard it")
         note.setEnabled(False)
 
-    def _analyze(self, path, view=None):
+    def _analyze(self, path):
         self.state.open_in_playback.emit(str(path))
-        if view:
-            page = getattr(self.window(), "pages", {}).get("playback")
-            if page is not None and hasattr(page, "show_view"):
-                page.show_view(view)
-
-    # --- Dyno mode ---
-
-    def _before_dyno_key(self):
-        return f"logger:before_dyno:{self.state.family['name']}" if self.state.family else None
-
-    def _mode_switched(self, _index=None):
-        """Leaving Dyno mode: put back what was ticked before it."""
-        key = self._before_dyno_key()
-        if self.running or not key or self.mode.currentData() == "dyno":
-            return
-        # The groups Dyno slowed down (air pressure, outside temperature) go back to their rates
-        # (unless you changed them since).
-        rkey = key.replace("before_dyno", "dyno_rates")
-        changed = self.state.settings.get(rkey)
-        if changed is None and self.state.settings.get(key) is not None:  # set up before this was kept
-            changed = {str(v["group"]): 0 for v in self.catalog or () if v["id"] in DYNO_SLOW}
-        if changed and self._rates_key():
-            rates = self._group_rates()
-            for g, ms in changed.items():
-                if rates.get(g) == DYNO_SLOW_MS:
-                    if ms:
-                        rates[g] = ms
-                    else:
-                        rates.pop(g, None)
-            self.state.settings.set(self._rates_key(), rates)
-            self.state.settings.set(rkey, None)
-            self._selection_changed()
-        before = self.state.settings.get(key)
-        if before is None:
-            return
-        self.state.settings.set(key, None)
-        self.raw_groups = set(before.get("raw_groups", []))
-        self._build_tree(set(before.get("values", [])))
-        self._selection_changed()
-
-    def _dyno_setup(self):
-        """Dyno picked: switch to the Dyno preset (only what the dyno needs; what was ticked comes
-        back when you leave Dyno mode) and read the slow values (air pressure, outside
-        temperature) only now and then, so engine speed is read as often as possible."""
-        if self.running or not self.catalog:
-            return
-        have = {v["id"] for v in self.catalog}
-        wanted = [i for i in DYNO_VALUES if i in have]
-        if not any(i in have for i in ("engine.pedal_position", "engine.throttle_position")) or \
-                "engine.rpm" not in have or "vehicle.speed" not in have:
-            self.banner.show_message("This module doesn't report what the dyno needs (engine speed, vehicle "
-                                     "speed and the pedal). Pick the engine on the Connect page.", "warning")
-            return
-        if "engine.pedal_position" in have:
-            wanted = [i for i in wanted if i != "engine.throttle_position"]
-        before = {v["id"] for v in self._checked_values()}
-        key = self._before_dyno_key()
-        if key and (before != set(wanted) or self.raw_groups) and self.state.settings.get(key) is None:
-            self.state.settings.set(key, {"values": sorted(before), "raw_groups": sorted(self.raw_groups)})
-        self.raw_groups = set()
-        self._build_tree(set(wanted))
-        self._selection_changed()
-        slow = {v["group"] for v in self.catalog if v["id"] in DYNO_SLOW}
-        fast = {v["group"] for v in self.catalog if v["id"] in wanted and v["id"] not in DYNO_SLOW}
-        rates = self._group_rates()
-        rkey = key.replace("before_dyno", "dyno_rates") if key else None
-        changed = dict(self.state.settings.get(rkey) or {}) if rkey else {}
-        for g in slow - fast:
-            changed.setdefault(str(g), rates.get(str(g), 0))  # what it was, put back on leaving Dyno
-            rates[str(g)] = DYNO_SLOW_MS
-        if rkey:
-            self.state.settings.set(rkey, changed)
-        if self._rates_key():
-            self.state.settings.set(self._rates_key(), rates)
-        self._selection_changed()
-        tip = " What you had ticked comes back when you pick another mode." \
-            if key and self.state.settings.get(key) is not None else ""
-        self.banner.show_message(
-            "Dyno: switched to the Dyno preset: engine speed, vehicle speed and the pedal (air pressure and "
-            "temperature read every few seconds). Press Record, then floor it in one gear (3rd is ideal) from low rpm "
-            "to near redline on a flat, empty road. Each pull is saved; a run each way cancels slope and "
-            "wind." + tip, "info")
-        self._auto_car()
-
-    def _follow_in_analyze(self, path):
-        """A Dyno recording: Analyze follows it on its Dyno view straight away (without leaving the
-        Logger), so opening Analyze shows horsepower and torque as each pull is recorded."""
-        window = self.window()
-        if not hasattr(window, "_ensure_page"):
-            return
-        try:
-            page, _new = window._ensure_page("playback")
-        except KeyError:  # Analyze turned off in Settings → Features
-            return
-        page.follow(Path(path))
-        if hasattr(page, "show_view"):
-            page.show_view("dyno")
-            page.dyno.draw()
-
-    def _open_dyno_settings(self, anchor):
-        if self.running:
-            return
-        self._fill_dyno_panel()
-        self.dyno_panel.open_at(anchor, align="left")
-
-    def _build_dyno_panel(self):
-        """Dyno's setup, dropping down from its button: the car the numbers are worked out for."""
-        from PySide6.QtWidgets import QLabel
-        from .widgets import PopupCard
-        panel = PopupCard(self, min_width=400)
-        box = QVBoxLayout(panel.body)
-        box.setContentsMargins(16, 14, 16, 14)
-        box.setSpacing(10)
-        heading = QLabel("DYNO")
-        heading.setObjectName("optionsHeading")
-        box.addWidget(heading)
-        self.dyno_car_label = QLabel("")
-        self.dyno_car_label.setWordWrap(True)
-        self.dyno_car_label.setTextFormat(Qt.TextFormat.RichText)
-        box.addWidget(self.dyno_car_label)
-        row = QHBoxLayout()
-        edit = QPushButton("Car and weight…")
-        edit.setToolTip("Weight, drag, tyres and drivetrain loss for this car, saved per VIN. "
-                        "Fill in with AI is in there too.")
-        edit.clicked.connect(lambda: (panel.close(), self._edit_dyno_car()))
-        row.addWidget(edit)
-        row.addStretch(1)
-        box.addLayout(row)
-        note = muted(f"Records each pull: pedal over {DYNO_PEDAL:.0f} %, {DYNO_PRE_S:.0f} s before, "
-                     f"{DYNO_POST_S:.0f} s after. Analyze's Dyno view shows the result live while recording "
-                     "and afterwards.")
-        note.setWordWrap(True)
-        box.addWidget(note)
-        return panel
-
-    def _fill_dyno_panel(self):
-        from . import dyno as D
-        from . import theme
-        from .dyno_view import imperial, load_car
-        from .vehicle import decode
-        if not hasattr(self, "dyno_panel"):
-            self.dyno_panel = self._build_dyno_panel()
-        vin = self.state.vin()
-        car = load_car(self.state.settings, vin, self.state)
-        saved = (self.state.settings.get("dyno") or {}).get("cars") or {}
-        imp = imperial(self.state.settings)
-        mass = car["curb_kg"] + car["extra_kg"]
-        weight = f"{mass * D.KG_LB:,.0f} lb" if imp else f"{mass:,.0f} kg"
-        name = car.get("label") or (decode(vin).get("label") if vin else "") or "This car"
-        source = {"you": "set by you", "ai": "filled in by AI", "built-in": "typical for this model"}.get(
-            car.get("source"), "set by you")
-        if getattr(self, "_car_req", None) is not None:
-            source += " · asking AI for this exact car…"
-        muted = theme.colors()["muted"]
-        if (vin or "default") in saved or "default" in saved or car.get("source") == "built-in":
-            self.dyno_car_label.setText(f"<b>{name}</b> <span style='color:{muted}'>({source})</span><br>{weight} with "
-                                        f"driver · Cd {car['cd']:.2f} × {car['area_m2']:.2f} m² · {car['tyre']} · "
-                                        f"loss {car['loss_pct']:.0f} %")
-        else:
-            self.dyno_car_label.setText(f"<b>{name}</b><br>Not set yet: using a typical Golf GTI ({weight}). "
-                                        "Set the real weight; it matters most.")
-
-    def _edit_dyno_car(self):
-        from .dyno_view import CarDialog, load_car, save_car
-        vin = self.state.vin()
-        dlg = CarDialog(self.state, vin, load_car(self.state.settings, vin, self.state), self)
-        if dlg.exec():
-            save_car(self.state.settings, vin, dict(dlg.values(), source="you"))  # yours: never auto-replaced
-            page = getattr(self.window(), "pages", {}).get("playback")
-            if page is not None and hasattr(page, "dyno"):
-                page.dyno.car_changed()
-            self.banner.show_message("Car saved. The Dyno view uses it for every pull of this car.", "ok")
-
-    def _auto_car(self):
-        """Fill in the car by itself: typical figures from the VIN and the scan at once, then the AI
-        for this exact car in the background. What you save yourself is never replaced."""
-        from . import ai
-        from .dyno_view import AI_SYSTEM, ai_prompt, apply_ai, guess_car, load_car, parse_ai, save_car, scan_facts
-        settings = self.state.settings
-        vin = self.state.vin()
-        if not vin:
-            return
-        saved = ((settings.get("dyno") or {}).get("cars") or {}).get(vin) or {}
-        if saved.get("source") in ("you", "ai") or (saved and "source" not in saved):
-            return  # yours (or already the AI's)
-        guess = guess_car(vin, scan_facts(self.state))
-        if guess and not saved:
-            save_car(settings, vin, guess)
-            self._car_changed()
-        if not ai.enabled(settings) or ai.resolved(settings)[1] == "chat" or getattr(self, "_car_req", None):
-            return
-        prompt = ai_prompt(self.state, vin, load_car(settings, vin, self.state))
-        if not ai.confirm_send(self, settings, AI_SYSTEM + "\n\n" + prompt):
-            return
-        reply = []
-        req = self._car_req = ai.Ask(settings, AI_SYSTEM, [{"role": "user", "content": prompt}], "low", self)
-
-        def done():
-            self._car_req = None
-            try:
-                data = parse_ai("".join(reply))
-            except ValueError:
-                self._car_changed()
-                return
-            current = ((settings.get("dyno") or {}).get("cars") or {}).get(vin) or {}
-            if current.get("source") == "you":  # you saved your own while it was asking
-                self._car_changed()
-                return
-            car, filled = apply_ai(load_car(settings, vin, self.state), data)
-            if filled:
-                save_car(settings, vin, dict(car, source="ai"))
-                self.banner.show_message(f"Dyno car filled in by AI: {car.get('label') or 'this car'}. "
-                                         "Change anything in Dyno ▾ → Car and weight…", "ok")
-            self._car_changed()
-
-        def failed(error):
-            self._car_req = None
-            self._car_changed()
-
-        req.text.connect(reply.append)
-        req.done.connect(done)
-        req.failed.connect(failed)
-        req.start()
-        self._car_changed()
-
-    def _car_changed(self):
-        """The car profile changed: the Dyno ▾ panel and Analyze's Dyno view follow."""
-        if hasattr(self, "dyno_panel"):
-            self._fill_dyno_panel()
-        page = getattr(self.window(), "pages", {}).get("playback")
-        if page is not None and hasattr(page, "dyno"):
-            page.dyno.car_changed()
-
-    def _fewest_groups(self, values, groups):
-        """Groups to read, leaving out any whose values all sit in other groups read at full rate
-        (Dyno: engine speed comes with vehicle speed and the pedal, so group 1 isn't needed).
-        Those values are then taken from the other groups (self.aliases)."""
-        rates = self._group_rates()
-        groups = list(groups)
-        for g in sorted(groups):
-            if g in self.raw_groups:
-                continue
-            others = [x for x in groups if x != g and not rates.get(str(x))]
-            mine = [v for v in values if v["group"] == g]
-            if mine and all(any(lg in others for lg, _f in (v.get("locations") or [])) for v in mine):
-                groups.remove(g)
-        return groups
-
-    def _dyno_trigger_key(self, values):
-        for wanted in ("engine.pedal_position", "engine.throttle_position"):
-            v = next((v for v in values if v["id"] == wanted), None)
-            if v is not None:
-                return f"{v['group']}.{v['field']}"
-        return None
 
     def _export(self, path):
         if path is None or not Path(path).exists():
@@ -1136,9 +871,7 @@ class LoggerPage(QWidget):
              "loop": "Record: the last few minutes are kept and saved when you press Stop "
                      "(⚙ → Keep last)."}.get(
                 mode, "Record: read the ticked values and save them to a datalog. "
-                      "Pick Continuous, Triggered, Rolling or Dyno below.")
-            if mode != "dyno" else "Record dyno pulls: each full-throttle stretch is saved (pedal over "
-                                   f"{DYNO_PEDAL:.0f} %, {DYNO_PRE_S:.0f} s before, {DYNO_POST_S:.0f} s after).")
+                      "Pick Continuous, Triggered or Rolling below."))
 
     def _recording_changed(self, *_):
         self._show_recording()
@@ -1185,41 +918,15 @@ class LoggerPage(QWidget):
         if not groups:
             self.banner.show_message("Tick at least one value, or add a group.", "warning")
             return
-        if self.mode.currentData() == "dyno":
-            groups = self._fewest_groups(values, groups)
         self.columns = [(f"{v['group']}.{v['field']}", v["name"]) for v in values]
         self._preview(values)
-        # Many values (engine speed above all) sit in several groups. When another group being
-        # read anyway carries one, its reading is used too: more readings at no extra cost
-        # (engine speed several times per round, which the dyno's curve needs).
-        self.aliases = {}
-        self.alias_units = {}
-        slow = {int(g) for g, ms in self._group_rates().items() if ms}
-        for v in values:
-            for g, f in (v.get("locations") or [])[1:]:
-                key = f"{g}.{f}"
-                if g in groups and g not in slow and g not in self.raw_groups and key not in self.logged:
-                    self.aliases.setdefault(key, f"{v['group']}.{v['field']}")
-                    self.alias_units.setdefault(key, (v.get("unit") or "").strip())
         module = self.state.family or {}
         mode = self.mode.currentData()
-        # Recorded into Recent logs; the car's VIN goes in its index entry (exports and Analyze
+        # Recorded into Datalogs; the car's VIN goes in its index entry (exports and Analyze
         # find it there), so the name stays short: engine_2026-11-09_073012.csv
         path = recent_logs.new_log(module.get("name", ""), vin=self.state.vin(), mode=mode)
         trigger = None
-        pre_s, post_s = self.pre_s.value(), self.post_s.value()
-        if mode == "dyno":
-            key = self._dyno_trigger_key(values)
-            if key is None:
-                self.banner.show_message("Dyno needs the accelerator pedal (or throttle) ticked: press "
-                                         "Dyno again to tick what it needs.", "warning")
-                return
-
-            def floored(latest, key=key):
-                value = latest.get(key)
-                return isinstance(value, (int, float)) and value > DYNO_PEDAL
-            trigger, pre_s, post_s = floored, DYNO_PRE_S, DYNO_POST_S
-        elif mode == "trigger":
+        if mode == "trigger":
             key = self.trigger_channel.currentData()
             if not key:
                 self.banner.show_message("Pick the channel that starts a triggered log.", "warning")
@@ -1230,10 +937,9 @@ class LoggerPage(QWidget):
                 value = latest.get(key)
                 return isinstance(value, (int, float)) and (value > limit if above else value < limit)
             trigger = crossed
-        self.writer = DatazapWriter(path, self.columns, groups, mode="trigger" if mode == "dyno" else mode,
+        self.writer = DatazapWriter(path, self.columns, groups, mode=mode,
                                     keep_s=self.keep_min.value() * 60, trigger=trigger,
-                                    pre_s=pre_s, post_s=post_s)
-        self.writer.dyno = mode == "dyno"
+                                    pre_s=self.pre_s.value(), post_s=self.post_s.value())
         self.samples = self.errors = 0
         self.stats = {}
         rates = self._group_rates()
@@ -1244,9 +950,6 @@ class LoggerPage(QWidget):
         self.running = self.state.run(
             "log", {"groups": groups, "interval_ms": self.rate.currentData(), "group_periods": rates},
             self._finished, self._failed)
-        if self.running and mode == "dyno":
-            self._follow_in_analyze(path)
-            self._auto_car()
         if self.running:
             self.state.logger_recording.emit(True)  # Live View shows the readings too
             self.start_button.set_recording(True)
@@ -1391,10 +1094,6 @@ class LoggerPage(QWidget):
         """Watch in Analyze: Analyze opens the recording and follows it as rows are written."""
         if self.running and self.writer:
             self.state.follow_log.emit(str(self.writer.path))
-            if getattr(self.writer, "dyno", False):  # a Dyno recording: straight to the Dyno view
-                page = getattr(self.window(), "pages", {}).get("playback")
-                if page is not None and hasattr(page, "show_view"):
-                    page.show_view("dyno")
 
     def on_sample(self, sample):
         if not self.running:
@@ -1407,14 +1106,6 @@ class LoggerPage(QWidget):
         values, units = {}, {}
         for field in sample.get("fields") or ():
             key = f"{group}.{field['index']}"
-            alias = getattr(self, "aliases", {}).get(key)
-            if alias is not None:
-                unit = (field.get("unit") or "").strip()
-                main_unit = self.writer.units.get(alias)
-                expected = self.alias_units.get(key, "")
-                if (main_unit is not None and unit != main_unit) or (expected and unit != expected):
-                    continue  # not the same reading there (other unit): don't mix the two
-                key = alias
             if group in self.raw_groups and key not in self.logged and not self.writer.ready:
                 self._drop_raw_placeholder(group)
                 self.columns.append((key, f"Group {group} field {field['index']}"))
@@ -1486,15 +1177,13 @@ class LoggerPage(QWidget):
                 self.last_log = writer.path
                 note, _written = self._do_auto_export(writer.path)
             self.banner.show_message("Logging stopped: " + str(result["error"])
-                                     + (f" The {rows} rows read before that are in Recent logs." if rows else "")
+                                     + (f" The {rows} rows read before that are saved in Datalogs." if rows else "")
                                      + note, "error")
         elif rows:
             self.last_log = path = writer.path
             secs = writer.last_t - writer.first_t
             note, written = self._do_auto_export(path)
             links = {"Open in Analyze": lambda: self._analyze(path)}
-            if getattr(writer, "dyno", False):
-                links = {"Open Dyno": lambda: self._analyze(path, view="dyno"), **links}
             if written is not None:
                 from .widgets import reveal_file
                 links["Show in Finder" if sys.platform == "darwin" else "Show in folder"] = \
@@ -1503,12 +1192,9 @@ class LoggerPage(QWidget):
                 links["Export…"] = lambda: self._export(path)
             links["Discard…"] = lambda: self._discard(path)
             self.banner.show_message(
-                f"Logged {rows:,} rows ({int(secs // 60)}:{int(secs % 60):02d}), kept in Recent logs."
+                f"Logged {rows:,} rows ({int(secs // 60)}:{int(secs % 60):02d}), saved in Datalogs as {path.name}."
                 + (note or " Min / max / avg are in the list."),
                 "error" if note and written is None else "ok", links)
-        elif writer and getattr(writer, "dyno", False) and writer.ready:
-            self.banner.show_message("Stopped. No full-throttle pull happened (pedal over "
-                                     f"{DYNO_PEDAL:.0f} %), so nothing was recorded.", "warning")
         elif writer and writer.mode == "trigger" and writer.ready:
             self.banner.show_message("Stopped. The trigger never fired, so nothing was recorded.", "warning")
         else:
@@ -1527,6 +1213,6 @@ class LoggerPage(QWidget):
             if rows:
                 self.last_log = writer.path
         self.banner.show_message(self.error_text(error)
-                                 + (f" The {rows} rows read before that are in Recent logs." if rows else ""),
+                                 + (f" The {rows} rows read before that are saved in Datalogs." if rows else ""),
                                  "error")
         self._show_name()

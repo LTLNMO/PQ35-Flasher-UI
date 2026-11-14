@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
-from PySide6.QtCore import QRectF
+from PySide6.QtCore import QObject, QRectF
 from PySide6.QtGui import QColor, QFontDatabase, QFontMetrics, QPainter
 from PySide6.QtWidgets import QHeaderView, QMenu, QPushButton, QStyle, QStyleOptionHeader, QToolButton
 
@@ -422,14 +422,15 @@ class MenuIconButton(QToolButton):
     """Grey icon button (like ⚙ and the dashboards button) that opens a menu, refilled by
     fill(menu) each time it opens."""
 
-    def __init__(self, glyph, tip, fill, parent=None):
+    def __init__(self, glyph, tip, fill, parent=None, dropdown=False):
         super().__init__(parent)
-        self.glyph, self._fill = glyph, fill
+        self.glyph, self._fill, self.dropdown = glyph, fill, dropdown
         self.setToolTip(tip)
         from PySide6.QtCore import QSize
         self.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.setFixedSize(36, 34)  # same as icon_button, so ⚙ matches the icons beside it
-        self.setIconSize(QSize(22, 22))
+        # same as icon_button, so ⚙ matches the icons beside it (50 wide with a ▾)
+        self.setFixedSize(50 if dropdown else 36, 34)
+        self.setIconSize(QSize(36, 22) if dropdown else QSize(22, 22))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setStyleSheet("QToolButton { padding: 0; } QToolButton::menu-indicator { image: none; width: 0; }")
@@ -437,12 +438,16 @@ class MenuIconButton(QToolButton):
         self.menu_.setToolTipsVisible(True)
         self.menu_.aboutToShow.connect(lambda: (self.menu_.clear(), self._fill(self.menu_)))
         self.setMenu(self.menu_)
+        anchor_menu(self.menu_, self)
         from . import theme
         self._restyle()
         theme.on_apply(self._restyle)
 
     def _restyle(self):
         from . import theme
+        if self.dropdown:
+            self.setIcon(toolbar_icon(self.glyph, theme.colors()["tab_text"], dropdown=True))
+            return
         from .main_window import _material_icon
         self.setIcon(_material_icon(self.glyph, 22, theme.colors()["tab_text"]))
 
@@ -508,3 +513,58 @@ class RunButton(QPushButton):
     def leaveEvent(self, event):
         self.update()
         super().leaveEvent(event)
+
+
+# ── Dropdowns: every button's menu opens like Analyze's ⋮ ──
+
+def _place(popup, anchor, align=None, dy=0):
+    """Move a shown popup under `anchor`: right edges lined up when the anchor is in the right half
+    of its window (left edges otherwise), and always inside the window."""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QGuiApplication
+    win = anchor.window()
+    w_left = win.mapToGlobal(QPoint(0, 0)).x()
+    a = anchor.mapToGlobal(QPoint(0, 0))
+    width, height = popup.width(), popup.height()
+    if align is None:
+        align = "right" if a.x() + anchor.width() / 2 > w_left + win.width() / 2 else "left"
+    x = a.x() + anchor.width() - width if align == "right" else a.x()
+    x = max(w_left + 4, min(x, w_left + win.width() - width - 4))
+    y = a.y() + anchor.height() + dy
+    screen = QGuiApplication.screenAt(a) or QGuiApplication.primaryScreen()
+    if y + height > screen.availableGeometry().bottom():
+        y = max(screen.availableGeometry().top(), a.y() - height - dy)
+    popup.move(x, y)
+
+
+class _MenuAnchor(QObject):
+    def __init__(self, menu, anchor, align, dy):
+        super().__init__(menu)
+        self.anchor, self.align, self.dy = anchor, align, dy
+        menu.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        from PySide6.QtCore import QEvent
+        if event.type() == QEvent.Type.Show and self.anchor is not None:
+            try:
+                _place(obj, self.anchor, self.align, self.dy)
+            except RuntimeError:  # anchor deleted
+                self.anchor = None
+        return False
+
+
+def anchor_menu(menu, anchor, align=None, dy=0):
+    """Make `menu` always open under `anchor` the app's way (see _place), however it's opened
+    (QToolButton/QPushButton setMenu, or exec). Safe to call again (re-anchors)."""
+    old = getattr(menu, "_pq35_anchor", None)
+    if old is not None:
+        old.anchor, old.align, old.dy = anchor, align, dy
+    else:
+        menu._pq35_anchor = _MenuAnchor(menu, anchor, align, dy)
+    return menu
+
+
+def popup_menu(menu, anchor, align=None, dy=0):
+    """Open `menu` under `anchor`, placed the app's way, and wait for a choice."""
+    anchor_menu(menu, anchor, align, dy)
+    return menu.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))

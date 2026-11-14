@@ -813,6 +813,9 @@ class PopupCard(QFrame):
         screen = QGuiApplication.screenAt(below) or QGuiApplication.primaryScreen()
         area = screen.availableGeometry()
         x = max(area.left() + 4, min(x, area.right() - size.width() - 4))
+        win = anchor.window()  # and inside the window, like the menus (analyze_tools._place)
+        w_left = win.mapToGlobal(win.rect().topLeft()).x()
+        x = max(w_left + 4, min(x, w_left + win.width() - size.width() - 4))
         if y + size.height() > area.bottom():
             y = max(area.top(), anchor.mapToGlobal(anchor.rect().topLeft()).y() - size.height() - 6)
         self.move(x, y)
@@ -1055,15 +1058,17 @@ class SidebarToggle(QObject):
         """Show/hide in one clean step: drawing is paused while the sidebar, the page beside it
         and anything they re-align on the next tick rearrange, then the window repaints once,
         so no half-laid-out frames flash by."""
-        win = self.splitter.window()
-        freeze = win.isVisible() and win.updatesEnabled()
+        # Only the splitter (sidebar + page beside it) pauses, never the whole window: pausing a
+        # macOS window left other widgets (the button just clicked) showing stale paint.
+        area = self.splitter
+        freeze = area.isVisible() and area.updatesEnabled()
         if freeze:
-            win.setUpdatesEnabled(False)
+            area.setUpdatesEnabled(False)
         try:
             self._apply(on, save)
         finally:
             if freeze:
-                QTimer.singleShot(0, lambda: win.setUpdatesEnabled(True))  # after queued re-aligns
+                QTimer.singleShot(0, lambda: area.setUpdatesEnabled(True))  # after queued re-aligns
 
     def _content_width(self):
         """Narrowest the sidebar can be without cutting off its top row (0 if unknown)."""

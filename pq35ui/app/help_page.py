@@ -56,15 +56,21 @@ Double-click one to open it in Analyze.</li>
 datalogs, the backup and flash history, and your notes. Projects live in
 <i>Documents/PQ35 Flasher/Projects</i>.</p>
 <ul>
-<li><b>New project…</b>: the module you're connected to is added automatically.</li>
+<li><b>New project…</b>: the module you're connected to is added automatically, and so is the car (one of your
+<b>Cars</b>, from the VIN); the new project becomes that car's active one.</li>
+<li><b>Car</b>: which car the project is for (<b>Cars…</b> to add or edit one). <b>Active project for this car</b>
+(★ in the list): every new log and dyno session recorded on that car is added to this project by itself. One active
+project per car; untick it to stop. Linked logs stay in Datalogs where they were recorded.</li>
 <li><b>Tune versions</b>: <i>Add version…</i> copies a file into the project with a label
 (e.g. "Stock", "Stage 1 v2") and notes; the file is copied so it can't go missing. Select one to <i>Open in Flash</i>, <i>Open in map viewer</i>,
 or <i>Compare with previous</i> (opens Maps → Compare files with both).</li>
 <li><b>Modules &amp; history</b>: the modules in the project and every backup, flash and post-flash check
 made on them.</li>
-<li><b>Logs</b>: link datalogs to the project and open them in Analyze. Linked logs stay where
-they are.</li>
+<li><b>Logs</b>: datalogs and dyno sessions in the project (the active project gets new ones by itself; <i>Add
+logs…</i> links others). Open them in Analyze. Linked logs stay where they are.</li>
 <li><b>Notes</b>: saved automatically.</li>
+<li><b>Delete…</b> moves the project's folder (notes and tune version copies) to the Trash, so it can be put back.
+The original tune files and the logs it links stay where they are.</li>
 </ul>
 """),
     ("connect", "Connect", """
@@ -153,8 +159,8 @@ other tabs use; right-click also has Re-read, Clear…, Ask AI and Copy.</p>
 <p>Every scan's log is saved on its own to <i>Documents/PQ35 Flasher/Scans</i>, named like VCDS's
 (<i>Scan-&lt;VIN&gt;-&lt;date&gt;-&lt;time&gt;-&lt;km&gt;km-&lt;miles&gt;mi.txt</i>; a second scan in
 the same minute gets <i>-2</i>). <b>History ▾</b> opens earlier scans of this car; the amber line
-says what changed since the previous scan (new codes, codes gone). <b>Copy</b> copies the whole log
-(e.g. for a forum post), <b>Save log…</b> saves it elsewhere. <b>Freeze frames</b> also reads when
+says what changed since the previous scan (new codes, codes gone). The <b>⋮</b> button has <b>Copy log</b>, which copies the whole log
+(e.g. for a forum post), and <b>Export scan log…</b>, which copies it somewhere else. <b>Freeze frames</b> also reads when
 and how often each fault happened (about half a second per fault). The log's second line names
 this app; lines that only VCDS has (labels, ASAM, VCID) are left out, and fault descriptions aren't
 included yet.</p>
@@ -179,10 +185,10 @@ dials and alarms. Watch a field while you change something (rpm, throttle, a swi
 The fields are remembered for next time; <b>✕</b> removes the group.</p>
 <h3>Layout</h3>
 <ul>
-<li><b>⚙ → Scale</b>: <i>Auto</i> stretches each line to its own min–max when channels are very different sizes (rpm next to load or timing), so every line uses the full height; channels of a similar size (boost actual vs requested) stay on one real-unit axis. <i>Fit each channel</i> always stretches; <i>Real values</i> never does. When stretched, the legend shows each line's real range, and a channel that barely moves keeps zero on its scale so small wobbles aren't exaggerated.</li>
-<li>The layout button at the top right (beside ⚙) chooses how many panels there are and how they're arranged.</li>
+<li><b>sliders icon → Scale</b>: <i>Auto</i> stretches each line to its own min–max when channels are very different sizes (rpm next to load or timing), so every line uses the full height; channels of a similar size (boost actual vs requested) stay on one real-unit axis. <i>Fit each channel</i> always stretches; <i>Real values</i> never does. When stretched, the legend shows each line's real range, and a channel that barely moves keeps zero on its scale so small wobbles aren't exaggerated.</li>
+<li>The layout button at the top right (beside the sliders icon) chooses how many panels there are and how they're arranged.</li>
 <li><b>Right-click a panel</b> to make it <b>Numbers</b>, <b>Dials</b>, <b>Bars</b> or a <b>Graph</b>.</li>
-<li>Graphs have channel dropdowns above them; <b>⚙ → Time shown</b> sets how many seconds are shown.</li>
+<li>Graphs have channel dropdowns above them; <b>sliders icon → Time shown</b> sets how many seconds are shown.</li>
 <li><b>Saved dashboards</b> (the dashboard ▾ beside the layout button): save the whole layout (panels, channels, graph picks) under a name, load it
 again, or export/import it as a file to share. The last layout for each module comes back by itself.</li>
 </ul>
@@ -205,10 +211,10 @@ red, a banner lists every active alarm, and it beeps once. Hover a channel in Se
 Analyze. Formulas always use the module's own (metric) units.</p>
 """),
     ("logger", "Logger", """
-<p>Records live values from the module. Every recording is kept automatically in <b>Recent logs</b>
-(inside the app, not in Documents), named <i>module_date_time.csv</i>, e.g. <i>engine_2026-11-09_073012.csv</i>.
-Only the logs you <b>Export…</b> go to <i>Documents/PQ35 Flasher/Datalogs</i> (change the folder in Settings → Datalogs),
-so that folder holds just the ones you wanted. Nothing is written to the module.</p>
+<p>Records live values from the module. Every recording saves itself into <i>Documents/PQ35 Flasher/Datalogs</i>
+(change the folder in Settings → Datalogs) as it records, named <i>module_date_time.csv</i>, e.g.
+<i>engine_2026-11-09_073012.csv</i>. Nothing is ever deleted on its own: only <b>Discard…</b> removes a
+recording. Nothing is written to the module.</p>
 <h3>Choosing what to log</h3>
 <ul>
 <li>Switch values on in <b>Select channels ▾</b> at the left of the toolbar: every value under its category, with a search
@@ -216,7 +222,7 @@ box and <i>Select all</i> / <i>Hide all</i> for what the search finds. Categorie
 (or off when it's all on). Point at or click a value
 to see what it shows (the box under the list). The line under that counts the values and the measuring groups they
 come from: each group is another read from the module, so fewer groups log faster.</li>
-<li><b>Presets</b> (the bookmark ▾ at the top right, beside ⚙, as on Analyze): load a ready-made or
+<li><b>Presets</b> (the bookmark ▾ at the top right, beside the sliders icon, as on Analyze): load a ready-made or
 saved set, <i>Save preset…</i> the switched-on channels under a name (e.g. "Boost monitoring"),
 <i>Overwrite preset</i> with them, or <i>Manage presets…</i> to rename or delete. Presets are shared with
 Live View. The engine ECU also has a ready-made
@@ -229,12 +235,12 @@ logged while it's in the list; its <b>✕</b> removes it.</li>
 </ul>
 <h3>Rates</h3>
 <ul>
-<li><b>⚙ → Rate</b>: how often each group is read.</li>
-<li><b>⚙ → Group rates…</b>: a different rate per group. Slow down groups that change slowly
+<li><b>sliders icon → Rate</b>: how often each group is read.</li>
+<li><b>sliders icon → Group rates…</b>: a different rate per group. Slow down groups that change slowly
 (temperatures) so fast ones (rpm, boost) are read more often.</li>
 </ul>
 <h3>Recording</h3>
-<p>Pick the mode with the buttons under <b>Select channels</b>: <b>Continuous</b>, <b>Triggered</b>, <b>Rolling</b> or <b>Dyno</b>
+<p>Pick the mode with the buttons under <b>Select channels</b>: <b>Continuous</b>, <b>Triggered</b> or <b>Rolling</b> (horsepower and torque have their own <b>Dyno</b> tab)
 (the highlighted one is what the round <b>record</b> button ● beside Select channels will use; while recording it turns into <b>stop</b> ■):</p>
 <ul>
 <li><b>Continuous</b>: every reading is saved.</li>
@@ -242,20 +248,8 @@ logged while it's in the list; its <b>✕</b> removes it.</li>
 before and after. Clicking Triggered (it has a ▾) opens its settings: the channel, &gt; or &lt;, the value,
 and how many seconds to keep before and after. Re-arms after each event, so several pulls land in one file. The status line
 shows <i>armed</i> or <i>TRIGGERED</i>.</li>
-<li><b>Rolling</b>: keeps only the last few minutes (<b>⚙ → Keep last</b>) in memory and saves them when you stop. Good for
+<li><b>Rolling</b>: keeps only the last few minutes (<b>sliders icon → Keep last</b>) in memory and saves them when you stop. Good for
 catching something you didn't expect.</li>
-<li><b>Dyno</b>: for horsepower and torque. Clicking it switches to the <b>Dyno</b> preset: only engine speed,
-vehicle speed and the accelerator pedal, plus atmospheric pressure and outside temperature read every few seconds.
-Engine speed then comes with the speed and pedal groups, so it's read on every read (about 20 times a second on the
-demo). What you had ticked comes back when you pick another mode; loading the Dyno preset picks Dyno mode. The car fills itself in: typical weight, drag and tyres for the model from the VIN (plus weight and
-drivetrain loss for all-wheel drive when the scan found a Haldex), then your AI (Settings → AI) looks up that exact car
-in the background. Its ▾ shows the car and where the figures came from; <b>Car and weight…</b> changes them, and
-what you save there is yours: it's never replaced automatically. It records each full-throttle pull (pedal over
-90 %, 2 s before, 1 s after), and Analyze follows the recording on its Dyno view straight away: open Analyze to watch
-horsepower and torque appear a few seconds into each pull. Floor it in one gear (3rd is
-ideal) from low rpm to near redline, on a flat, empty road; a run each way cancels slope and wind. After Stop,
-<b>Open Dyno</b> shows the result in Analyze. Fewer ticked groups means engine speed is read more often and the curve
-is more trustworthy.</li>
 </ul>
 <p>Engine speed (and other values) appear in several measuring groups. While logging, a value is also taken from
 any other group already being read, so it's updated more often at no extra cost.</p>
@@ -271,28 +265,26 @@ down (before Start) to change its column in the log; right-click for Remove / Se
 and graphs it live: the graph grows as rows are written and follows the newest data while the view is at the
 end (scroll back to look around). When you stop, Analyze shows the whole log. Not available for Rolling,
 whose file is written when you stop.</p>
-<h3>Recent logs and Export</h3>
-<p><b>Auto-export</b> (⚙ → Saving): pick a format (Standard, Integrated Engineering, MegaLogViewer or Generic)
-and every time you stop, a copy in that format goes straight into Datalogs, no dialog, named as Export… would
-name it. The stop message says where it went (Show in Finder). Off by default. The log is still kept in
-Recent logs either way, in the Standard format: that's the app's own copy, which Analyze and Watch in
-Analyze read.</p>
-<p>Each log is written to Recent logs as it records (Rolling: when you stop), so a crash or a pulled cable
+<h3>Saving and Export</h3>
+<p>There's nothing to save by hand: the log in Datalogs is the Standard CSV (Datazap-compatible) that Analyze reads.
+<b>Export…</b> always means a copy in another format or place.
+<b>Auto-export</b> (sliders icon → Saving): pick a format (Integrated Engineering, MegaLogViewer or Generic)
+and every time you stop, a copy in that format goes straight into Datalogs too, no dialog, named as Export… would
+name it. The stop message says where it went (Show in Finder). Off by default.</p>
+<p>Each log is written to Datalogs as it records (Rolling: when you stop), so a crash or a pulled cable
 doesn't lose it. When you stop, the message offers <b>Open in Analyze</b>, <b>Export…</b> and <b>Discard…</b>.
 At the right end of the Continuous / Triggered / Rolling row:</p>
 <ul>
-<li><b>Recent logs</b> (clock icon): every recording, newest first, with its length and whether it's been exported
-(✓). Each one can be opened in Analyze, exported or discarded. The last 20, and all from the last 14 days, are kept;
-older ones are deleted automatically (exported copies are never touched).</li>
-<li><b>Export…</b> (share icon): save the last log. The dialog starts in Datalogs on the format you used last:
+<li><b>Recent logs</b> (clock icon ▾): your latest 20 recordings, newest first, with their length. Each one can be
+opened in Analyze, exported or discarded. Older ones are still in Datalogs.</li>
+<li><b>⋮ → Export last log…</b>: copy the last log (⋮ also has <b>Open Datalogs folder</b>). The dialog starts in Datalogs on the format you used last:
 <b>Standard CSV</b> (the log as recorded: Datazap-compatible, the ECU's own names, units and values),
 <b>Integrated Engineering CSV</b> (named like theirs, <i>Datalog-MM-DD-YYYY_HH-MM_&lt;VIN&gt;.csv</i>),
 <b>MegaLogViewer</b> (.msl) or a <b>generic CSV</b> with separate name and unit rows. A name that's taken gets
 <i>(2)</i>, <i>(3)</i>… added.</li>
-<li><b>Folder</b> icon: open Datalogs.</li>
 </ul>
-<p>The car's VIN (once a scan on Connect has read it) is kept with each recent log rather than in its name;
-exports and Analyze use it.</p>
+<p>The car's VIN (read when you plug in) is kept with each recording rather than in its name; exports and Analyze
+use it (an Integrated Engineering export is named like theirs, <i>Datalog-MM-DD-YYYY_HH-MM_VIN.csv</i>).</p>
 <p>The <b>Integrated Engineering CSV</b> matches what POWERlink writes for this car: Integrated Engineering's variable names,
 order, time format and rounding. Integrated Engineering's own mistakes are copied on purpose. On this ECU, "Fuel Rail Actual"
 is really the rail pressure setpoint, "LPFP Duty" is the actual rail pressure (both shown in Integrated Engineering's wrong
@@ -336,7 +328,7 @@ for Hide line too.</li>
 <li><b>Toolbar icons</b>: legend on/off, timeline on/off, <b>Math channels</b> (ƒ), <b>Presets</b>
 (bookmark: smart presets picked from the log's channel names, or your own; <i>Save preset</i>, <i>Overwrite preset</i> with the channels on the graph now, and <i>Manage presets</i> to rename or delete), and <b>⋮</b>:
 Log details, Edit log (rename, or save the shown/selected part as a new log), Reset view and
-Export… (the same as the share icon beside Open).</li>
+Export….</li>
 <li><b>Fit</b> (the button under ⚙ on the graph): the whole log across and every line back in view.</li>
 <li><b>⚙ on the graph</b> (or right-click the graph): Reset view, tick channels on or off, Axis,
 Legend, Timeline, Follow mouse, Min / Max / Avg range, Export graph (image or CSV), axis ranges,
@@ -370,17 +362,6 @@ Y were near that breakpoint, coloured blue (low) to red (high). Hover a cell for
 <li><b>Scatter</b>: one channel against another (e.g. rpm vs boost), optionally coloured by a third.</li>
 <li><b>Raw</b>: the numbers as a table, one column per channel on the graph (every channel when none are ticked), each headed by its colour dot; hover a cut-off name to read it in full. The cursor's row is
 highlighted; click a row to move the cursor there.</li>
-<li><b>Dyno</b>: a virtual dyno sheet, horsepower and torque against engine speed, from full-throttle pulls in one
-gear (record them with the Logger's <b>Dyno</b> mode). Pick a pull, the <b>Average</b> of all of them, or your Shift-drag
-<b>Selection</b>. <b>Wheel</b> is what a chassis dyno shows; <b>Engine (estimate)</b> adds what the rotating parts and the
-drivetrain take (the loss is in the car profile), with the engine ECU's own torque dashed when it was logged.
-Power is worked out like an inertia dyno, with the car as the drum: weight × acceleration plus air drag and rolling
-resistance, times speed. Speed comes from engine speed × the gearing measured from the log (no gear ratios to type in);
-if road speed and engine speed disagree (clutch slip, wheelspin, a shift) it warns you. The correction (SAE J1349, STD,
-DIN 70020 or none) uses the logged air pressure and temperature, else the profile's. The car (weight, drag, tyres,
-saved per VIN) is set in the Logger: <b>Dyno ▾ → Car and weight…</b>. While the Logger records in Dyno mode this view
-shows each pull live, then the finished log. Weight matters most: 5 % off is 5 % off, so a weighbridge figure plus you and the fuel is best. Good
-for comparing runs and tunes on the same road; the absolute number won't match every chassis dyno (neither do they).</li>
 </ul>
 <h3>Comparing runs</h3>
 <ul>
@@ -392,7 +373,7 @@ ticked channel (throttle or rpm works best) first rises past halfway.</li>
 <li><b>Clear</b>: remove the compared log.</li>
 </ul>
 <p><b>⚙ → Math channels…</b> adds formula channels to the loaded log (see Live View).
-<b>Export…</b> (share icon beside Open) saves the log as Standard CSV (Datazap), Integrated Engineering CSV,
+<b>⋮ → Export…</b> saves the log as Standard CSV (Datazap), Integrated Engineering CSV,
 MegaLogViewer or generic CSV.</p>
 <p><b>Open ▾</b> lists the recent recordings and <i>Open file…</i>. Besides this app's own logs it opens the
 text/CSV logs Datazap takes: COBB Accessport, MHD, bootmod3, JB4, EcuTek, VCDS, ME7Logger, EvoScan, Torque,
@@ -402,6 +383,74 @@ Engineering logs get the ECU's own names back where their values match, so they 
 their two fuel rail pressure columns keep Integrated Engineering's names because their scaling can't be undone.
 Binary logs (MegaSquirt .mlg) aren't supported: save them as .msl or CSV first.</p>
 <p>Drag the divider between the graph and the values table to give either more room.</p>
+"""),
+    ("dyno", "Dyno", """
+<p>A virtual dyno: horsepower and torque against engine speed from full-throttle pulls in one gear, worked out
+from how fast the car speeds up (its weight, drag and tyres), like an inertia dyno with the car as the drum.</p>
+<h3>Recording</h3>
+<p>Choose the engine on <b>Connect</b>, then press the round <b>record</b> button ●. A dyno session reads only what the
+dyno needs: engine speed, vehicle speed, the accelerator pedal, mass air flow and the ECU's torque (for the
+cross-check), plus atmospheric pressure and outside temperature every few seconds. Engine speed comes with every one
+of those groups, so it's read about 20 times a second. Floor it in one gear (3rd is ideal) from low rpm to near
+redline, on a flat, empty road; each full-throttle pull (pedal over 90 %, 2 s before, 1 s after) is saved, and the
+curve appears a few seconds into the pull. A run each way on the same road cancels slope and wind. Press ■ to stop.
+The interface reads one thing at a time, so Record waits while the Logger or Live View is reading the module.</p>
+<h3>Sessions</h3>
+<p>Each recording is a session in the list on the left, saved as you record in <i>Datalogs/Dyno</i>, named like any log
+(<i>engine_date_time.csv</i>; nothing is deleted unless you discard it). Click one to see it; right-click to open it in Analyze, show the file, or discard it. The open-file button
+opens any other log (Standard / Datazap or Integrated Engineering CSV) and finds its pulls. The sidebar button at the
+far left of the top row hides or shows the list.</p>
+<h3>Export</h3>
+<p>The session saves itself; the <b>⋮</b> button (top right) exports three different things, each named after the
+session with <i>dyno_</i> in front (e.g. <i>dyno_2026-11-14_121055_graph.png</i>): <b>Export graph as image…</b> (a PNG picture of the sheet as shown, to share),
+<b>Export numbers as table…</b> (a CSV of the curves: power and torque at each rpm, wheel and
+engine, plus ECU torque and airflow power when logged, in your metric / imperial units, for a spreadsheet), and
+<b>Export log…</b> (the whole recording, every reading, as Standard, Integrated Engineering, MegaLogViewer or generic
+CSV).</p>
+<h3>The car and the load</h3>
+<p>The <b>car icon</b> beside the record button holds the session's <b>car</b> and <b>load</b> (hover it for both; the
+sheet's details line shows them too, e.g. <i>1,580 kg · 2011 A3 (8P)</i>). The car comes from the VIN by itself; click
+the icon to change the people, cargo and fuel, or to pick another car if it's wrong (or the log had no VIN). The icon
+turns amber when there's no saved car for the session. <b>Edit car…</b> opens <b>Cars</b>. Each session
+remembers its car and load from when it was recorded, so its numbers never change because of a later session; with
+a session picked the button shows (and can correct) that session's, before you record it sets the next one's.
+Weight matters most: 5 % off is 5 % off.</p>
+<h3>Reading the sheet</h3>
+<p>Pick a pull, the <b>Average</b> of all of them or, with three or more pulls, back-to-back pairs (<b>Pulls 1 + 2
+averaged</b>: one each way cancels slope and wind). If pulls in the same gear differ by 4 % or more it says so.
+<b>Wheel</b> is what a chassis dyno shows; <b>Engine (estimate)</b> adds what the rotating parts and the
+drivetrain take (the loss is in the car profile), with the engine ECU's own torque dashed and airflow power dotted
+when they were logged. The <b>Cross-check</b> line compares peak engine power three ways: this dyno, the ECU's torque,
+and mass air flow × 1.3 hp per g/s. Within 8 % is green; further apart points at the weight, tyre size or speed signal.
+Power is worked out like an inertia dyno, with the car as the drum: weight × acceleration plus air drag and rolling
+resistance, times speed. Speed comes from engine speed × the gearing measured from the log (no gear ratios to type in);
+if road speed and engine speed disagree (clutch slip, wheelspin, a shift) it warns you. With the gearbox set to the
+6-speed DSG in the car profile it also checks the speed signal against the gear ratios and tyre size (a speedo 3 %
+high makes power 6 % high) and by default blends the two (<b>Speed from → Automatic</b>), weighting each by how far it's typically off,
+which beats either alone; more than 4 % apart it uses the speed signal and warns you. Each pull gets a rating
+(<b>Good / Fair / Poor</b>, also in the pull list; hover the headline for the reasons): read rate, slip, rpm covered,
+a pull cut off before peak power, the cross-check, and the speed sources disagreeing. The correction (SAE J1349, STD,
+DIN 70020 or none) uses the air pressure and outside temperature the engine ECU reports (a dyno session logs them), else standard air (20 °C, 1013 mbar). Weight matters most: 5 % off is 5 % off, so a weighbridge figure is best; the profile adds the people
+in the car, cargo and how full the tank is (set them before each session). Good
+for comparing runs and tunes on the same road; the absolute number won't match every chassis dyno (neither do they).</p>
+"""),
+    ("cars", "Cars", """
+<p>Your saved car profiles: what each car is and its specs. Open them by clicking the car in the top bar, or
+<b>Cars…</b> on the Dyno tab.</p>
+<ul>
+<li><b>Filled in by themselves.</b> Plug the interface into a car (ignition on) and the app reads its VIN by
+itself within a few seconds: the car shows in the top bar, its profile is made if it's new (typical figures for
+the model, then your AI looks up that exact car in the background) and its active project opens on the Projects
+tab. A scan on Connect adds the modules found, the engine's part number and the mileage (and all-wheel drive when
+a Haldex answers). Every recording is tagged with the car connected then; until a car's VIN has been read, a
+recording carries no car (never the one from last time).</li>
+<li><b>Yours to change.</b> Kerb weight, fuel tank, tyre size (width / profile / rim, as on the sidewall), gearbox, where the dyno's
+road speed comes from, drivetrain loss, drag and rolling resistance, plus notes and mods (the AI sees those too).
+Anything you change is saved as yours and never replaced automatically. <b>Fill in with AI</b> asks again.</li>
+<li><b>Add</b> a car by hand (with or without a VIN); <b>Delete…</b> removes a profile (logs and dyno sessions
+stay).</li>
+<li><b>Projects</b>: a car's projects are listed with it; pick the car for a project on the Projects tab.</li>
+</ul>
 """),
     ("maps", "Maps", """
 <p>Looks inside ECU files. Read-only: nothing is written to a file or a module. Switch between the
@@ -565,6 +614,21 @@ class HelpPage(QWidget):
         self.setObjectName("page")
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        # Top row: the sidebar button, then search (stays when the topics are hidden)
+        top = QHBoxLayout()
+        top.setContentsMargins(16, 16, 16, 0)
+        top.setSpacing(8)
+        from .analyze_tools import icon_button
+        self.sidebar_button = icon_button("toc", "Show or hide the topics", checkable=True)
+        top.addWidget(self.sidebar_button)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search help (alarm, trigger, map…)")
+        self.search.setMaximumWidth(360)
+        self.search.textChanged.connect(self._filter)
+        top.addWidget(self.search, 1)
+        top.addStretch(1)
+        outer.addLayout(top)
         split = QSplitter(Qt.Orientation.Horizontal)
         split.setHandleWidth(6)
         outer.addWidget(split, 1)
@@ -572,12 +636,8 @@ class HelpPage(QWidget):
         side = QWidget()
         side.setObjectName("page")
         sb = QVBoxLayout(side)
-        sb.setContentsMargins(16, 16, 8, 16)
+        sb.setContentsMargins(16, 10, 8, 16)
         sb.setSpacing(10)
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Search help (alarm, trigger, map…)")
-        self.search.textChanged.connect(self._filter)
-        sb.addWidget(self.search)
         self.topics = QListWidget()
         for key, title, _body in TOPICS:
             item = QListWidgetItem(title)
@@ -590,7 +650,7 @@ class HelpPage(QWidget):
         right = QWidget()
         right.setObjectName("page")
         rl = QHBoxLayout(right)
-        rl.setContentsMargins(8, 16, 16, 16)
+        rl.setContentsMargins(8, 10, 16, 16)
         self.view = QTextBrowser()
         self.view.setOpenExternalLinks(True)  # web links (e.g. Integrated Engineering's glossary) open in the browser
         self.right_stack = QStackedWidget()
@@ -600,7 +660,11 @@ class HelpPage(QWidget):
         split.addWidget(right)
         split.setSizes([260, 800])
         split.setCollapsible(1, False)
-        collapsible_sidebar(split, state.settings, "help", "Topics", self.search)
+        toggle = collapsible_sidebar(split, state.settings, "help", "Topics", button=self.sidebar_button)
+        # Topics hidden: the text keeps the page's 16 px edge
+        edge = lambda shown: rl.setContentsMargins(8 if shown else 16, 10, 16, 16)
+        toggle.shown_changed.connect(edge)
+        edge(self.sidebar_button.isChecked())
         self.topics.setCurrentRow(0)
         theme.on_apply(lambda: self._show(self.topics.currentItem()))  # page colours follow the theme
 

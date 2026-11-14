@@ -143,8 +143,8 @@ def log_stamp(when=None) -> str:
 
 
 def recent_logs_dir() -> Path:
-    """Where the Logger records: kept for a while (recent_logs.prune), out of Documents.
-    A log only reaches Datalogs (or anywhere else) when you export it."""
+    """The Recent logs index (recent.json, out of Documents). Before Nov 2026 recordings lived
+    here too; recent_logs.migrate moves them into Datalogs."""
     path = data_dir() / "Recent logs"
     path.mkdir(parents=True, exist_ok=True)
     return path
