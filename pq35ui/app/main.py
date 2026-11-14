@@ -190,12 +190,9 @@ def main():
     if Path(mat_font).exists():
         QFontDatabase.addApplicationFont(mat_font)
     app.setWindowIcon(app_icon())
-    from .widgets import WheelGuard
-    wheel_guard = WheelGuard(app)
-    app.installEventFilter(wheel_guard)
-    from .widgets import RoundPopups
-    round_tips = RoundPopups(app)
-    app.installEventFilter(round_tips)
+    from .widgets import AppEventFilter
+    app_filter = AppEventFilter(app)  # wheel guard + rounded popups, one filter
+    app.installEventFilter(app_filter)
     app.setApplicationName("PQ35 Flasher")
     app.setOrganizationName("PQ35")
     theme.apply(app)  # initial apply before settings are available

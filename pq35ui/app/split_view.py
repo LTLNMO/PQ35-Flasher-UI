@@ -24,8 +24,7 @@ MIME = CHANNEL_MIME  # channel names, one per line (Split labels, row grips and 
 EDGE = 0.28         # top / bottom share of a row where a drop makes a new row instead of joining
 
 
-def _fmt(v):
-    return f"{v:.0f}" if abs(v) >= 100 else f"{v:.1f}" if abs(v) >= 10 else f"{v:.2f}"
+from .units import fmt as _fmt  # one number style on every tab
 
 
 def _drag_picture(names, colors):

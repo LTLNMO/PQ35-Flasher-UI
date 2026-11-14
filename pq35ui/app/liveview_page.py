@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QApplication, QGraphicsItem, QVBoxLayout, QWidget, QWidgetAction,
 )
 
-from . import alarms, channel_info, graphscale, graphstyle, mathchannels, units
+from . import alarms, channel_info, graphscale, graphstyle, mathchannels, theme, units
 from .dashboards import DashboardButton
 from .gauges import BarGauge, DialGauge
 from .presets import PresetButton
@@ -194,11 +194,13 @@ class LayoutPicker(LayoutButton):
 class ValueCard(QFrame):
     """A single live-value card: big number + small unit label."""
 
-    ALARM_STYLES = {
-        None: "",
-        "on": "QFrame#card { border: 2px solid #ef4444; background: rgba(239, 68, 68, 0.32); }",
-        "dim": "QFrame#card { border: 2px solid #ef4444; }",
-    }
+    @staticmethod
+    def _alarm_style(state):
+        if state is None:
+            return ""
+        err = theme.colors()["err"]
+        fill = f" background: {theme.colors()['err_bg']};" if state == "on" else ""
+        return f"QFrame#card {{ border: 2px solid {err};{fill} }}"
 
     def __init__(self, name, unit="", key=None, parent=None):
         super().__init__(parent)
@@ -233,7 +235,7 @@ class ValueCard(QFrame):
         """None, "on" or "dim" (alternated by the page to flash)."""
         if state != self._alarm:
             self._alarm = state
-            self.setStyleSheet(self.ALARM_STYLES[state])
+            self.setStyleSheet(self._alarm_style(state))
 
 
 class GaugesPanel(QFrame):
@@ -1344,12 +1346,7 @@ class LiveViewPage(QWidget):
         ch["x"].append(t)
         ch["y"].append(value)
         ch["last"] = value
-        if abs(value) >= 1000:
-            ch["last_text"] = f"{value:.0f}"
-        elif abs(value) >= 10:
-            ch["last_text"] = f"{value:.1f}"
-        else:
-            ch["last_text"] = f"{value:.2f}"
+        ch["last_text"] = units.fmt(value)
         if len(ch["x"]) > MAX_POINTS:
             ch["x"] = ch["x"][-MAX_POINTS:]
             ch["y"] = ch["y"][-MAX_POINTS:]

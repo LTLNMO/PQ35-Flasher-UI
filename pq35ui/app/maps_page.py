@@ -734,7 +734,8 @@ class FileCompare(QWidget):
         s, e = self.ranges[r]
         lo = max(0, (s // 16) * 16 - 16)
         hi = min(max(len(self.a), len(self.b)), ((e + 15) // 16) * 16 + 16, lo + 16 * 24)
-        hl = "background:#ef4444;color:#111"
+        c = theme.colors()
+        hl = f"background:{c['err']};color:{c['on_accent']}"
         lines = []
         for off in range(lo, hi, 16):
             for tag, data, other in (("A", self.a, self.b), ("B", self.b, self.a)):

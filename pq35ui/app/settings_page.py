@@ -226,7 +226,7 @@ class SettingsPage(Page):
         rows = self._rows(self.add(Card("Start-up & tips")))
         self.tooltips_check = QCheckBox("Show tips when you hover over buttons and settings")
         self.tooltips_check.setChecked(bool(state.settings.get("tooltips", True)))
-        self.tooltips_check.toggled.connect(lambda on: state.settings.set("tooltips", bool(on)))
+        self.tooltips_check.toggled.connect(self._tooltips_toggled)
         self._row(rows, "Tooltips", self.tooltips_check)
         from .disclaimer import CAUTION_HIDE
         self.caution_check = QCheckBox("Show the caution when the app opens")
@@ -636,6 +636,11 @@ class SettingsPage(Page):
     def refresh(self):
         if hasattr(self, "demo_toggle"):
             self.demo_toggle.setEnabled(not self.state.busy)
+
+    def _tooltips_toggled(self, on):
+        from .tooltips import TooltipGate
+        self.state.settings.set("tooltips", bool(on))
+        TooltipGate.install(self.state.settings)  # adds or removes the app-wide filter
 
     # --- about ---
 

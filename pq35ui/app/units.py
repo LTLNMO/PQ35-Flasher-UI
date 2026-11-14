@@ -69,3 +69,15 @@ def limit_to_raw(limit, conv):
     for side in ("min", "max"):
         out[side] = to_raw(limit.get(side), conv)
     return out
+
+
+def fmt(value, signed=False):
+    """A number as every tab shows it: fewer decimals the bigger it is (2040, 91.0, 2.96),
+    with a real minus sign. None (or NaN) shows as a dash."""
+    if value is None or value != value:
+        return "–"
+    a = abs(value)
+    sign = "+" if signed else ""
+    text = (f"{value:{sign}.0f}" if a >= 100 else f"{value:{sign}.1f}" if a >= 10
+            else f"{value:{sign}.2f}")
+    return text.replace("-", "−")

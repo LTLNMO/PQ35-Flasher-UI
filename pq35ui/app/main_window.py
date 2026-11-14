@@ -149,8 +149,9 @@ class AnimatedTabButton(QPushButton):
             self.setText("")
 
 
-from . import pages, updates
+from . import pages, theme, updates
 from .home_page import HomePage
+from .flash_page import FlashPage
 
 
 def _lazy(module, name):
@@ -187,7 +188,7 @@ NAV = (
     ("projects",    "folder_open", "Projects", ProjectsPage),
     ("connect",     "\ue8be", "Connect",     pages.ConnectPage),      # settings_ethernet
     ("backup",      "\ue864", "Back up",     pages.BackupPage),       # backup
-    ("flash",       "\uea0b", "Flash",       pages.FlashPage),        # bolt
+    ("flash",       "\uea0b", "Flash",       FlashPage),              # bolt
     ("patches",     "\ue87b", "Patches",     pages.PatchesPage),      # extension
     ("diagnostics", "\ue002", "Diagnostics", pages.DiagnosticsPage),  # warning
     ("liveview",    "\ue9e4", "Live View",   LiveViewPage),           # speed
@@ -308,15 +309,16 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.pages = {}
         self._page_classes = {key: cls for key, _icon, _label, cls in NAV}
-        for key in EAGER_PAGES:
-            self._ensure_page(key)
         outer.addWidget(self.stack, 1)
-
         self.busy_bar = QProgressBar()
         self.busy_bar.setFixedHeight(4)
         self.busy_bar.hide()
         outer.addWidget(self.busy_bar)
+        # The window is assembled first and the pages go into it after: Qt restyles a whole
+        # widget tree each time it moves to a new parent, so attaching it last styled every page twice.
         self.setCentralWidget(root)
+        for key in EAGER_PAGES:
+            self._ensure_page(key)
 
         # Version / update info: shown in Help → Troubleshooting & logs
         self.local_version = updates.local_version()
@@ -704,7 +706,7 @@ class MainWindow(QMainWindow):
         painter = QPainter(pix)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#ef4444"))
+        painter.setBrush(QColor(theme.colors()["err"]))
         painter.drawEllipse(0, 0, TAB_DOT, TAB_DOT)
         painter.end()
         return QIcon(pix)
@@ -718,7 +720,7 @@ class MainWindow(QMainWindow):
             painter = QPainter(pix)
             painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor("#ef4444"))
+            painter.setBrush(QColor(theme.colors()["err"]))
             dot = max(5.0, size * 0.36)
             painter.drawEllipse(size - dot, 0.0, dot, dot)
             painter.end()

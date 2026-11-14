@@ -98,12 +98,7 @@ def csv_number(field):
         return None
 
 
-def _fmt(number):
-    if abs(number) >= 1000:
-        return f"{number:.0f}"
-    if abs(number) >= 10:
-        return f"{number:.1f}"
-    return f"{number:.2f}"
+from .units import fmt as _fmt  # one number style on every tab
 
 
 class DatazapWriter:

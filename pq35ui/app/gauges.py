@@ -15,8 +15,12 @@ from PySide6.QtWidgets import QFrame, QSizePolicy
 
 from . import theme
 
-DANGER = QColor("#ef4444")
-WARN = QColor("#f59e0b")
+def _danger():
+    return QColor(theme.colors()["err"])  # follows light/dark like every other red
+
+
+def _warn():
+    return QColor(theme.colors()["warn"])
 
 # Typical full-scale ranges by unit (lower-case).
 UNIT_RANGES = {
@@ -88,12 +92,12 @@ def zones(limit, lo, hi):
     span = hi - lo
     if limit.get("max") is not None:
         top = limit["max"]
-        out.append((max(lo, top - 0.1 * span), top, WARN))
-        out.append((top, hi, DANGER))
+        out.append((max(lo, top - 0.1 * span), top, _warn()))
+        out.append((top, hi, _danger()))
     if limit.get("min") is not None:
         bottom = limit["min"]
-        out.append((lo, bottom, DANGER))
-        out.append((bottom, min(hi, bottom + 0.1 * span), WARN))
+        out.append((lo, bottom, _danger()))
+        out.append((bottom, min(hi, bottom + 0.1 * span), _warn()))
     return [(max(lo, a), min(hi, b), c) for a, b, c in out if b > a]
 
 
@@ -146,14 +150,7 @@ def _anim():
     return _animator
 
 
-def _fmt(value):
-    if value is None:
-        return "–"
-    if abs(value) >= 1000:
-        return f"{value:.0f}"
-    if abs(value) >= 10:
-        return f"{value:.1f}"
-    return f"{value:.2f}"
+from .units import fmt as _fmt  # one number style on every tab
 
 
 class _GaugeBase(QFrame):
@@ -215,9 +212,9 @@ class _GaugeBase(QFrame):
 
     def _paint_frame(self, p):
         if self.alarm:
-            fill = QColor(DANGER)
+            fill = QColor(_danger())
             fill.setAlpha(80 if self.alarm == "on" else 0)
-            p.setPen(QPen(DANGER, 2))
+            p.setPen(QPen(_danger(), 2))
             p.setBrush(fill)
             p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 8, 8)
 
@@ -309,14 +306,14 @@ class DialGauge(_GaugeBase):
         # Value fill (follows the gliding needle)
         if self.shown is not None:
             in_alarm = bool(self.alarm)
-            p.setPen(QPen(DANGER if in_alarm else accent, band * 0.45, Qt.PenStyle.SolidLine,
+            p.setPen(QPen(_danger() if in_alarm else accent, band * 0.45, Qt.PenStyle.SolidLine,
                           Qt.PenCapStyle.FlatCap))
             p.drawArc(arc.adjusted(band / 2, band / 2, -band / 2, -band / 2),
                       int(self.START * 16), int((angle(self.shown) - self.START) * 16))
         # Needle
         if self.shown is not None:
             rad = math.radians(angle(self.shown))
-            p.setPen(QPen(DANGER if self.alarm else text, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            p.setPen(QPen(_danger() if self.alarm else text, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             p.drawLine(QPointF(cx, cy), QPointF(cx + (r - band - 4) * math.cos(rad),
                                                 cy - (r - band - 4) * math.sin(rad)))
         p.setBrush(text)
@@ -327,7 +324,7 @@ class DialGauge(_GaugeBase):
         big.setPixelSize(max(12, int(r * 0.26)))
         big.setBold(True)
         p.setFont(big)
-        p.setPen(DANGER if self.alarm else text)
+        p.setPen(_danger() if self.alarm else text)
         p.drawText(QRectF(cx - r * 0.6, cy + r * 0.30, r * 1.2, r * 0.34), Qt.AlignmentFlag.AlignCenter, _fmt(self.value))
         p.end()
 
@@ -359,7 +356,7 @@ class BarGauge(_GaugeBase):
         big.setPixelSize(int(name_font.pixelSize() * 1.3) if name_font.pixelSize() > 0 else 16)
         p.setFont(big)
         rw = p.fontMetrics().horizontalAdvance(readout) + 4
-        p.setPen(DANGER if self.alarm else text)
+        p.setPen(_danger() if self.alarm else text)
         p.drawText(QRectF(w - pad - rw, 6, rw, 22), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, readout)
         p.setFont(name_font)
         p.setPen(text)
@@ -380,7 +377,7 @@ class BarGauge(_GaugeBase):
             p.setBrush(c)
             p.drawRect(QRectF(x(a), bar.top(), x(b) - x(a), bar.height()))
         if self.shown is not None:
-            p.setBrush(DANGER if self.alarm else accent)
+            p.setBrush(_danger() if self.alarm else accent)
             p.drawRoundedRect(QRectF(bar.left(), bar.top() + 3, max(2.0, x(self.shown) - bar.left()),
                                      bar.height() - 6), 3, 3)
         small = QFont(self.font())

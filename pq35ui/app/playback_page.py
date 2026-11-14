@@ -47,12 +47,7 @@ AXIS_SCALE = {key: mode for key, _label, mode in AXIS_MODES}
 RAW_COL_MIN = 150  # px: Raw columns at least this wide, so a useful part of the name shows
 
 
-def _fmt(v, signed=False):
-    """A value as the list shows it: fewer decimals the bigger it is (2040, 91.0, 2.96)."""
-    a = abs(v)
-    sign = "+" if signed else ""
-    text = f"{v:{sign}.0f}" if a >= 100 else f"{v:{sign}.1f}" if a >= 10 else f"{v:{sign}.2f}"
-    return text.replace("-", "\u2212")
+from .units import fmt as _fmt  # one number style on every tab
 
 
 def _parse_csv(path: Path):
@@ -796,7 +791,8 @@ class PlaybackPage(QWidget):
             self._ranges[name] = (float(valid.min()), float(valid.max())) if len(valid) else None
         new_end = float(self.times[-1])
         self.sel_band.setBounds((t0, new_end))
-        self._rebuild_curves()  # before moving the cursor: its readout looks up the new lines
+        if not self._refresh_curves_in_place():
+            self._rebuild_curves()  # before moving the cursor: its readout looks up the new lines
         if cursor_at_end:
             self.cursor_idx = len(self.times) - 1
             self.cursor_line.setValue(new_end)
@@ -1407,11 +1403,47 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
         graphscale.add_axes(pi, self._own_axes)
         self.legend.rebuild()
         self._rebuild_overview(checked)
+        # What this layout depends on besides the data, for _refresh_curves_in_place
+        self._layout_sig = (tuple(checked), fitted, tuple(sorted(extra)), self.compare is None,
+                            {n: ranges[n] for n in checked} if (fitted or extra) else None)
+        self._after_curves_changed()
+
+    def _after_curves_changed(self):
         self._split_dirty = True
         self._split_if_shown("rebuild")
         self._update_now_values()
         self._update_readout()
         self._update_analysis()
+
+    def _refresh_curves_in_place(self):
+        """New rows of a followed recording: hand the longer data to the lines already drawn
+        instead of clearing and rebuilding the graph (that got slow on long recordings). Only when
+        nothing else changed: same channels, same scaling, same legend; else False and the caller
+        rebuilds."""
+        sig = getattr(self, "_layout_sig", None)
+        if self.times is None or not sig or not sig[3] or self.compare is not None:
+            return False
+        checked = list(sig[0])
+        if list(self.curves) != checked or any(self.columns.get(n) is None for n in checked):
+            return False
+        ranges = {n: graphscale.value_range(self.columns[n]) for n in checked}
+        fitted, maps, extra = graphscale.plan(AXIS_SCALE[self._axis()], ranges, self.own_axis)
+        if (fitted, tuple(sorted(extra))) != sig[1:3]:
+            return False
+        if (fitted or extra) and ranges != sig[4]:
+            return False  # the legend shows each range / own axes span it: rebuild those
+        for name in checked:
+            scaled = maps[name](self.columns[name])
+            self.curves[name].setData(self.times, scaled)
+            self.curve_data[name] = (scaled, self.curve_data[name][1])
+        ov_items = getattr(self, "_ov_curves", {})
+        for name in checked:
+            col = self.columns[name]
+            if name in ov_items:
+                ov_items[name].setData(self.times, graphscale.scale(col, ranges[name]))
+        self.overview.setXRange(float(self.times[0]), float(self.times[-1]), padding=0)
+        self._after_curves_changed()
+        return True
 
     # --- overview timeline ---
 
@@ -1421,6 +1453,7 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
         ov.addItem(self.zoom_band)
         ov.addItem(self.ov_cursor)
         ov.addItem(self.ov_sel)
+        self._ov_curves = {}
         if self.times is None:
             return
         for i, name in enumerate(checked):
@@ -1432,6 +1465,7 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
                            pen=pg.mkPen(color, width=1))
             graphstyle.lean(item, clip=False)  # the timeline always shows the whole log
             graphstyle.cache(item)  # drawn once; moving the cursor marker doesn't redraw it
+            self._ov_curves[name] = item
         ov.setXRange(float(self.times[0]), float(self.times[-1]), padding=0)
         ov.setYRange(-4, 104, padding=0)
         self.ov_cursor.setValue(float(self.times[self._cursor_index()]))

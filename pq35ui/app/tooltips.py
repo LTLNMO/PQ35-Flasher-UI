@@ -202,32 +202,38 @@ def apply(window):
 
 
 class TooltipGate:
-    """App-wide switch for hover tooltips (Settings → General → Tooltips). Installed once on
-    the QApplication; while tooltips are off it swallows every tooltip event."""
+    """App-wide switch for hover tooltips (Settings → General → Tooltips). While tooltips are off
+    a filter on the QApplication swallows every tooltip event; while they're on (the usual case)
+    no filter is installed at all, because an app-wide filter is called for every event in the app."""
 
     _instance = None
 
     def __init__(self, settings):
-        from PySide6.QtCore import QObject
+        from PySide6.QtCore import QEvent, QObject
+        from PySide6.QtWidgets import QApplication
 
-        gate = self
-
-        from PySide6.QtCore import QEvent
         tooltip = QEvent.Type.ToolTip
 
         class _Filter(QObject):
-            # Sees every event in the app (thousands while a page is built): no imports or
-            # lookups here, just one comparison.
             def eventFilter(self, obj, event):
-                return event.type() == tooltip and not gate.enabled()
+                return event.type() == tooltip
 
-        from PySide6.QtWidgets import QApplication
         self.settings = settings
         self.filter = _Filter(QApplication.instance())
-        QApplication.instance().installEventFilter(self.filter)
+        self.installed = False
+        self.sync()
 
     def enabled(self):
         return bool(self.settings.get("tooltips", True))
+
+    def sync(self):
+        """Install or remove the filter to match the setting."""
+        from PySide6.QtWidgets import QApplication
+        want = not self.enabled()
+        if want != self.installed:
+            app = QApplication.instance()
+            (app.installEventFilter if want else app.removeEventFilter)(self.filter)
+            self.installed = want
 
     @classmethod
     def install(cls, settings):
@@ -235,4 +241,5 @@ class TooltipGate:
             cls._instance = cls(settings)
         else:
             cls._instance.settings = settings
+            cls._instance.sync()
         return cls._instance

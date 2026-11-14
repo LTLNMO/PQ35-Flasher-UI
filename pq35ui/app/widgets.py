@@ -543,6 +543,27 @@ class RoundPopups(QObject):
         return False
 
 
+class AppEventFilter(QObject):
+    """WheelGuard and RoundPopups as one app-wide filter. Every event in the app goes through
+    an app-wide filter, and the costly part is Qt handing each event to Python, so one filter
+    instead of two halves that cost."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.wheel = WheelGuard(self)
+        self.popups = RoundPopups(self)
+        self._wheel_type = WheelGuard._WHEEL
+        self._popup_types = (RoundPopups._POLISH, RoundPopups._SHOW)
+
+    def eventFilter(self, obj, event):
+        kind = event.type()
+        if kind == self._wheel_type:
+            return bool(self.wheel.eventFilter(obj, event))
+        if kind in self._popup_types:
+            self.popups.eventFilter(obj, event)
+        return False
+
+
 RoundTooltips = RoundPopups  # old name
 
 

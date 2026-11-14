@@ -16,10 +16,7 @@ NAME_MAX = 220     # px; longer names are cut off with …
 DOT = 7
 
 
-def _fmt(v):
-    a = abs(v)
-    text = f"{v:.0f}" if a >= 100 else f"{v:.1f}" if a >= 10 else f"{v:.2f}"
-    return text.replace("-", "−")
+from .units import fmt as _fmt  # one number style on every tab
 
 
 class _Chip(QWidget):
