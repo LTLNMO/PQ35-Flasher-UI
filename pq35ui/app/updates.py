@@ -18,7 +18,7 @@ from PySide6.QtCore import QObject, Signal
 from .. import __version__
 from .storage import REPO_ROOT, logs_dir
 
-REPO = "DSparks156x/PQ35-Flasher-UI"
+REPO = "LTLNMO/PQ35-Flasher-UI"
 API = f"https://api.github.com/repos/{REPO}"
 
 

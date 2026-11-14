@@ -12,10 +12,17 @@ dependencies = [
     "gs_usb>=0.3",
     "pyusb>=1.2",
     "libusb-package>=1.0",
+    "pyqtgraph>=0.13",
+    "numpy>=1.26",
 ]
 
 [project.gui-scripts]
 pq35-flasher = "pq35ui.app.main:main"
+
+[project.optional-dependencies]
+ai = [
+    "anthropic>=1.0",
+]
 
 [build-system]
 requires = ["hatchling"]

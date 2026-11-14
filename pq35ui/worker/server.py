@@ -54,17 +54,51 @@ SAMPLE_FLAGS = {
 }
 # Jobs that talk to the module directly instead of through flasher.runner.
 LIVE_OPERATIONS = ("log", "dtc", "dtc_clear")
+# VCDS names for each address (01, 02, 22, 44, 09). Which exact controller a family
+# supports (Haldex Gen4, the ZF EPS rack, BCM 8P0907063E) shows from its part number.
 FAMILY_LABELS = {
-    "engine": "Engine (ECU)",
-    "transmission": "Transmission (TCU)",
-    "haldex-gen4": "Haldex Gen4 (AWD)",
-    "pq-eps": "EPS steering rack",
-    "pq-bcm": "BCM",
+    "engine": "Engine",
+    "transmission": "Transmission",
+    "haldex-gen4": "AWD",
+    "pq-eps": "Steering Assist",
+    "pq-bcm": "Central Electronics",
 }
 
 
 class WorkerError(Exception):
     pass
+
+
+class AdapterLost(WorkerError):
+    """The CAN adapter stopped working mid-operation (unplugged, or wedged) and reopening it in
+    this worker didn't help. The app restarts the worker and tries once more."""
+
+
+# What a dead or wedged USB adapter says (python-can / pyusb / libusb), as opposed to a module
+# that simply doesn't answer.
+ADAPTER_DEAD = ("could not be sent", "usberror", "no such device", "errno 19", "pipe error",
+                "libusb", "input/output error", "entity not found", "not properly shut down")
+
+
+def _adapter_failed(results, gateway):
+    """True when a scan's failures came from the adapter, not the car: nothing answered and at
+    least one failure is a USB / send error."""
+    if any(r.get("status") == "ok" for r in results) or \
+            any(m.get("status") == "ok" for m in (gateway.get("modules") or ())):
+        return False
+    details = [str(gateway.get("error") or "")] + [str(r.get("detail") or "") for r in results] + \
+        [str(m.get("detail") or "") for m in (gateway.get("modules") or ())]
+    return any(sign in d.lower() for d in details for sign in ADAPTER_DEAD)
+
+
+def _usb_id(adapter):
+    """(bus, address) of an open gs_usb adapter's USB device (SocketCANDevice → python-can
+    GsUsbBus → GsUsb), or None."""
+    try:
+        dev = adapter.bus.gs_usb
+        return (dev.bus, dev.address)
+    except Exception:
+        return None
 
 
 def flasher_has_flag(flag, module="bcm") -> bool:
@@ -198,6 +232,20 @@ class EventHandler(logging.Handler):
                 pass
 
 
+class _KeepOpenAdapter:
+    """Delegates to a real adapter but makes close() a no-op, so an operation
+    that opens and closes per call leaves a reused gs_usb bus open."""
+
+    def __init__(self, adapter):
+        self._adapter = adapter
+
+    def __getattr__(self, name):
+        return getattr(self._adapter, name)
+
+    def close(self):
+        pass
+
+
 class Server:
     def __init__(self, proto_out, requests_in, data_dir: Path):
         self.out = proto_out
@@ -212,6 +260,82 @@ class Server:
         self.stderr = Capture(self, "stderr")
         # Set by the "stop" request; a live log job polls it between reads.
         self.stop_event = threading.Event()
+        # A gs_usb (candleLight) bus can't be cleanly closed and reopened on macOS,
+        # so keep one open and reuse it across scan/log operations (see _open_adapter).
+        self._kept_adapter = None
+        self._kept_key = None
+        # The car's VIN is read on the first scan and reused after, so later
+        # scans don't ping the engine for it again.
+        self._vehicle = None
+        # Reset the adapter even on an abrupt exit, so gs_usb is left clean.
+        import atexit
+        atexit.register(self._release_kept)
+        try:
+            import signal
+            signal.signal(signal.SIGTERM, lambda *_: (self._release_kept(), os._exit(0)))
+        except (ValueError, OSError):
+            pass  # not on the main thread, or unsupported
+
+    def _open_adapter(self, args):
+        """Open the CAN adapter for an in-process op (scan/log). For gs_usb, keep
+        one bus open and reuse it — macOS can't cleanly reopen it after a close."""
+        import flasher.runner as runner
+        if getattr(args, "adapter", None) != "gs_usb":
+            return runner.open_adapter(args)
+        key = (args.adapter, getattr(args, "dll", None),
+               getattr(args, "channel", None), getattr(args, "serial", None))
+        if self._kept_adapter is not None and self._kept_key != key:
+            self._release_kept()
+        if self._kept_adapter is not None and self._kept_gone():
+            self._log("The adapter was unplugged or reset since it was opened: reconnecting.")
+            self._release_kept()
+        if self._kept_adapter is None:
+            self._kept_adapter = runner.open_adapter(args)
+            self._kept_key = key
+        else:
+            # Reusing the open bus: flush frames left buffered by the previous
+            # operation, so the next TP2 channel setup isn't confused by them.
+            try:
+                self._kept_adapter.can_clear()
+            except Exception:
+                pass
+        return _KeepOpenAdapter(self._kept_adapter)
+
+    def _release_kept(self):
+        """Really close the reused adapter (interface change, unplugged, or an op failed)."""
+        adapter, self._kept_adapter, self._kept_key = self._kept_adapter, None, None
+        if adapter is not None:
+            try:
+                device = adapter.bus.gs_usb.gs_usb  # the pyusb device, before close() drops .bus
+            except Exception:
+                device = None
+            try:
+                adapter.close()
+            except Exception:
+                pass
+            if device is not None:
+                # Give libusb the device back too (python-can's shutdown doesn't), so the next
+                # open in this worker starts clean instead of fighting a half-closed handle.
+                try:
+                    import usb.util
+                    usb.util.dispose_resources(device)
+                except Exception:
+                    pass
+
+    def _kept_gone(self):
+        """True when the kept gs_usb adapter isn't on USB at the address it was opened at any
+        more: unplugged (and maybe plugged back in, which gives it a new address)."""
+        if self._kept_adapter is None or (self._kept_key or (None,))[0] != "gs_usb":
+            return False
+        mine = _usb_id(self._kept_adapter)
+        if mine is None:
+            return False
+        from . import discovery
+        present = discovery.gs_usb_ids()
+        return present is not None and mine not in present
+
+    def _log(self, message, level="info"):
+        self.emit({"event": "log", "level": level, "logger": "worker", "message": message})
 
     # --- plumbing ---
 
@@ -237,6 +361,9 @@ class Server:
             self.answer(request, lambda: self.dispatch(method, request.get("params") or {}))
         if self.job is not None:
             self.job.join()
+        # Reset the kept adapter so a gs_usb device is left in a clean state for
+        # the next app start (otherwise it opens but no CAN traffic answers).
+        self._release_kept()
 
     def answer(self, request, call):
         try:
@@ -258,7 +385,11 @@ class Server:
             if os.environ.get("PQ35_DEMO"):
                 # Demo mode never offers real hardware, so it can't be driven by mistake.
                 from .demo import adapter_entry
-                return [adapter_entry()]
+                from .simcar import adapter_entry as simcar_entry
+                return [adapter_entry(), simcar_entry()]
+            if self.job is None and self._kept_gone():  # unplugged while idle: let go now
+                self._log("The adapter was unplugged: closed it, it reconnects when needed.")
+                self._release_kept()
             return discovery.list_interfaces()
         if method == "families":
             return self.families()
@@ -348,6 +479,31 @@ class Server:
             "has_dtc": family.supports("dtc"),
         } for family in FAMILIES]
 
+    def _run_simcar(self, params):
+        """Scan / fault codes on the simulated car: the real code, a pretend bus."""
+        from . import live
+        from .scan import scan
+        from .simcar import SimulatedCar
+        if getattr(self, "_simcar", None) is None:
+            self._simcar = SimulatedCar()
+        car = self._simcar
+        open_car = lambda _args: car  # noqa: E731
+        operation = params["operation"]
+        if operation != "scan":
+            return live.run_dtc(self, params, open_car, clear=operation == "dtc_clear")
+        started = time.monotonic()
+        results, gateway = scan(params["adapter"], self.progress, open_car,
+                                freeze_frames=bool(params.get("freeze_frames")))
+        check = car.check(results, gateway)
+        check["seconds"] = round(time.monotonic() - started, 1)
+        log = logging.getLogger("SimulatedCar")
+        log.info("Simulated car check: %d/%d as expected (%.1f s)", check["passed"], check["total"],
+                 check["seconds"])
+        for problem in check["problems"]:
+            log.warning("Simulated car check failed: %s", problem)
+        return {"operation": "scan", "exit_code": 0, "result": results, "gateway": gateway,
+                "full": True, "selftest": check}
+
     def haldex_checksums(self, path):
         from flasher.controllers.haldex_gen4.patches import application_checksums, IMAGE_SIZE
         data = Path(path).read_bytes()
@@ -381,6 +537,10 @@ class Server:
         if operation not in HARDWARE_OPERATIONS and operation not in ("scan",) + LIVE_OPERATIONS:
             raise WorkerError(f"Unknown operation {operation!r}")
         adapter = params["adapter"]
+        if adapter["adapter"] == "simcar":
+            if operation in ("scan", "dtc", "dtc_clear"):
+                return self._run_simcar(params)
+            adapter = params["adapter"] = dict(adapter, adapter="demo")  # the rest: pretend module
         if adapter["adapter"] == "demo":
             from .demo import DemoModule
             return DemoModule(self, self.data_dir).run(params)
@@ -398,16 +558,39 @@ class Server:
             self.lock.acquire()
             try:
                 if operation == "log":
-                    return live.run_log(self, params, runner.open_adapter, self.stop_event.is_set)
-                return live.run_dtc(self, params, runner.open_adapter, clear=operation == "dtc_clear")
+                    return live.run_log(self, params, self._open_adapter, self.stop_event.is_set)
+                return live.run_dtc(self, params, self._open_adapter, clear=operation == "dtc_clear")
+            except Exception:
+                self._release_kept()  # a failed op may have left the bus bad; reopen next time
+                raise
             finally:
                 self.lock.release()
         if operation == "scan":
             from .scan import scan
             self.lock.acquire()
             try:
-                results, gateway = scan(adapter, self.progress, runner.open_adapter)
-                return {"operation": "scan", "exit_code": 0, "result": results, "gateway": gateway}
+                for attempt in (1, 2):
+                    results, gateway = scan(adapter, self.progress, self._open_adapter,
+                                            known_vehicle=self._vehicle,
+                                            freeze_frames=bool(params.get("freeze_frames")))
+                    if not _adapter_failed(results, gateway):
+                        break
+                    # The adapter, not the car: reopen it (opening resets the USB device, like
+                    # unplugging it) and scan again once.
+                    self._release_kept()
+                    if attempt == 2:
+                        raise AdapterLost("The CAN adapter isn't responding (USB errors) even after "
+                                          "reconnecting to it.")
+                    self._log("The adapter didn't respond (USB errors): reconnecting and scanning "
+                              "again.", "warning")
+                    time.sleep(1.0)
+                if (gateway.get("vehicle") or {}).get("vin"):
+                    self._vehicle = gateway["vehicle"]  # cache for later scans
+                return {"operation": "scan", "exit_code": 0, "result": results, "gateway": gateway,
+                        "full": True}
+            except Exception:
+                self._release_kept()
+                raise
             finally:
                 self.lock.release()
         argv = ["--module", params["module"], "--adapter", adapter["adapter"]]

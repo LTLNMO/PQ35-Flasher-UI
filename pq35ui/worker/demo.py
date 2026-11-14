@@ -8,7 +8,6 @@ real thing. Seed it with a real image via PQ35_DEMO_HALDEX / PQ35_DEMO_EPS.
 """
 import hashlib
 import json
-import math
 import os
 import random
 import time
@@ -24,12 +23,88 @@ DEFAULT_IDENTITY = {
     "engine": ("1K0907115J", "0030", "2.0l R4/4V TFSI"),
     "transmission": ("02E927770AL", "0260", "GSG DSG AG6"),
 }
+# Pretend fault codes. "sticky" ones are faults still present: they come straight back after a
+# clear (so the app marks them "still active"); the others clear for good. Flasher stuff →
+# Demo mode → Reset demo fault codes brings them all back.
+def _code(p_number, text, intermittent=False, sticky=False):
+    """A demo code from its OBD P0xxx number (VAG 5-digit = 16384 + the P0 number).
+    sticky = the fault is still there, so it comes straight back after clearing."""
+    vag = 16384 + int(p_number[1:])
+    entry = {"code": vag, "code_text": str(vag), "status": 0x23 if intermittent else 0x20,
+             "status_text": f"{p_number} {text}" + (" (intermittent)" if intermittent else "")}
+    if sticky:
+        entry["sticky"] = True
+    return entry
+
+
+# Several codes so the fault lists can be looked through; a few are sticky ("still active").
 DEMO_DTCS = {
-    "engine": [{"code": 16684, "code_text": "16684", "status": 0x23,
-                "status_text": "P0300 Random/Multiple Cylinder Misfire Detected (intermittent)"}],
-    "transmission": [],
+    "engine": [
+        _code("P0300", "Random/Multiple Cylinder Misfire Detected", intermittent=True),
+        _code("P0102", "Mass or Volume Air Flow Circuit Low Input", sticky=True),
+        _code("P0299", "Turbocharger/Supercharger Underboost Condition", intermittent=True),
+        _code("P0171", "System Too Lean (Bank 1)"),
+        _code("P0420", "Catalyst System Efficiency Below Threshold (Bank 1)", sticky=True),
+        _code("P0441", "Evaporative Emission System Incorrect Purge Flow", intermittent=True),
+        _code("P0016", "Crankshaft Position - Camshaft Position Correlation (Bank 1 Sensor A)"),
+    ],
+    "transmission": [
+        {"code": 18258, "code_text": "18258", "status": 0x23,
+         "status_text": "P1850 Data-Bus Powertrain: Missing Message from Engine Control (intermittent)"},
+        _code("P0715", "Input/Turbine Speed Sensor Circuit", sticky=True),
+        _code("P0731", "Gear 1 Incorrect Ratio", intermittent=True),
+        _code("P0741", "Torque Converter Clutch Circuit Performance or Stuck Off"),
+    ],
 }
 SEED_ENV = {HALDEX: "PQ35_DEMO_HALDEX", EPS: "PQ35_DEMO_EPS"}
+
+
+def _vag(code, text, intermittent=False, sticky=False):
+    """A demo code from a 5-digit VAG code (non-engine modules)."""
+    entry = {"code": code, "code_text": f"{code:05d}", "status": 0x23 if intermittent else 0x20,
+             "status_text": text + (" (intermittent)" if intermittent else "")}
+    if sticky:
+        entry["sticky"] = True
+    return entry
+
+
+# The pretend car's gateway list (17 modules): workshop address -> TP2 ID. 09 (the BCM) doesn't
+# answer in demo, like before; everything else does.
+DEMO_GATEWAY = ((0x01, 0x01), (0x02, 0x02), (0x03, 0x03), (0x08, 0x08), (0x09, 0x20), (0x15, 0x15),
+                (0x16, 0x16), (0x17, 0x17), (0x19, 0x1F), (0x22, 0x0A), (0x42, 0x42), (0x44, 0x09),
+                (0x46, 0x46), (0x52, 0x52), (0x55, 0x55), (0x56, 0x56), (0x65, 0x65))
+# Identities of the modules the app has no family for (keyed by TP2 ID).
+DEMO_OTHERS = {
+    0x03: ("1K0907379AC", "0101", "ESP MK60EC1 H31"),
+    0x08: ("1K0907044DT", "0120", "Climatronic"),
+    0x15: ("1K0909605AB", "0012", "AirbagVW10"),
+    0x16: ("1K0953549AQ", "0060", "Lenksäulenmodul"),
+    0x17: ("1K0920874B", "0503", "KOMBI+WEGFAHRS. VDO"),
+    0x1F: ("1K0907530L", "0204", "J533 Gateway H"),
+    0x42: ("1K0959701P", "0100", "Tuer-SG"),
+    0x46: ("1K0959433CT", "0058", "KSG PQ35 RDK"),
+    0x52: ("1K0959702P", "0100", "Tuer-SG"),
+    0x55: ("1K0907357A", "0013", "AFS-Steuergeraet"),
+    0x56: ("1K0035180AC", "0026", "Radio RCD510"),
+    0x65: ("1K0907273B", "0010", "RDK"),
+}
+DEMO_OTHER_DTCS = {
+    0x03: [_vag(778, "Steering Angle Sensor (G85): No or Incorrect Basic Setting / Adaptation", sticky=True)],
+    0x15: [_vag(532, "Supply Voltage B+: Signal too Low", intermittent=True)],
+    0x17: [_vag(1314, "Engine Control Module: No Signal/Communication", intermittent=True),
+           _vag(1321, "Control Module for Airbags (J234): No Signal/Communication", intermittent=True)],
+    0x1F: [_vag(1312, "Powertrain Data Bus: Defective", intermittent=True)],
+    0x46: [_vag(1331, "Door Control Module; Driver Side (J386): No Signal/Communication", sticky=True)],
+}
+
+
+def _decimals(name, unit):
+    """How many decimals a reading shows, roughly as the ECU sends them."""
+    unit = (unit or "").lower()
+    if "lambda" in (name or "").lower() and not unit:
+        return 3
+    return {"rpm": 0, "/min": 0, "mbar": 0, "km/h": 0, "nm": 0, "km": 0, "s": 0, "ma": 0,
+            "v": 2, "ms": 2, "a": 2}.get(unit, 1)
 
 
 def adapter_entry():
@@ -138,43 +213,78 @@ class DemoModule:
     def log(self, message):
         self.server.emit({"event": "log", "level": "info", "logger": "demo", "message": message})
 
-    def scan(self) -> list:
-        """PQ35_DEMO_BOOTLOADER=awd,eps pretends those modules are stuck in their loader."""
+    def _families(self):
+        """The supported modules as a real scan would report them.
+        PQ35_DEMO_BOOTLOADER=awd,eps pretends those modules are stuck in their loader."""
         from flasher.controllers.registry import FAMILIES
         stuck = {a.strip() for a in os.environ.get("PQ35_DEMO_BOOTLOADER", "").split(",") if a.strip()}
         results = []
-        for index, family in enumerate(FAMILIES):
-            self.server.progress("SCAN", 100 * index / len(FAMILIES),
-                                 f"Looking for {family.name} at 0x{family.module:02X}")
-            self._sleep(0.5)
+        for family in FAMILIES:
             entry = {"family": family.name, "module": family.module, "status": "absent"}
+            results.append(entry)
             if family.name == BCM:
-                results.append(entry)
-                continue
+                continue  # the pretend car has no BCM answering
             identity = self.identity(family.name)
             if stuck & set(family.module_aliases):
-                identity = dict(identity, in_bootloader=True, sw_version="",
-                                system_desc="Bootloader (demo)")
-                entry.update(status="bootloader", identity=identity)
+                entry.update(status="bootloader", identity=dict(identity, in_bootloader=True, sw_version="",
+                                                                 system_desc="Bootloader (demo)"))
             else:
                 identity["in_bootloader"] = False
+                if family.name == "engine":
+                    identity["mileage_km"] = 148213
                 entry.update(status="ok", identity=identity)
-            results.append(entry)
-        self.server.progress("SCAN", 100, "Done")
         return results
+
+    def scan(self, freeze_frames=False):
+        """(results, gateway) like scan.scan: one pass over the pretend gateway list."""
+        from .scan import address_name, annotate
+        gateway = self._gateway()
+        gateway["vehicle"] = {"vin": "WAUZZZ8P2BA000123", "source": "engine"}  # pretend 2011 Audi S3 (8P)
+        results = annotate(self._families(), gateway)
+        by_tp2 = {e["module"]: e for e in results}
+        entries = gateway.get("entries") or []
+        modules = []
+        for index, entry in enumerate(entries):
+            name = address_name(entry["address"], entry.get("name", ""))
+            self.server.progress("SCAN", 100 * index / len(entries),
+                                 f"Reading {entry['address']:02X} {name} ({index + 1}/{len(entries)})")
+            self._sleep(0.25)
+            found = by_tp2.get(entry["tp2"])
+            family = found["family"] if found else None
+            module = {"key": family or f"addr:{entry['address']:02X}", "address": entry["address"],
+                      "name": name, "tp2": entry["tp2"], "family": family, "coded": entry.get("coded", True)}
+            if found is not None:
+                if found["status"] != "ok":
+                    module.update(status="no_answer" if found["status"] == "absent" else "bootloader",
+                                  identity=found.get("identity"))
+                else:
+                    module.update(status="ok", identity=found["identity"],
+                                  dtc=self._dtc(family, False, freeze_frames=freeze_frames))
+            elif entry["tp2"] in DEMO_OTHERS:
+                part, version, desc = DEMO_OTHERS[entry["tp2"]]
+                module.update(status="ok", dtc=self._dtc(None, False, entry["tp2"], freeze_frames),
+                              identity={"software_part_number": part, "part_number": part,
+                                        "sw_version": version, "system_desc": desc + " (demo)", "demo": True})
+            else:
+                module.update(status="no_answer",
+                              detail=f"TP2 channel setup to 0x{entry['tp2']:02X} timed out (demo)")
+            modules.append(module)
+        gateway["modules"] = modules
+        self.server.progress("SCAN", 100, "Done")
+        return results, gateway
 
     @staticmethod
     def _gateway():
         """A pretend installation list: [workshop address, TP2 ID, coded]."""
         try:
             from flasher.vag_protocols.installation_list import WORKSHOP_NAMES
+            from .scan import address_name
         except ImportError:
             return {"available": False, "entries": [], "error": "not supported by this flasher build"}
-        rows = ((0x01, 0x01), (0x02, 0x02), (0x03, 0x03), (0x09, 0x20), (0x15, 0x15),
-                (0x17, 0x17), (0x19, 0x1F), (0x22, 0x0A), (0x44, 0x09), (0x56, 0x56))
+        rows = DEMO_GATEWAY
         return {"available": True, "entries": [
             {"address": a, "address_text": f"{a:02X}", "tp2": tp2, "bus": 0, "status": 1,
-             "coded": True, "name": WORKSHOP_NAMES.get(a, f"Address {a:02X}")} for a, tp2 in rows]}
+             "coded": True, "name": address_name(a, WORKSHOP_NAMES.get(a, ""))} for a, tp2 in rows]}
 
     # --- live logging and fault codes ---
 
@@ -185,45 +295,43 @@ class DemoModule:
         except ImportError:
             return []
 
-    @staticmethod
-    def _fake_value(unit, t, field):
-        unit = (unit or "").lower()
-        wave = (math.sin(t / 2.0 + field) + 1) / 2
-        if "rpm" in unit or "/min" in unit:
-            return round(850 + 5200 * wave), 0
-        if "mbar" in unit or "hpa" in unit:
-            return round(990 + 1300 * wave), 0
-        if "°c" in unit or "c" == unit:
-            return round(88 + 6 * wave, 1), 1
-        if "km/h" in unit:
-            return round(160 * wave), 0
-        if unit == "v":
-            return round(13.8 + 0.4 * wave, 2), 2
-        if "°" in unit or "kw" in unit:
-            return round(-6 + 12 * wave, 1), 1
-        if "%" in unit:
-            return round(100 * wave, 1), 1
-        return round(100 * wave, 1), 1
-
     def _log(self, family, params):
         """Fake samples, round-robin over the groups, until the UI sends stop."""
         module = get_family(family).module
         groups = sorted({int(g) for g in params.get("groups") or ()})
         if not groups:
             raise ValueError("Choose at least one value to log.")
-        units = {(v["group"], v["field"]): v["unit"] for v in self._catalog(module)}
+        # (group, field) -> (name, unit); where two catalog names share a field, the later wins
+        # Every location a value has (like a real module, engine speed is in groups 1, 5, 54, 113 …)
+        known = {}
+        for v in self._catalog(module):
+            for g, f in v.get("locations") or [(v["group"], v["field"])]:
+                known.setdefault((g, f), (v["name"], v["unit"]))
+        known.update({(v["group"], v["field"]): (v["name"], v["unit"]) for v in self._catalog(module)})
+        from .dyno import DynoPull
+        car = DynoPull()  # every reading comes from one simulated 3rd-gear pull, 30 → 80 mph
         interval = max(int(params.get("interval_ms") or 0), 40) / 1000.0
+        from .live import group_periods
+        periods = group_periods(groups, params) or {}
+        next_due = {g: 0.0 for g in groups}
         started = time.monotonic()
         count = 0
         while not self.server.stop_event.is_set():
+            emitted = False
             for group in groups:
                 if self.server.stop_event.is_set():
                     break
                 t = time.monotonic() - started
+                if t < next_due[group]:
+                    continue
+                car.advance(t)
+                next_due[group] = t + (periods.get(group) or 0) / 1000.0
                 fields = []
                 for index in range(1, 5):
-                    unit = units.get((group, index), "")
-                    value, decimals = self._fake_value(unit, t, index + group)
+                    name, unit = known.get((group, index), ("", ""))
+                    value = car.value(name, unit, seed=index + group)
+                    decimals = _decimals(name, unit)
+                    value = round(value, decimals) if decimals else int(round(value))
                     fields.append({"index": index, "formula": 0, "a": 0, "b": 0, "value": value,
                                    "unit": unit, "numeric": True,
                                    "text": f"{value:.{decimals}f} {unit}".strip()})
@@ -232,34 +340,57 @@ class DemoModule:
                                   "fields": fields, "raw": "", "error": None,
                                   "round_trip_ms": 25.0})
                 count += 1
+                emitted = True
                 time.sleep(interval)
+            if not emitted:
+                time.sleep(0.01)
         elapsed = max(time.monotonic() - started, 1e-3)
         return {"samples": count, "errors": 0, "reconnects": 0,
                 "achieved_hz": {str(g): round(count / len(groups) / elapsed, 1) for g in groups}}
 
-    def _dtc(self, family, clear):
-        path = self.root / f"{family}.dtc.json"
+    def _dtc(self, family, clear, tp2=None, freeze_frames=False):
+        """family: a family name, or None for another gateway module (tp2 = its TP2 ID)."""
+        path = self.root / (f"{family}.dtc.json" if family else f"addr{tp2:02X}.dtc.json")
         try:
             codes = json.loads(path.read_text())
         except (OSError, ValueError):
-            codes = DEMO_DTCS.get(family, [])
+            codes = DEMO_DTCS.get(family, []) if family else DEMO_OTHER_DTCS.get(tp2, [])
         result = {}
         if clear:
-            codes = []
-            path.write_text("[]")
+            codes = [c for c in codes if c.get("sticky")]  # faults still present come straight back
+            path.write_text(json.dumps(codes))
             result["clear"] = {"cleared": True, "raw": "54ff00"}
+        if freeze_frames:  # a pretend freeze frame per code, shaped like decode_freeze_frame's
+            codes = [dict(c, freeze_frame={"raw": "", "fields": [
+                {"label": "Priority", "value": 2, "known": True},
+                {"label": "Frequency", "value": 1 + i % 3, "known": True},
+                {"label": "Reset Counter", "value": 13, "known": True},
+                {"label": "Mileage", "value": 148213 - 9 * i, "unit": "km", "known": True}]})
+                for i, c in enumerate(codes)]
         result.update(method="18 02 FF 00 (demo)", codes=codes, raw="")
         return result
 
     def run(self, params) -> dict:
         if params["operation"] == "scan":
             self.log("DEMO scan: no CAN traffic")
-            gateway = self._gateway()
-            from .scan import annotate
+            results, gateway = self.scan(bool(params.get("freeze_frames")))
             return {"operation": "scan", "exit_code": 0, "demo": True,
-                    "result": annotate(self.scan(), gateway), "gateway": gateway}
-        family = family_for_module(parse_module(params["module"])).name
+                    "result": results, "gateway": gateway, "full": True}
         operation = params["operation"]
+        tp2 = parse_module(params["module"])
+        try:
+            family = family_for_module(tp2).name
+        except ValueError:
+            if operation not in ("dtc", "dtc_clear"):
+                raise
+            # Another gateway module (full scan): only fault codes.
+            self.log(f"DEMO {operation} on 0x{tp2:02X}: no CAN traffic")
+            self._sleep(0.6)
+            if tp2 not in DEMO_OTHERS:
+                raise RuntimeError(f"TP2 channel setup to 0x{tp2:02X} timed out (demo)")
+            return {"operation": operation, "exit_code": 0, "demo": True,
+                    "result": self._dtc(None, operation == "dtc_clear", tp2,
+                                        bool(params.get("freeze_frames")))}
         started = time.monotonic()
         result = {"operation": operation, "exit_code": 0, "argv": ["(demo)"], "out": params.get("out"),
                   "demo": True}
@@ -270,7 +401,8 @@ class DemoModule:
         elif operation == "log":
             result["result"] = self._log(family, params)
         elif operation in ("dtc", "dtc_clear"):
-            result["result"] = self._dtc(family, clear=operation == "dtc_clear")
+            result["result"] = self._dtc(family, clear=operation == "dtc_clear",
+                                         freeze_frames=bool(params.get("freeze_frames")))
         elif operation == "readout":
             result.update(self._readout(family, params))
         elif operation == "flash":

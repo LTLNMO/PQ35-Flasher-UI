@@ -5,11 +5,12 @@ The dialog only collects a selection; the caller applies it to the source image
 """
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton,
+    QButtonGroup, QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton,
     QDoubleSpinBox, QRadioButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from .widgets import Card, muted
+from .popups import OverlayDialog
 
 GAIN_PRESETS = {"hca-gain-140": 140, "hca-gain-160": 160}
 TITLES = {
@@ -34,8 +35,10 @@ def _gain_text(gains):
     return " / ".join(",".join(map(str, row)) for row in gains)
 
 
-class PatchDialog(QDialog):
+class PatchDialog(OverlayDialog):
     """``options`` is the worker's eps_patch_options result for the source image."""
+
+    CARD_ICON = "extension"  # header icon when shown as a card
 
     def __init__(self, options, parent=None):
         super().__init__(parent)

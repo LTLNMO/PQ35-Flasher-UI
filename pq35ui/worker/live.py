@@ -21,6 +21,20 @@ def _family(params):
     return family_for_module(parse_module(params["module"]))
 
 
+def group_periods(groups, params):
+    """{group: period_ms} when the UI set per-group rates, else None.
+    0 means as fast as possible; groups without an override use interval_ms."""
+    overrides = params.get("group_periods") or {}
+    if not overrides:
+        return None
+    default = int(params.get("interval_ms") or 0)
+    out = {}
+    for group in groups:
+        value = overrides.get(str(group), overrides.get(group))
+        out[group] = max(int(value), 0) if value is not None else default
+    return out
+
+
 def run_log(server, params, open_adapter, should_stop) -> dict:
     from flasher.vag_protocols.measuring import MeasuringSession
     family = _family(params)
@@ -37,6 +51,13 @@ def run_log(server, params, open_adapter, should_stop) -> dict:
         session = MeasuringSession(device, family.module, groups,
                                    interval_ms=int(params.get("interval_ms") or 0),
                                    on_sample=on_sample, should_stop=should_stop, log_fn=log)
+        periods = group_periods(groups, params)
+        if periods is not None:
+            normal = [g for g, p in periods.items() if not p]
+            timed = {g: float(p) for g, p in periods.items() if p}
+            session.scheduler.configure(normal=normal, timed=timed)
+            log("Per-group rates: " + ", ".join(f"{g}={'max' if not p else f'{p} ms'}"
+                                                for g, p in sorted(periods.items())))
         summary = session.run()
     finally:
         device.close()
@@ -47,12 +68,14 @@ def run_dtc(server, params, open_adapter, clear=False) -> dict:
     from flasher.vag_protocols import dtc
     from flasher.vag_protocols.kwp import KWPClient
     from flasher.vag_protocols.tp2 import TP20Transport
-    family = _family(params)
+    from flasher.controllers.registry import parse_module
+    # Any module the gateway lists, not only the registered families (full scan rows).
+    module = parse_module(params["module"])
     log = logging.getLogger("FaultCodes").info
     device = open_adapter(_args(params["adapter"]))
     tp = None
     try:
-        tp = TP20Transport(device, module=family.module, timeout=2.0, log_fn=log)
+        tp = TP20Transport(device, module=module, timeout=2.0, log_fn=log)
         kwp = KWPClient(tp, log_fn=log)
         try:
             kwp.session(0x89)  # diagnostic session; some modules answer fine without it
@@ -61,7 +84,7 @@ def run_dtc(server, params, open_adapter, clear=False) -> dict:
         result = {}
         if clear:
             result["clear"] = dtc.clear_dtcs(kwp)
-        result.update(dtc.read_dtcs(kwp))
+        result.update(dtc.read_dtcs(kwp, freeze_frames=bool(params.get("freeze_frames"))))
     finally:
         if tp is not None:
             try:

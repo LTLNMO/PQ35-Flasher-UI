@@ -1,16 +1,17 @@
 #!/bin/sh
 # PQ35 Flasher UI installer for Linux and macOS.
 #
-#   curl -LsSf https://raw.githubusercontent.com/DSparks156x/PQ35-Flasher-UI/main/install.sh | sh
+#   curl -LsSf https://raw.githubusercontent.com/LTLNMO/PQ35-Flasher-UI/main/install.sh | sh
 #
 # or ./install.sh from a checkout. Re-run it any time to update. No root needed.
-# Set PQ35_YES=1 to accept every question (shortcuts) without asking.
+# Set PQ35_YES=1 to accept every question (shortcuts, AI tools) without asking.
+# Set PQ35_NO_AI_TOOLS=1 to skip the AI command-line tools (Claude Code, Gemini CLI, Codex CLI).
 # The app's "Update" button runs this with PQ35_UPDATE=1 and PQ35_WAIT_PID set:
 # it waits for the app to close, updates without asking anything, and reopens it.
 set -eu
 UPDATING="${PQ35_UPDATE:-}"
 
-REPO="DSparks156x/PQ35-Flasher-UI"
+REPO="LTLNMO/PQ35-Flasher-UI"
 OS=$(uname)
 if [ "$OS" = "Darwin" ]; then
     INSTALL_DIR="$HOME/Library/Application Support/PQ35-Flasher-UI"
@@ -68,7 +69,7 @@ else
         git clone --recurse-submodules "https://github.com/$REPO.git" "$APP_DIR"
     fi
 fi
-[ -f "$APP_DIR/flasher/runner.py" ] || { echo "The flasher submodule is missing."; exit 1; }
+[ -f "$APP_DIR/flasher/runner.py" ] || { echo "The flasher folder is missing."; exit 1; }
 
 if ! command -v uv >/dev/null; then
     step "Installing uv"
@@ -77,12 +78,25 @@ if ! command -v uv >/dev/null; then
 fi
 
 step "Installing the app (this takes a minute the first time)"
-if ! uv sync --project "$APP_DIR" --frozen; then
+if ! uv sync --project "$APP_DIR" --frozen --extra ai; then
     warn "Install from the lockfile failed (above); retrying without it."
-    uv sync --project "$APP_DIR"
+    uv sync --project "$APP_DIR" --extra ai
 fi
 
 PYTHON="$APP_DIR/.venv/bin/python"
+
+# AI command-line tools, so the AI features can run on the user's own Claude,
+# Google or ChatGPT account instead of an API key. Optional: a failure here
+# never stops the install.
+AI_TOOLS="$INSTALL_DIR/ai-tools"
+if [ -z "${PQ35_NO_AI_TOOLS:-}" ] && [ -f "$APP_DIR/install-ai-tools.sh" ]; then
+    if { [ -n "$UPDATING" ] && [ -d "$AI_TOOLS" ]; } || \
+       { [ -z "$UPDATING" ] && ask "Install the AI tools (Claude Code, Gemini CLI, Codex CLI) so AI features can use your own subscription instead of an API key? About 1 GB."; }; then
+        step "Setting up the AI tools"
+        PQ35_PYTHON="$PYTHON" sh "$APP_DIR/install-ai-tools.sh" || \
+            warn "The AI tools didn't install (above). The app works without them; re-run $APP_DIR/install-ai-tools.sh later."
+    fi
+fi
 cat > "$APP_DIR/pq35-flasher" <<EOF
 #!/bin/sh
 cd "$APP_DIR" && exec "$PYTHON" -m pq35ui "\$@"

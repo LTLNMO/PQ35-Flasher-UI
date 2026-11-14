@@ -1,22 +1,20 @@
 """The screens behind the left-hand navigation."""
-import json
-import os
 import re
 import shutil
 import time
-import zipfile
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QFileDialog, QGridLayout, QHBoxLayout, QInputDialog, QLabel,
-    QListWidget, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QRadioButton,
+    QButtonGroup, QCheckBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel,
+    QListWidget, QMenu, QPushButton, QRadioButton,
     QScrollArea, QSpinBox, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
-from .storage import images_dir, logs_dir, patched_dir, prune_logs, timestamp
-from .widgets import Badge, Banner, Card, DropZone, FlowRow, HoldButton, ProgressPanel, h1, kib, muted, restyle
+from .storage import images_dir, patched_dir, timestamp
+from .widgets import Badge, Banner, Card, DropZone, FlowRow, HoldButton, ProgressPanel, kib, muted, restyle
+from .popups import InputDialog, MessageBox
 
 HALDEX, EPS, BCM = "haldex-gen4", "pq-eps", "pq-bcm"
 # Modules whose full firmware can be read back over OBD and diffed, so the Flash
@@ -27,9 +25,23 @@ BACKUP_FAMILIES = {HALDEX}
 # identity/coding (not the full firmware), kept before flashing.
 BACKUP_CAPABLE = {HALDEX, BCM}
 
+# Tabs you can turn off in Settings → Features (Dashboard, Connect, Help and Settings always stay).
+OPTIONAL_FEATURES = (("projects", "Projects"), ("backup", "Back up"), ("flash", "Flash"),
+                     ("patches", "Patches"), ("diagnostics", "Diagnostics"), ("liveview", "Live View"),
+                     ("logger", "Logger"), ("playback", "Analyze"), ("maps", "Maps"))
+DEFAULT_HIDDEN = ("maps",)  # Maps is read-only and not much use yet
+
+
+def hidden_features(settings) -> set:
+    saved = settings.get("hidden_features")
+    return set(DEFAULT_HIDDEN if saved is None else saved)
+
 
 class Page(QScrollArea):
     title = ""
+    # Fit the page to the window (graphs and tables shrink; scroll only when it can't fit).
+    # Pages of plain controls (Settings) set this False: natural sizes, scroll when longer.
+    fit_to_window = True
 
     def __init__(self, state, parent=None):
         super().__init__(parent)
@@ -37,11 +49,12 @@ class Page(QScrollArea):
         self.setWidgetResizable(True)
         inner = QWidget()
         inner.setObjectName("page")
-        self.setWidget(inner)
+        from .widgets import _FitToWindow
+        self.setWidget(_FitToWindow(inner) if self.fit_to_window else inner)
         self.layout_ = QVBoxLayout(inner)
         self.layout_.setContentsMargins(28, 22, 28, 22)
         self.layout_.setSpacing(14)
-        self.layout_.addWidget(h1(self.title))
+        # No title in the page body: the tab bar keeps the current tab expanded with its name.
         state.changed.connect(self.refresh)
         state.busy_changed.connect(lambda _busy: self.refresh())
 
@@ -99,6 +112,8 @@ SCAN_TEXT = {
     "absent": ("Not found", "idle"),
     None: ("Not checked", "idle"),
 }
+CARD_COLUMNS = 2
+ART_SIZE = 56  # module picture on each card (the user's own images, see module_art)
 # Cards are listed in this order; "absent" never gets a card.
 STATUS_ORDER = {"ok": 0, "bootloader": 1, "responding": 2, "unexpected": 3, None: 4}
 
@@ -111,6 +126,19 @@ class ModuleCard(Card):
         self.family = family
         self.page = page
         self.entry = None
+        # The module's picture on the left; the card's text and buttons to its right.
+        row = QHBoxLayout()
+        row.setSpacing(14)
+        self.art = QLabel()
+        self.art.setFixedSize(ART_SIZE, ART_SIZE)
+        self.art.setToolTip(family["label"])
+        self.art.hide()  # shown when there's an image for this module (paint_art)
+        row.addWidget(self.art, 0, Qt.AlignmentFlag.AlignVCenter)
+        inner = QVBoxLayout()
+        inner.setSpacing(self.body.spacing())
+        row.addLayout(inner, 1)
+        self.body.addLayout(row)
+        self.body = inner  # Card.add() now fills the right-hand column
         head = QHBoxLayout()
         title = QLabel(family["label"])
         title.setStyleSheet("font-weight: 600;")
@@ -119,6 +147,11 @@ class ModuleCard(Card):
         self.address.setWordWrap(False)
         head.addWidget(self.address)
         head.addStretch(1)
+        self.faults = Badge("", "error")
+        self.faults.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.faults.mousePressEvent = lambda _e: self._open_faults()
+        self.faults.hide()
+        head.addWidget(self.faults)
         self.badge = Badge("", "idle")
         head.addWidget(self.badge)
         self.add(head)
@@ -127,10 +160,10 @@ class ModuleCard(Card):
         self.grid.setHorizontalSpacing(24)
         self.add(self.grid)
         row = QHBoxLayout()
-        self.use = QPushButton("Use this module")
+        self.use = QPushButton("Select")
         self.use.setObjectName("primary")
         self.use.clicked.connect(lambda: page.choose(self.family, self.entry))
-        self.identify = QPushButton("Identify again")
+        self.identify = QPushButton("Re-read info")
         self.identify.clicked.connect(page.identify)
         self.recover = QPushButton("Recover…")
         self.recover.setObjectName("danger")
@@ -143,17 +176,62 @@ class ModuleCard(Card):
     def status(self):
         return self.entry["status"] if self.entry else None
 
+    def natural_height(self, width):
+        """The height this card's content needs at this width (wrapped text counted)."""
+        layout = self.layout()
+        if layout is not None and layout.hasHeightForWidth():
+            return layout.totalHeightForWidth(width)
+        return self.sizeHint().height()
+
+    def hasHeightForWidth(self):
+        # Connect sizes every card itself (ConnectPage._even_heights, from natural_height), so
+        # the column must use that minimum height, not ask the card's layout directly (which
+        # ignores it and made a grown card overlap the one below).
+        return False
+
+    def _open_faults(self):
+        """Work on this module and show its codes on Diagnostics."""
+        if self.page.state.busy:
+            return
+        self.page.choose(self.family, self.entry)
+        self.page.state.open_tab.emit("diagnostics")
+
+    def set_faults(self, counts):
+        """Fault codes the last check found on this module (read this session)."""
+        codes, active = counts or (0, 0)
+        if codes:
+            self.faults.set(f"⚠ {codes} fault code{'s' if codes != 1 else ''}"
+                            + (f" · {active} still active" if active else ""), "error")
+            self.faults.setToolTip("Work on this module and see its codes on Diagnostics.")
+        self.faults.setVisible(bool(codes))
+
+    def paint_art(self):
+        from . import module_art
+        address = ((self.entry or {}).get("workshop") or {}).get("address")
+        picture = module_art.pixmap(self.family, address, ART_SIZE, self.art.devicePixelRatioF())
+        if picture is not None:
+            self.art.setPixmap(picture)
+        self.art.setVisible(picture is not None)
+
     def show_entry(self, entry, selected, identity):
         self.entry = entry
+        self.paint_art()
         status = self.status()
         text, level = SCAN_TEXT.get(status, SCAN_TEXT[None])
         if selected and identity:
             text, level = "Selected", "info"
         self.badge.set(text, level)
+        # The selected card grows to show its full identity; it heads its column and only that
+        # column moves down (ConnectPage keeps the other cards one size).
         found = (entry or {}).get("identity") or {}
         part = found.get("software_part_number") or found.get("part_number") or ""
         if selected and identity:
             detail = ""
+        elif status == "ok" and self.family.get("generic") and not self.family.get("has_dtc"):
+            detail = ((f"{part} {found.get('sw_version', '')}  ·  {found.get('system_desc', '')}  ·  "
+                       if part else "") + "Doesn't report fault codes.")
+        elif status == "ok" and not part:
+            detail = "Answers, but didn't say what it is. Its fault codes still read."
         elif status == "ok":
             detail = f"{part} {found.get('sw_version', '')}  ·  {found.get('system_desc', '')}"
         elif status == "bootloader":
@@ -165,9 +243,9 @@ class ModuleCard(Card):
                       "loader waiting for a flash.")
         elif status == "unexpected":
             detail = (f"Identifies as {part} {found.get('sw_version', '')} "
-                      f"({found.get('system_desc', '')}), not a {self.family['label']}.")
+                      f"({found.get('system_desc', '')}), not the {self.family['label']} module this app supports.")
         else:
-            detail = "Picked by hand. Press Identify to check it's there."
+            detail = "Selected manually. Press Read info to check it's there."
         workshop = (entry or {}).get("workshop")
         tp2 = f"TP2 0x{self.family['module']:02X}"
         self.address.setText(f"address {workshop['address_text']} · {tp2}" if workshop else tp2)
@@ -186,9 +264,11 @@ class ModuleCard(Card):
                 self.grid.addWidget(value_label, row, 1)
 
         stuck = status in ("bootloader", "responding")
-        self.use.setVisible(not selected and status == "ok")
-        self.identify.setText("Identify again" if identity else "Identify")
-        self.identify.setVisible(selected and not stuck)
+        self.use.setVisible(not selected and status == "ok"
+                            and not (self.family.get("generic") and not self.family.get("has_dtc")))
+        self.identify.setText("Re-read info" if identity else "Read info")
+        # Fault-code-only modules: their identity comes from the scan (no Re-read info).
+        self.identify.setVisible(selected and not stuck and not self.family.get("generic"))
         self.recover.setVisible(stuck and self.family.get("can_flash", False))
         self.setProperty("selected", "true" if selected else "false")
         restyle(self)
@@ -196,22 +276,29 @@ class ModuleCard(Card):
 
 class ConnectPage(Page):
     title = "Connect"
+    # Natural sizes + scroll: fit-to-window under-counts the wrapped intro text and took the
+    # shortfall out of the card columns, so a grown (selected) card overlapped the next one.
+    fit_to_window = False
 
     def __init__(self, state, parent=None):
         super().__init__(state, parent)
         self.scan_results = {}
         self.cards = {}
+        self.generic_cards = {}  # other gateway modules from the last scan ("addr:XX")
 
         find = self.add(Card())
-        find.add(muted("Ignition on, engine off. Find modules asks every supported module "
-                       "address what's there. It only reads; nothing is written."))
+        find.add(muted("Ignition on, engine off. Scan reads every module on the gateway's list: "
+                       "what it is and its fault codes. It only reads; nothing is written."))
         row = QHBoxLayout()
-        self.scan_button = QPushButton("Find modules")
+        self.scan_button = QPushButton("Scan")
         self.scan_button.setObjectName("primary")
-        self.scan_button.clicked.connect(self.scan)
+        self.scan_button.setToolTip("Like a VCDS Auto-Scan: opens every module the gateway lists and "
+                                    "reads who it is and its fault codes. Read-only; about 1–2 s per "
+                                    "module.")
+        self.scan_button.clicked.connect(lambda: self.scan())
         row.addWidget(self.scan_button)
         self.pick_button = QToolButton()
-        self.pick_button.setText("Pick by hand  ▾")
+        self.pick_button.setText("Select manually  ▾")
         self.pick_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.pick_menu = QMenu(self)
         self.pick_button.setMenu(self.pick_menu)
@@ -221,6 +308,7 @@ class ConnectPage(Page):
         find.add(row)
         self.adapter_help = find.add(Banner())
         self.bring_up = QPushButton("")
+        self.bring_up.setToolTip("Bring the SocketCAN adapter up at 500 kbit/s (asks for your password).")
         self.bring_up.clicked.connect(self.bring_up_socketcan)
         self.bring_up.hide()
         row = QHBoxLayout()
@@ -229,9 +317,24 @@ class ConnectPage(Page):
         find.add(row)
         self.bring_up_process = None
         self.scan_banner = find.add(Banner())
+        self.faults_banner = find.add(Banner())
+        state.faults_changed.connect(lambda _n: self._refresh_cards())
+        from . import theme
+        theme.on_apply(lambda: [c.paint_art() for c in {**self.cards, **self.generic_cards}.values()])
 
-        self.cards_box = QVBoxLayout()
+        # Module cards in two equal columns (user's choice, 2026-11-09): easy to read, and a
+        # scan's ~17 cards fit without much scrolling.
+        # Two independent columns (not a grid): when the selected card grows, only its own
+        # column moves down.
+        self.cards_box = QHBoxLayout()
+        self.cards_box.setContentsMargins(0, 0, 0, 0)
         self.cards_box.setSpacing(10)
+        self.card_columns = []
+        for _ in range(CARD_COLUMNS):
+            column = QVBoxLayout()
+            column.setSpacing(10)
+            self.cards_box.addLayout(column, 1)
+            self.card_columns.append(column)
         holder = QWidget()
         holder.setLayout(self.cards_box)
         self.add(holder)
@@ -254,53 +357,150 @@ class ConnectPage(Page):
             self.pick_menu.addAction(f"{family['label']}  (0x{family['module']:02X})",
                                      lambda f=family: self.choose(f, self.scan_results.get(f["name"])))
 
+    @staticmethod
+    def generic_family(module):
+        """A family-like dict for a gateway module the app has no family for: it can be
+        selected to read and clear its fault codes, nothing else."""
+        identity = dict(module.get("identity") or {})
+        identity.update(connected=True, module=module["tp2"], controller_family=module["key"])
+        report = module.get("dtc") or {}
+        has_dtc = module.get("status") == "ok" and "dtc" in module and not report.get("error")
+        return {"name": module["key"], "label": module.get("name") or f"Address {module['address']:02X}",
+                "module": module["tp2"], "alias": f"0x{module['tp2']:02X}", "address": module["address"],
+                "operations": ["dtc", "dtc_clear"] if has_dtc else [], "part_prefixes": [],
+                "can_flash": False, "read_pageff": False, "can_backup": False,
+                "can_check_preconditions": False, "can_log": False, "has_dtc": has_dtc,
+                "generic": True, "scan_identity": identity}
+
+    def _set_generic(self, result):
+        """A card for every other gateway module the scan read (replacing the last scan's)."""
+        modules = (result.get("gateway") or {}).get("modules")
+        for name, card in list(self.generic_cards.items()):
+            self.scan_results.pop(name, None)
+            self._take(card)
+            card.deleteLater()
+        self.generic_cards = {}
+        self.state.extra_families = {}
+        for module in modules or ():
+            if module.get("family") or module.get("address") is None:
+                continue  # supported modules have their own cards
+            family = self.generic_family(module)
+            name = family["name"]
+            self.state.extra_families[name] = family
+            answered = module.get("status") == "ok"
+            self.scan_results[name] = {
+                "family": name, "module": module["tp2"], "status": "ok" if answered else "absent",
+                "identity": family["scan_identity"] if answered else None, "in_gateway": True,
+                "workshop": {"address": module["address"], "address_text": f"{module['address']:02X}"}}
+            card = self.generic_cards[name] = ModuleCard(family, self)
+            card.setEnabled(not self.state.busy)
+            card.hide()  # placed by _refresh_cards
+
     def _refresh_cards(self):
         self._build_cards()
         selected = self.state.family["name"] if self.state.family else None
         shown = []
-        for name, card in self.cards.items():
+        for name, card in {**self.cards, **self.generic_cards}.items():
             entry = self.scan_results.get(name)
             if name == selected and self.state.identity:
                 entry = dict(entry or {}, status="ok", identity=self.state.identity)
             status = entry["status"] if entry else None
             if status == "absent" and name != selected:
                 status = "hidden"
+            elif status == "unexpected" and any(c.family["module"] == card.family["module"]
+                                                for c in self.generic_cards.values()):
+                status = "hidden"  # the scan gave it a fault-code card of its own
             elif status is None and name != selected:
                 status = "hidden"
             card.show_entry(entry, name == selected,
                             self.state.identity if name == selected else None)
+            card.set_faults(self.state.fault_summary.get(name))
             if status != "hidden":
-                shown.append((STATUS_ORDER.get(status, 5), name != selected, card))
+                faults = (self.state.fault_summary.get(name) or (0, 0))[0]
+                address = ((entry or {}).get("workshop") or {}).get("address", 0x100)
+                shown.append((STATUS_ORDER.get(status, 5), name != selected, not faults, address, card))
             card.setVisible(status != "hidden")
-        for _, _, card in sorted(shown, key=lambda item: (item[0], item[1])):
-            self.cards_box.removeWidget(card)
-            self.cards_box.addWidget(card)
-        missing = [(self.cards[n].family, e.get("workshop")) for n, e in self.scan_results.items()
-                   if e["status"] == "absent" and n != selected]
+        # Selected first, then modules with fault codes, then by address (VCDS order).
+        for column in self.card_columns:  # empty both columns (cards and the closing stretch)
+            while column.count():
+                column.takeAt(0)
+        # Left, right, left, right…: the selected card is first (top-left). It grows to show
+        # its details and pushes only its own column down.
+        for index, (*_, card) in enumerate(sorted(shown, key=lambda item: item[:4])):
+            self.card_columns[index % CARD_COLUMNS].addWidget(card)
+        for column in self.card_columns:
+            column.addStretch(1)
+        QTimer.singleShot(0, self._even_heights)
+        every = {**self.cards, **self.generic_cards}
+        missing = [(every[n].family, e.get("workshop")) for n, e in self.scan_results.items()
+                   if e["status"] == "absent" and n != selected and n in every]
         self.absent.setText("Not found: " + ", ".join(
             f"{f['label']} ({'address ' + w['address_text'] + ', ' if w else ''}TP2 0x{f['module']:02X})"
             for f, w in missing) if missing else "")
         self.absent.setVisible(bool(missing))
+        rows = getattr(getattr(self.state, "faults", None), "rows", {}) or {}
+        faulty = [(rows.get(n, {}).get("label") or (every[n].family["label"] if n in every else n), c)
+                  for n, (c, _a) in self.state.fault_summary.items() if c]
+        if faulty:
+            self.faults_banner.show_message(
+                f"Fault codes on {len(faulty)} module{'s' if len(faulty) != 1 else ''}: "
+                + ", ".join(f"{label} ({count})" for label, count in faulty) + ".", "warning",
+                actions={"See them on the Dashboard": lambda: self.state.open_tab.emit("home")})
+        else:
+            self.faults_banner.hide()
         self._show_gateway()
 
     def _show_gateway(self):
-        """Other modules the gateway lists, so you can see what's in the car."""
+        """One line under the cards: how many modules the gateway lists and how many answered."""
         gateway = self.gateway
         if not gateway:
             self.others.hide()
             return
         if not gateway.get("available"):
             self.others.setText("No gateway installation list (no gateway answered, e.g. on a "
-                                "bench), so workshop addresses aren't shown.")
+                                "bench), so only the supported modules were tried.")
             self.others.show()
             return
-        supported = {f["module"] for f in self.state.families}
-        rest = [e for e in gateway.get("entries") or ()
-                if e["tp2"] not in supported and e["address"] != 0x19]
-        self.others.setText("Also in the gateway's installation list (not supported here): "
-                            + ", ".join(f"{e['address_text']} {e['name']}" for e in rest)
-                            if rest else "")
-        self.others.setVisible(bool(rest))
+        modules = [m for m in gateway.get("modules") or ()
+                   if not (m.get("coded") is False and m.get("status") != "ok")]
+        answered = sum(1 for m in modules if m.get("status") == "ok")
+        self.others.setText(f"{len(modules)} modules on the gateway list, {answered} answered. "
+                            "Every module's scan log and fault codes are on Diagnostics.")
+        self.others.show()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Text wraps differently at a new width: even the card heights again (once settled).
+        if not hasattr(self, "_even_timer"):
+            self._even_timer = QTimer(self, singleShot=True, interval=50)
+            self._even_timer.timeout.connect(self._even_heights)
+        self._even_timer.start()
+
+    def _take(self, card):
+        for column in self.card_columns:
+            column.removeWidget(card)
+
+    def _even_heights(self):
+        """Every card as tall as the tallest, so the grid stays one size whatever each card shows.
+        The selected card is left out: it grows to fit its details."""
+        selected = self.state.family["name"] if self.state.family else None
+        for card in self.cards.get(selected), self.generic_cards.get(selected):
+            if card is not None:  # never squeezed: always room for its details
+                card.setMinimumHeight(0)
+                card.setMinimumHeight(card.natural_height(card.width()))
+        cards = [c for c in {**self.cards, **self.generic_cards}.values()
+                 if c.isVisible() and c.family["name"] != selected]
+        for card in cards:
+            card.setMinimumHeight(0)
+        tallest = max((card.natural_height(card.width()) for card in cards), default=0)
+        for card in cards:
+            card.setMinimumHeight(tallest)
+        # New minimums: make the columns and the page wrapper measure again, or the column
+        # keeps its old height and the grown card overlaps the one below it.
+        self.cards_box.invalidate()
+        self.cards_box.parentWidget().updateGeometry()
+        if self.widget() is not None:
+            self.widget().updateGeometry()
 
     def choose(self, family, entry):
         identity = (entry or {}).get("identity") if (entry or {}).get("status") == "ok" else None
@@ -312,7 +512,8 @@ class ConnectPage(Page):
         self.state.start_recovery.emit()
 
     def scan(self):
-        self.scan_banner.show_message("Looking for modules…", "info")
+        """The scan: every module on the gateway's list, its identity and fault codes."""
+        self.scan_banner.show_message("Reading every module on the gateway list…", "info")
         self.banner.hide()
 
         def done(result):
@@ -322,6 +523,9 @@ class ConnectPage(Page):
                 return
             self.scan_results = {e["family"]: e for e in entries}
             self.gateway = result.get("gateway")
+            self._set_generic(result)
+            car = (self.gateway or {}).get("vehicle") or {}
+            self.state.set_vehicle(car.get("vin"), car.get("source", ""))
             found = [e for e in entries if e["status"] == "ok"]
             stuck = [e for e in entries if e["status"] in ("bootloader", "responding")]
             current = (self.state.family["name"] if self.state.family
@@ -332,7 +536,14 @@ class ConnectPage(Page):
             if pick:
                 self.choose(self.state.family_by_name(pick["family"]), pick)
             elif current and current not in {e["family"] for e in found}:
-                self.state.set_identity(None)
+                generic = self.state.extra_families.get(current)
+                entry = self.scan_results.get(current) or {}
+                if generic is not None and entry.get("status") == "ok":
+                    self.choose(generic, entry)  # still there after this scan
+                elif self.state.family and self.state.family.get("generic"):
+                    self.state.select_module(None)  # it didn't answer this time
+                else:
+                    self.state.set_identity(None)
             if not entries or all(e["status"] == "absent" for e in entries):
                 self.scan_banner.show_message(
                     "Nothing answered. Check the ignition is on and the adapter is plugged into "
@@ -345,12 +556,34 @@ class ConnectPage(Page):
                 self.scan_banner.show_message("Found several modules. Choose one.", "info")
             else:
                 self.scan_banner.hide()
+            check = result.get("selftest")
+            if check:  # demo's simulated car: did the real scan see what the car really has?
+                if check["problems"]:
+                    self.scan_banner.show_message(
+                        f"Simulated car test: scan FAILED, {check['passed']}/{check['total']} checks "
+                        f"as expected ({check['seconds']} s).\n• " + "\n• ".join(check["problems"]),
+                        "error")
+                else:
+                    self.scan_banner.show_message(
+                        f"Simulated car test: scan passed, all {check['total']} checks as expected "
+                        f"({check['seconds']} s). The real scan code read the pretend car correctly.",
+                        "ok")
             self._refresh_cards()
+            self.state.last_scan = result
+            self.state.modules_scanned.emit(result)
 
         def failed(error):
             self.scan_banner.show_message(self.error_text(error), "error")
 
-        self.state.run("scan", {}, done, failed)
+        started = time.time()
+        inner_done = done
+
+        def done(result):  # noqa: F811  (wraps the handler above with when/how long)
+            result["started"], result["elapsed"] = started, time.time() - started
+            inner_done(result)
+
+        self.state.run("scan", {"freeze_frames": bool(self.state.settings.get("scan_freeze_frames", True))},
+                       done, failed)
 
     def refresh(self):
         adapter = self.state.adapter
@@ -386,7 +619,7 @@ class ConnectPage(Page):
         idle = not self.state.busy
         self.scan_button.setEnabled(bool(adapter) and idle)
         self.pick_button.setEnabled(idle)
-        for card in self.cards.values():
+        for card in {**self.cards, **self.generic_cards}.values():
             card.setEnabled(idle)
         self._next_hint()
 
@@ -423,10 +656,13 @@ class ConnectPage(Page):
         if not self.state.identity:
             self.next_hint.hide()
             return
-        if self.state.family["name"] not in BACKUP_FAMILIES:
+        family = self.state.family
+        if family["name"] == EPS:
             self.next_hint.show_message(
                 "Ready. EPS racks can't be read back over OBD, so there's no backup step. "
                 "Keep a copy of the firmware file the rack is on now.", "ok")
+        elif family["name"] not in BACKUP_FAMILIES and not family.get("can_backup"):
+            self.next_hint.hide()  # nothing to flash here, so no backup step to suggest
         elif self.state.record and self.state.record.has_backup():
             self.next_hint.show_message("Ready. You already have a backup of this module.", "ok")
         else:
@@ -440,7 +676,7 @@ class ConnectPage(Page):
                 self.state.set_identity(None)
                 self.banner.show_message(
                     "The module didn't answer. Check the ignition is on and the adapter is "
-                    "plugged in, or press Find modules.\n\n" + str(result.get("error") or ""),
+                    "plugged in, or press Scan.\n\n" + str(result.get("error") or ""),
                     "error")
                 return
             self.banner.hide()
@@ -450,8 +686,8 @@ class ConnectPage(Page):
             self.state.set_identity(None)
             message = self.error_text(error)
             if "not " in message and "identified as" in message:
-                message = ("That module isn't a " + self.state.family["label"] + ". "
-                           "Press Find modules to see what's there.\n\n" + message)
+                message = ("That isn't the " + self.state.family["label"] + " module this app supports. "
+                           "Press Scan to see what's there.\n\n" + message)
             self.banner.show_message(message, "error")
 
         self.state.run("identify", {}, done, failed)
@@ -481,9 +717,9 @@ class BackupPage(Page):
             "dump is on the Diagnostics page."))
         card = self.add(Card("Read the module"))
         self.read_card = card
-        card.add(muted("Copies the firmware off the module into your library. It's your way "
-                       "back if a tune misbehaves, and new images are compared against it. "
-                       "Takes about 7 minutes over OBD. Nothing is written."))
+        card.hint("Copies the firmware off the module into your library. It's your way "
+                  "back if a tune misbehaves, and new images are compared against it. "
+                  "Takes about 7 minutes over OBD. Nothing is written.")
         row = QHBoxLayout()
         self.read_button = QPushButton("Read module")
         self.read_button.setObjectName("primary")
@@ -523,7 +759,7 @@ class BackupPage(Page):
         self.open_button.setEnabled(bool(record))
         self.list.clear()
         if not record:
-            self.list.addItem("Identify a module first.")
+            self.list.addItem("Select a module on Connect and read its info first.")
             return
         backups = record.backups()
         for entry in reversed(backups):
@@ -625,6 +861,30 @@ class FlashPage(Page):
         self.plan = None
         self.gate = self.add(Banner())
 
+        # Undo / redo for the image, its patches and the advanced options.
+        # The "Before you flash" checklist is deliberately not part of it.
+        from .undo import SnapshotHistory
+        self.history = SnapshotHistory()
+        self._restoring = False
+        self._pending_option = None
+        undo_bar = QWidget()
+        undo_row = QHBoxLayout(undo_bar)
+        undo_row.setContentsMargins(0, 0, 0, 0)
+        undo_row.addStretch(1)
+        self.undo_button = QPushButton("Undo")
+        self.undo_button.setToolTip("Undo the last change to the image, patches or options (Ctrl+Z)")
+        self.undo_button.clicked.connect(self.undo)
+        undo_row.addWidget(self.undo_button)
+        self.redo_button = QPushButton("Redo")
+        self.redo_button.setToolTip("Redo (Ctrl+Shift+Z)")
+        self.redo_button.clicked.connect(self.redo)
+        undo_row.addWidget(self.redo_button)
+        self.add(undo_bar)
+        for keys, slot in ((QKeySequence.StandardKey.Undo, self.undo), (QKeySequence.StandardKey.Redo, self.redo)):
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(slot)
+
         # BCM only: a read-only check of the four gates a BCM flash's 10 85 needs
         # (supply voltage, attempt counter, two flags). Independent of the flash
         # gate below — run it any time a BCM is connected; nothing is written.
@@ -705,10 +965,12 @@ class FlashPage(Page):
         self.range_card.add(self.options_box)
         self.option_group = QButtonGroup(self)
         self.option_group.buttonToggled.connect(lambda *_: self.update_ready())
+        self.option_group.buttonClicked.connect(lambda *_: self._schedule_commit())
 
         advanced = self.add(Card())
         self.advanced_toggle = QCheckBox("Show advanced options")
         self.advanced_toggle.toggled.connect(self._toggle_advanced)
+        self.advanced_toggle.toggled.connect(lambda *_: self._schedule_commit())
         advanced.add(self.advanced_toggle)
         self.advanced = QWidget()
         adv = QVBoxLayout(self.advanced)
@@ -721,6 +983,7 @@ class FlashPage(Page):
         for box in (self.correct, self.simulator, self.recovery, self.no_backup, self.crossflash):
             adv.addWidget(box)
             box.toggled.connect(self._options_changed)
+            box.toggled.connect(lambda *_: self._schedule_commit())
         advanced.add(self.advanced)
         self.advanced.hide()
 
@@ -740,21 +1003,120 @@ class FlashPage(Page):
         self.progress = go.add(ProgressPanel())
         self.result_banner = go.add(Banner())
         self.cycle_button = QPushButton("I've cycled the ignition: check again")
-        self.cycle_button.setObjectName("primary")
         self.cycle_button.clicked.connect(self.check_after_cycle)
         self.cycle_button.hide()
         go.add(self.cycle_button)
         self.expected_version = None
         self.finish()
+        self.history.reset(self._snapshot())
+        self._update_undo_buttons()
         state.progress.connect(self.on_progress)
         state.open_in_flash.connect(self.load)
         state.open_patched_in_flash.connect(lambda path, source: self.load(path, patched_from=source))
         state.start_recovery.connect(self.begin_recovery)
 
+    def ai_context(self):
+        """What the Assistant sees of this page (None: no image chosen)."""
+        if not self.inspection:
+            return None
+        ident = self.state.identity or {}
+        lines = [f"Module: {(self.state.family or {}).get('label', '?')}, part on the car "
+                 f"{self.state.part() or 'unknown'}, software {ident.get('sw_version', '?')}",
+                 f"Image: {self.inspection.get('name')} ({self.inspection.get('size')} bytes)"]
+        for check in self.inspection.get("checks") or []:
+            lines.append(f"- check {check.get('key')}: {check.get('status', '')} {check.get('detail', '')}".strip())
+        if self.patch_info:
+            lines.append(f"Patched from {Path(self.patch_source).name}: {self.patch_info.get('summary', '')}")
+        if self.plan:
+            lines.append(f"Plan: {self.plan.get('reason', '')}")
+            for note in self.plan.get("notes") or []:
+                lines.append(f"- note: {note}")
+            for option in self.plan.get("options") or []:
+                lines.append(f"- option {option.get('label')}: {option.get('size')} bytes, "
+                             f"{'valid' if option.get('valid') else 'not possible: ' + str(option.get('reason'))}")
+        chosen = self.selected_option()
+        if chosen:
+            lines.append(f"Chosen: {chosen.get('label')}")
+        flags = [name for name in self.FLAGS if getattr(self, name).isChecked()]
+        lines.append("Advanced options on: " + (", ".join(flags) if flags else "none"))
+        lines.append("Has a backup of this module: " + ("yes" if self.state.record and self.state.record.has_backup() else "no"))
+        return {"title": "flash review", "context": "\n".join(lines), "question":
+               "Review this flash before I do it. Does the image match the module, is the write plan "
+               "sensible, and is there anything risky I should fix first?",
+               "extra": "You are giving a second opinion only. The app runs its own safety checks; "
+                        "never tell the user to bypass them."}
+
+    # --- undo / redo ---
+
+    FLAGS = ("correct", "simulator", "recovery", "no_backup", "crossflash")
+
+    def _snapshot(self):
+        checked = self.option_group.checkedButton()
+        return {
+            "path": str(self.path) if self.path else None,
+            "patch_source": str(self.patch_source) if self.patch_source else None,
+            "patch_info": self.patch_info,
+            "advanced": self.advanced_toggle.isChecked(),
+            "flags": {name: getattr(self, name).isChecked() for name in self.FLAGS},
+            "option": (checked.property("option") or {}).get("key") if checked else None,
+        }
+
+    def _schedule_commit(self):
+        if not self._restoring:
+            QTimer.singleShot(0, self._commit)
+
+    def _commit(self):
+        if self._restoring:
+            return
+        self.history.commit(self._snapshot())
+        self._update_undo_buttons()
+
+    def _update_undo_buttons(self):
+        idle = not self.state.busy
+        self.undo_button.setEnabled(idle and self.history.can_undo())
+        self.redo_button.setEnabled(idle and self.history.can_redo())
+
+    def undo(self):
+        if not self.state.busy and self.history.can_undo():
+            self._restore(self.history.undo())
+
+    def redo(self):
+        if not self.state.busy and self.history.can_redo():
+            self._restore(self.history.redo())
+
+    def _restore(self, snap):
+        self._restoring = True
+        try:
+            self.advanced_toggle.blockSignals(True)
+            self.advanced_toggle.setChecked(snap["advanced"])
+            self.advanced.setVisible(snap["advanced"])
+            self.advanced_toggle.blockSignals(False)
+            for name in self.FLAGS:
+                box = getattr(self, name)
+                box.blockSignals(True)
+                box.setChecked(snap["flags"][name])
+                box.blockSignals(False)
+            self._pending_option = snap["option"]
+            same_file = snap["path"] == (str(self.path) if self.path else None) \
+                and snap["patch_source"] == (str(self.patch_source) if self.patch_source else None)
+            if snap["path"] is None:
+                self._reset_file()
+                self.refresh()
+            elif same_file and self.plan:
+                self._planned(self.plan)  # re-applies the option choice
+            else:
+                self.load(snap["path"], patched_from=snap["patch_source"], patch_info=snap["patch_info"])
+        finally:
+            self._restoring = False
+        self._update_undo_buttons()
+
     # --- state ---
 
     def begin_recovery(self):
         """From a Recover button on the Connect page: preset recovery mode."""
+        from . import security
+        if not security.require(self, self.state.settings, "recovery"):
+            return
         self._reset_file()
         self.advanced_toggle.setChecked(True)
         self.recovery.blockSignals(True)
@@ -777,12 +1139,18 @@ class FlashPage(Page):
 
     def _options_changed(self, *_):
         if self.crossflash.isChecked() and self.sender() is self.crossflash:
-            QMessageBox.warning(self, "Crossflash",
+            MessageBox.warning(self, "Crossflash",
                                 "A crossflash puts firmware for a different part number on "
                                 "this module, and it won't work as before without further "
                                 "steps.\n\nOnly do this if you know exactly what your car needs.")
         if self.recovery.isChecked() and self.sender() is self.recovery:
-            QMessageBox.warning(self, "Recovery mode",
+            from . import security
+            if not security.require(self, self.state.settings, "recovery"):
+                self.recovery.blockSignals(True)
+                self.recovery.setChecked(False)
+                self.recovery.blockSignals(False)
+                return
+            MessageBox.warning(self, "Recovery mode",
                                 "Recovery skips every check that the module is what you think it "
                                 "is. Only use it when the module is stuck in its bootloader, and "
                                 "only with the exact image made for it.\n\n"
@@ -834,6 +1202,8 @@ class FlashPage(Page):
         family = self.state.family
         if self.path and self.loaded_for != (self.family_name(), self.state.part()):
             self._reset_file()
+        if hasattr(self, "history"):
+            self._update_undo_buttons()
         self.simulator.setVisible(self.family_name() == HALDEX)
         self.no_backup.setVisible(self.family_name() in BACKUP_FAMILIES)
         self.reference_card.setVisible(self.family_name() == BCM)
@@ -852,7 +1222,7 @@ class FlashPage(Page):
         elif not family.get("can_flash"):
             problem = f"Flashing isn't supported for the {family['label']}."
         elif not self.state.identity and not self.recovery.isChecked():
-            problem = "Identify the module on the Connect page first."
+            problem = "Read the module's info on the Connect page first (Read info)."
         elif (self.family_name() in BACKUP_FAMILIES and self.state.record
               and not self.state.record.has_backup()
               and not self.no_backup.isChecked() and not self.recovery.isChecked()):
@@ -983,6 +1353,7 @@ class FlashPage(Page):
         if not family:
             self.file_banner.show_message("Choose a module at the top first.", "warning")
             return
+        self._schedule_commit()
         self.state.offline("inspect_image", {"path": path, "family": family,
                                              "ecu_part": self.state.part() or None,
                                              "ecu_version": (self.state.identity or {}).get("sw_version"),
@@ -1038,6 +1409,9 @@ class FlashPage(Page):
         """Patch the image on this page. Patches always go onto the original
         file, so choosing again replaces the earlier choice instead of stacking."""
         if self.state.busy or not self.path:
+            return
+        from . import security
+        if not security.require(self, self.state.settings, "patch"):
             return
         from .disclaimer import confirm_patching
         if not confirm_patching(self):
@@ -1115,6 +1489,11 @@ class FlashPage(Page):
                 button.setChecked(True)
         if hidden:
             self.options_box.addWidget(muted(f"{hidden} smaller range(s) under advanced options."))
+        if self._pending_option:
+            for button in self.option_group.buttons():
+                if button.isEnabled() and (button.property("option") or {}).get("key") == self._pending_option:
+                    button.setChecked(True)
+            self._pending_option = None
         self.refresh()
 
     # --- flashing ---
@@ -1122,16 +1501,19 @@ class FlashPage(Page):
     def flash(self):
         if self.blocking_reason():
             return
+        from . import security
+        if not security.require(self, self.state.settings, "flash"):
+            return
         option = self.selected_option()
         crossing = next((c for c in self.inspection["checks"] if c["key"] == "crossflash"), None)
         if crossing:
-            text, ok = QInputDialog.getText(
+            text, ok = InputDialog.getText(
                 self, "Confirm crossflash",
                 f"{crossing['label']}.\nType CROSSFLASH to write it anyway:")
             if not ok or text.strip() != "CROSSFLASH":
                 return
         if self.recovery.isChecked():
-            text, ok = QInputDialog.getText(
+            text, ok = InputDialog.getText(
                 self, "Confirm recovery flash",
                 f"Recovery mode can't check the module.\nType RECOVER to flash "
                 f"{Path(self.path).name} to the {self.state.family['label']}:")
@@ -1268,7 +1650,7 @@ class FlashPage(Page):
                 "error")
         else:
             advice = ("\n\nThe module is probably waiting in its bootloader. That's recoverable: "
-                      "Find modules on the Connect page shows it with a Recover button, or turn "
+                      "A scan on the Connect page shows it with a Recover button, or turn "
                       "on Recovery under advanced options and flash the same image again."
                       if getattr(self, "failed_needs_recovery", True) else "\n\nNothing was erased.")
             self.result_banner.show_message(headline + advice, "error")
@@ -1286,7 +1668,7 @@ class FlashPage(Page):
         if identity is None:
             self.result_banner.show_message(
                 "The module didn't answer after the ignition cycle. Check the ignition is on, "
-                "then press Check again. If it still doesn't answer, Find modules on the Connect "
+                "then press Check again. If it still doesn't answer, a scan on the Connect "
                 "page shows whether it's waiting in its bootloader.", "warning")
             return
         self.state.set_identity(identity)
@@ -1294,7 +1676,7 @@ class FlashPage(Page):
         if identity.get("in_bootloader"):
             self.result_banner.show_message(
                 "After the ignition cycle the module came up in its bootloader. Flash it again "
-                "with Recovery (Find modules → Recover).", "error")
+                "with Recovery (Connect → Scan → Recover).", "error")
         elif self.expected_version and version != self.expected_version:
             self.result_banner.show_message(
                 f"After the ignition cycle it reports {version}, not {self.expected_version}. "
@@ -1317,12 +1699,12 @@ class FlashPage(Page):
         self.result_banner.show_message(
             self.result_banner.text() + "\n\nThis firmware came with the placeholder 000 "
             "dataset. Flash a real steer dataset next.", "warning")
-        answer = QMessageBox.question(
+        answer = MessageBox.question(
             self, "Flash a steer dataset",
             "The firmware you flashed carries the factory placeholder dataset (000), so the "
             "rack has no real steer dataset yet.\n\nChoose a dataset to flash now? Use a "
             "4 KiB dataset file or SGO, or a full image (its 0x5E block will be used).")
-        if answer == QMessageBox.StandardButton.Yes:
+        if answer == MessageBox.StandardButton.Yes:
             path, _ = QFileDialog.getOpenFileName(self, "Choose steer dataset",
                                                   self.drop.start_dir,
                                                   "Firmware (*.bin *.sgo);;All files (*)")
@@ -1476,11 +1858,16 @@ class DiagnosticsPage(Page):
 
     def __init__(self, state, parent=None):
         super().__init__(state, parent)
-        self.intro = self.add(muted(""))
-        from .fault_codes import FaultCodesCard
-        self.fault_card = self.add(FaultCodesCard(state, self))
-        card = self.add(Card("Read"))
+        # Every module's faults (sidebar) and the scan log beside it (diagnostics_view); below,
+        # the chosen module's own tests, only for the modules that have some (EPS, BCM).
+        from .health import controller
+        from .diagnostics_view import AutoScanView
+        self.health_card = controller(state)
+        self.view = AutoScanView(state)
+        self.layout_.addWidget(self.view, 1)
+        card = self.add(Card("Module tests"))
         self.read_card = card
+        self.intro = card.add(muted(""))
         grid = QGridLayout()
         self.buttons = {}
         for index, (op, label, hint) in enumerate(DIAGNOSTICS):
@@ -1504,8 +1891,7 @@ class DiagnosticsPage(Page):
         self.tree = out.add(QTreeWidget())
         self.tree.setHeaderLabels(["Field", "Value"])
         self.tree.setColumnWidth(0, 280)
-        self.tree.setMinimumHeight(260)
-        self.finish()
+        self.tree.setMinimumHeight(150)
         state.progress.connect(self.on_progress)
 
     def _build_pageff(self):
@@ -1544,26 +1930,20 @@ class DiagnosticsPage(Page):
             button.setVisible(op in ops)
             button.setEnabled(bool(self.state.identity) and not self.state.busy)
         bcm = bool(self.state.family) and self.state.family["name"] == BCM
-        has_dtc = bool(self.state.family) and self.state.family.get("has_dtc", False)
         reads = bool(ops & set(self.buttons))
-        self.fault_card.setVisible(has_dtc)
-        self.fault_card.refresh()
-        self.intro.setText(
-            "Reading fault codes is read-only; clearing them is the one thing here that changes "
-            "the module." if has_dtc else
-            "Read-only. None of these clear faults or write anything. Run them with the car "
-            "stationary.")
-        self.read_card.setVisible(not bcm and (reads or not has_dtc))
-        self.result_card.setVisible(not bcm and (reads or not has_dtc))
+        # Fault codes for every module live in the card above; this part is the extra
+        # read-only tests for the module selected on Connect (EPS so far).
+        per_module = bool(self.state.identity) and reads and not bcm
+        self.read_card.setVisible(per_module)
+        self.result_card.setVisible(per_module)
+        if per_module:
+            self.intro.setText(f"Extra read-only tests for the {self.state.family['label']} selected on "
+                               "Connect. None of these clear faults or write anything. Run them with "
+                               "the car stationary.")
+            self.banner.hide()
         self.pageff_card.setVisible(bcm)
         if bcm:
             self._refresh_pageff()
-        if not reads:
-            self.banner.show_message("No diagnostics for this module yet.", "info")
-        elif not self.state.identity:
-            self.banner.show_message("Identify the module on the Connect page first.", "info")
-        else:
-            self.banner.hide()
 
     def run(self, op):
         self.tree.clear()
@@ -1602,7 +1982,7 @@ class DiagnosticsPage(Page):
                 "This flasher build can't read page FF yet (no --read-bcm-pageff). Update the "
                 "flasher submodule, then restart the app.", "warning")
         elif not self.state.identity:
-            self.pageff_banner.show_message("Identify the module on the Connect page first.", "info")
+            self.pageff_banner.show_message("Read the module's info on the Connect page first (Read info).", "info")
         elif not self.pageff_paths and self.pageff_banner.property("level") != "error":
             self.pageff_banner.hide()
 
@@ -1645,7 +2025,7 @@ class DiagnosticsPage(Page):
                 text = str(result.get("error") or "The read failed.")
                 if result.get("exit_code"):
                     text += f" (exit code {result['exit_code']})"
-                self.pageff_banner.show_message(text + " See the Log page for details.", "error")
+                self.pageff_banner.show_message(text + " See Help → Troubleshooting & logs for details.", "error")
             else:
                 self.pageff_banner.show_message("Page FF saved. Nothing was written to the module.", "ok")
             self.refresh()
@@ -1668,98 +2048,3 @@ class DiagnosticsPage(Page):
             for index, child in enumerate(value):
                 item = QTreeWidgetItem(parent, [f"[{index}]", "" if isinstance(child, (dict, list)) else str(child)])
                 self._fill(item, child)
-
-
-class LogPage(Page):
-    """Flasher stuff: demo mode and the flasher logs."""
-    title = "Flasher stuff"
-
-    def __init__(self, state, parent=None):
-        super().__init__(state, parent)
-        demo = self.add(Card("Demo mode"))
-        demo.add(muted("Try the app with pretend modules. Nothing talks to real hardware, and "
-                       "demo files are kept apart in Documents/PQ35 Flasher/Demo. Switching "
-                       "restarts the app."))
-        self.demo_toggle = QCheckBox("Demo mode")
-        self.demo_toggle.setChecked(bool(os.environ.get("PQ35_DEMO")))
-        self.demo_toggle.clicked.connect(self._demo_clicked)
-        demo.add(self.demo_toggle)
-        logs = self.add(Card("Flasher logs"))
-        prune_logs(keep=20)
-        self.log_stamp = timestamp()
-        self.log_part = 1
-        self.log_path = logs_dir() / f"session_{self.log_stamp}.log"
-        self.file = open(self.log_path, "a", encoding="utf-8")
-        row = QHBoxLayout()
-        self.verbose = QCheckBox("Show protocol detail")
-        row.addWidget(self.verbose)
-        row.addStretch(1)
-        bundle = QPushButton("Save support bundle…")
-        bundle.clicked.connect(self.save_bundle)
-        row.addWidget(bundle)
-        folder = QPushButton("Open logs folder")
-        folder.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(logs_dir()))))
-        row.addWidget(folder)
-        logs.add(row)
-        self.text = logs.add(QPlainTextEdit())
-        self.text.setReadOnly(True)
-        self.text.setMinimumHeight(420)
-        self.text.setMaximumBlockCount(20000)
-        state.pool.event.connect(self.on_event)
-
-    def refresh(self):
-        self.demo_toggle.setEnabled(not self.state.busy)
-
-    def _demo_clicked(self, on):
-        current = bool(os.environ.get("PQ35_DEMO"))
-        self.demo_toggle.setChecked(current)  # only changes once the restart is confirmed
-        if on == current:
-            return
-        answer = QMessageBox.question(
-            self, "Demo mode",
-            ("Restart in demo mode? Only pretend modules are offered; nothing talks to real "
-             "hardware." if on else
-             "Leave demo mode? The app restarts and offers your real interfaces again."))
-        if answer == QMessageBox.StandardButton.Yes:
-            self.state.restart_app.emit(on)
-
-    def write(self, line, show=True):
-        stamped = time.strftime("%H:%M:%S ") + line
-        if self.file.tell() > 5 * 1024 * 1024:
-            # Roll over so one long session can't grow without bound.
-            self.file.close()
-            self.log_part += 1
-            self.log_path = logs_dir() / f"session_{self.log_stamp}_{self.log_part}.log"
-            self.file = open(self.log_path, "a", encoding="utf-8")
-            prune_logs(keep=20)
-        self.file.write(stamped + "\n")
-        self.file.flush()
-        if show:
-            self.text.appendPlainText(stamped)
-
-    def on_event(self, message):
-        kind = message.get("event")
-        if kind == "log":
-            level = message.get("level", "info")
-            self.write(f"[{level}] {message.get('message', '')}",
-                       show=level != "debug" or self.verbose.isChecked())
-        elif kind == "output":
-            self.write(message.get("line", ""), show=self.verbose.isChecked())
-        elif kind == "progress":
-            self.write(f"[{message.get('stage', '').strip()}] {message.get('percent')}% "
-                       f"{message.get('detail', '')}", show=self.verbose.isChecked())
-
-    def save_bundle(self):
-        default = str(Path.home() / f"pq35-support-{timestamp()}.zip")
-        path, _ = QFileDialog.getSaveFileName(self, "Save support bundle", default, "Zip (*.zip)")
-        if not path:
-            return
-        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as bundle:
-            bundle.write(self.log_path, "session.log")
-            info = {"hello": self.state.hello, "adapter": self.state.adapter,
-                    "family": self.state.family, "identity": self.state.identity}
-            bundle.writestr("state.json", json.dumps(info, indent=2, default=str))
-            if self.state.record:
-                bundle.writestr("history.json", json.dumps(self.state.record.history(), indent=2))
-        QMessageBox.information(self, "Support bundle", f"Saved {path}.\nIt contains the session "
-                                "log and module history, not your firmware files.")

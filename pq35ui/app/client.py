@@ -140,11 +140,16 @@ class WorkerClient(QObject):
             self.event.emit({"event": "log", "level": "warning", "logger": self.label,
                              "message": text})
 
-    def _fail_pending(self, reason):
+    def restart(self):
+        """Stop the worker so the next call starts a fresh one (a fresh libusb: what restarting
+        the app used to be needed for after an adapter was unplugged or wedged)."""
+        self.stop()
+
+    def _fail_pending(self, reason, kind="WorkerDied"):
         pending, self.pending = self.pending, {}
         for method, _, on_error in pending.values():
             if on_error:
-                on_error({"type": "WorkerDied", "message": reason})
+                on_error({"type": kind, "message": reason})
 
     def _finished(self, code, _status):
         self._fail_pending(f"The {self.label} worker stopped (exit code {code}).")
@@ -152,7 +157,7 @@ class WorkerClient(QObject):
 
     def _error(self, error):
         if error == QProcess.ProcessError.FailedToStart:
-            self._fail_pending(f"Couldn't start {self.python}.")
+            self._fail_pending(f"Couldn't start {self.python}.", "WorkerFailedToStart")
             self.exited.emit("failed to start")
 
 

@@ -13,19 +13,76 @@ A failed flash means that module does not function until it has been successfull
 In practice its pretty hard to brick shit beyond recovery, but please - 
 Do not Dumb. 
 
+## About this fork
+
+This is LTLNMO's fork of [DSparks156x/PQ35-Flasher-UI](https://github.com/DSparks156x/PQ35-Flasher-UI).
+All credit for the original app and the flasher goes to Drew (DSparks156x). It's based on his
+commit `63d5fec` (2026-11-04). Flashing works the way it does in his version. Most of the
+changes are in logging, diagnostics and the interface.
+
+### Added
+
+- **Dashboard**: a Find modules button, a fault-code summary for every module, recent
+  datalogs, your modules and projects.
+- **Diagnostics**: a VCDS-style auto-scan. It reads every module in the gateway's
+  installation list in one pass, with fault codes and freeze frames (status, mileage, date
+  and time). You can re-read or clear one module or all of them, every scan is saved, a new
+  scan is compared with the last one, and you can copy or save the scan log.
+- **Logger**:
+  - A channel picker with presets, including an Integrated Engineering preset.
+  - Four recording modes: Continuous, Triggered (records around a trigger), Rolling
+    (keeps the last few minutes) and Dyno (records full-throttle pulls).
+  - Per-group read rates. A value that sits in several groups (engine speed, for example)
+    is filled from every group that's read, so it updates more often.
+  - Every recording goes to Recent logs automatically. Export saves a copy as Standard
+    (Datazap CSV), Integrated Engineering, MegaLogViewer or generic CSV, and optional
+    auto-export does this when you press Stop.
+- **Live View**: gauges and graphs, alarms, saved dashboards and math channels.
+- **Analyze** (log playback, inspired by Datazap):
+  - Graphs: stacked or split graphs, axis groups, a legend strip, timeline zoom, a Raw
+    table, a heatmap and min/max/avg.
+  - Working with logs: compare two logs, smart presets, trimming and renaming logs, and
+    following a recording live.
+  - A **Dyno** view that estimates wheel and engine power and torque from pulls, using
+    car weight and drag settings.
+- **Importing logs** from other tools (CSV formats that Datazap reads).
+- **Assistant (Ask AI)**: optional. It uses your own AI provider and knows what's on the
+  current page.
+- **Help**: topics, a troubleshooting page with the activity log and a support bundle, and
+  version and update info.
+- **Settings**: sections and search, colours and themes, tab style, a Lock option and a
+  Demo mode switch.
+
+### Changed and fixed
+
+- **Measuring blocks**: formula 33 now reads `100*B/A`. The original `0.01*A*B` read load,
+  throttle, N75 and fuel-pump duty up to 6.5x too high. Formula 34's unit is crank degrees,
+  not kW.
+- **Group 122** is the transmission's torque group. It's no longer treated as a copy of 120.
+- **candleLight / gs_usb on macOS**: the adapter can be unplugged and plugged back in
+  without restarting the app.
+- **Fault-code reads**: if one read service answers with no codes, the next one is tried.
+  Modules that report "busy" are retried, and a dropped TP2 channel is reopened.
+- **BCM 8P0907063K** is no longer mistaken for a module in its bootloader.
+- `flasher/` is kept in this repo as a plain folder with these fixes, not as a submodule.
+- The updater and installers point at this fork.
+
+Status: the new logging, Dyno and hot-plug features have been tested mostly in demo mode
+and against a simulator. Testing on the car is ongoing.
+
 ## Install
 
 **Windows** (PowerShell, no admin needed):
 
 ```powershell
-irm https://raw.githubusercontent.com/DSparks156x/PQ35-Flasher-UI/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/LTLNMO/PQ35-Flasher-UI/main/install.ps1 | iex
 ```
 
 **Linux and macOS** (needs git; on macOS run `xcode-select --install` first if you
 don't have it):
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/DSparks156x/PQ35-Flasher-UI/main/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/LTLNMO/PQ35-Flasher-UI/main/install.sh | sh
 ```
 
 The installer sets up [uv](https://docs.astral.sh/uv/) and a private Python for the
@@ -128,8 +185,8 @@ PySide6 UI (64-bit)  ──JSON lines──▶  worker  ──▶  flasher (subm
   lock file, so two windows can't talk to a module at once.
 - J2534 DLLs are 32-bit, so on Windows J2534 jobs run in a worker under a 32-bit Python.
   Every other adapter uses the app's own Python.
-- `flasher/` is the [PQ35-Flasher](https://github.com/DSparks156x/PQ35-Flasher)
-  submodule. Change the flasher there first, then bump the submodule here.
+- `flasher/` is a copy of [PQ35-Flasher](https://github.com/DSparks156x/PQ35-Flasher)
+  with local fixes, kept in this repo (not a submodule).
 
 ## Safety rails
 

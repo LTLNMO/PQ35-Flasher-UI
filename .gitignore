@@ -7,3 +7,10 @@ dist/
 build/
 *.egg-info/
 .install-commit
+
+# Local backups and macOS files (never uploaded)
+*.bak
+*.bak-*
+*.pre-*
+.DS_Store
+.ruff_cache/

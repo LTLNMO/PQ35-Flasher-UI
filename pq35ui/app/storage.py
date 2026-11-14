@@ -68,8 +68,24 @@ def logs_dir() -> Path:
     return user_dir() / "Logs"
 
 
-def datalogs_dir() -> Path:
+_ACTIVE_SETTINGS = None  # the app's Settings, so folders the user picked are honoured
+
+
+def default_datalogs_dir() -> Path:
     return user_dir() / "Datalogs"
+
+
+def datalogs_dir() -> Path:
+    """Where datalogs are saved: Settings → Datalogs, or the default folder."""
+    custom = _ACTIVE_SETTINGS.get("datalogs_dir") if _ACTIVE_SETTINGS is not None else None
+    if custom:
+        path = Path(custom).expanduser()
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+        except OSError:
+            pass  # e.g. an unplugged drive: fall back rather than lose the log
+    return default_datalogs_dir()
 
 
 def check_writable() -> list:
@@ -121,6 +137,26 @@ def timestamp() -> str:
     return time.strftime("%Y%m%d-%H%M%S")
 
 
+def log_stamp(when=None) -> str:
+    """Datalog names: 2026-11-09_073012 (sorts by name, readable, seconds so names never clash)."""
+    return time.strftime("%Y-%m-%d_%H%M%S", time.localtime(when) if when else time.localtime())
+
+
+def recent_logs_dir() -> Path:
+    """Where the Logger records: kept for a while (recent_logs.prune), out of Documents.
+    A log only reaches Datalogs (or anywhere else) when you export it."""
+    path = data_dir() / "Recent logs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def imported_logs_dir() -> Path:
+    """Analyze's converted copies of logs from other tools (a cache; safe to delete)."""
+    path = data_dir() / "Imported logs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 class Settings:
     def __init__(self):
         self.path = data_dir() / "settings.json"
@@ -128,12 +164,23 @@ class Settings:
             self.values = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             self.values = {}
+        global _ACTIVE_SETTINGS
+        _ACTIVE_SETTINGS = self
 
     def get(self, key, default=None):
         return self.values.get(key, default)
 
     def set(self, key, value):
         self.values[key] = value
+        self._save()
+
+    def remove(self, *keys):
+        """Forget these keys, so get() gives its default again (set(key, None) stores null)."""
+        for key in keys:
+            self.values.pop(key, None)
+        self._save()
+
+    def _save(self):
         try:
             self.path.write_text(json.dumps(self.values, indent=2), encoding="utf-8")
         except OSError:

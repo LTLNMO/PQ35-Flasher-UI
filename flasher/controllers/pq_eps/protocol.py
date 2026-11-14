@@ -1,0 +1,1434 @@
+"""PQ EPS conventional KWP readout and programming policy."""
+import hashlib
+import json
+import re
+import struct
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+from ...engine import (
+    ByteProgress, PQFlashProfile, PQFlasher, PQMemoryReader, PQReadError, PQReadProfile,
+    SecurityAccess, add32, capture_sparse, parse_vag_identification,
+)
+from ...socketcan_device import SocketCANDevice
+from ...vag_protocols.kwp import KWPClient, KWPNegativeResponse, KWPProfile
+from ...vag_protocols.tp2 import TP20Transport
+from .patches import (
+    DATASET_END, DATASET_SIZE, DATASET_START, DEFAULT_END, DEFAULT_START,
+    FLASH_START, prepare_image, validate_selection,
+)
+
+EPS_MODULE_ADDR = 0x09
+EPS_IMAGE_SIZE = 0x60000
+SESSION_DIAGNOSTIC = 0x89
+SESSION_ENGINEERING = 0x86
+READ_REQUEST_SEED = 0x03
+READ_SEND_KEY = 0x04
+READ_KEY_ADD = 0x1596
+MAX_READ_MEMORY_BLOCK = 0xF0
+SESSION_PROGRAMMING = 0x85
+# The resident loader's erase is blocking: a 31 C4 over the application
+# (anything below 0x5C000, smallest region 0x0A000..0x5BFFF) stalls TP2 until the
+# channel drops, and the new channel resets its programming state. The erase
+# still completes, so a running rack is left erased in its loader. Seen on every
+# bench attempt; EPSRe notes/BOOT_2901_flash.md. Only 0x5C000.. blocks flash.
+APPLICATION_END = 0x5C000
+APPLICATION_ERASE_BLOCKED = (
+    "PQ EPS flashes that include the application (below 0x5C000) are disabled: the "
+    "loader's blocking erase drops the channel and resets its programming state, so "
+    "the flash fails and leaves the application erased. Only --recovery may try it.")
+RC_ERASE = 0xC4
+RC_CHECKSUM = 0xC5
+CHUNK_SIZE = 240
+
+
+def decorate_identification(info: dict) -> dict:
+    """Add EPS application/loader state and the Kl. dataset identifier."""
+    result = dict(info)
+    description = str(result.get("system_desc", "")).strip()
+    dataset = re.search(r"\bKl\.\s*(\d+)\b", description, re.IGNORECASE)
+    result["dataset_version"] = dataset.group(1) if dataset else None
+    result["in_bootloader"] = "EPS_ZFLS BB" in description.upper()
+    return result
+
+
+def programming_key(seed: bytes):
+    """Known PQ EPS 27 01/02 seed/key algorithm."""
+    if len(seed) != 4:
+        raise RuntimeError(f"Expected four-byte security seed, got {len(seed)}")
+    if not any(seed):
+        return None
+    key = int.from_bytes(seed, "big")
+    for _ in range(3):
+        tmp = (key ^ 0x003F1735) & 0xFFFFFFFF
+        key = (tmp + 0xA3FF7890) & 0xFFFFFFFF
+        if key < 0xA3FF7890:
+            key = (key >> 1) | (tmp << 31)
+        key &= 0xFFFFFFFF
+    return key.to_bytes(4, "big")
+
+
+EPS_PROGRAMMING_SECURITY = SecurityAccess(
+    0x01, 0x02, programming_key, "pq-eps-programming")
+PQEPSProtocolError = PQReadError
+
+
+def a3(value: int) -> bytes:
+    return struct.pack(">I", value)[1:]
+
+
+def eps_flash_stamp() -> bytes:
+    """6-byte packed-BCD YYYYMMDDHHMM date for the 31 C4 erase frame.
+
+    The resident loader's erase guard (0x95CA) reads the 6 bytes at request+7
+    (i.e. immediately after start(3)+end(3)) and returns NRC 0x22 unless they are
+    non-zero; the success path (0x95E6) stores them as the EEPROM flash-date and
+    increments the attempt counter. So the erase payload MUST be
+    a3(start) + a3(end) + eps_flash_stamp() — omitting it is the cause of the
+    0x22-on-erase we hit for months."""
+    return bytes.fromhex(time.strftime("%Y%m%d%H%M"))
+
+
+EPS_FLASH_KWP_PROFILE = KWPProfile(
+    exact_routine_responses={RC_ERASE: b"\x71\xC4\x01", RC_CHECKSUM: b"\x71\xC5"},
+    reject_unprofiled_routines=True,
+    single_byte_positive_services=frozenset({0x36, 0x37, 0x82}),
+    exact_response_lengths={0x33: 3},
+)
+
+
+class EPSKWPClient(KWPClient):
+    def __init__(self, transport, **kwargs):
+        kwargs.setdefault("profile", EPS_FLASH_KWP_PROFILE)
+        super().__init__(transport, **kwargs)
+
+    def security_seed(self, subfunction: int, *, length=4) -> bytes:
+        return super().security_seed(subfunction, length=length)
+
+    sa_seed = security_seed
+
+
+def validate_eps_range(start: int, length: int):
+    if length <= 0 or start < 0 or start + length > EPS_IMAGE_SIZE:
+        raise ValueError("PQ EPS range must be within 0x000000..0x05FFFF")
+
+
+def read_memory_request(address: int, length: int) -> bytes:
+    validate_eps_range(address, length)
+    if length > 0xFF:
+        raise ValueError("KWP ReadMemoryByAddress length must fit in one byte")
+    return b"\x23" + address.to_bytes(3, "big") + bytes([length])
+
+
+def eps_upload_request(address: int, length: int) -> bytes:
+    validate_eps_range(address, length)
+    return b"\x35" + address.to_bytes(3, "big") + b"\x00" + length.to_bytes(3, "big")
+
+
+def additive_key(seed: bytes, constant: int = READ_KEY_ADD) -> bytes:
+    result = add32(constant)(seed)
+    return b"" if result is None else result
+
+
+def make_eps_read_profile(key_add=READ_KEY_ADD):
+    return PQReadProfile(
+        name="pq-eps",
+        module=EPS_MODULE_ADDR,
+        image_size=EPS_IMAGE_SIZE,
+        validate_range=validate_eps_range,
+        initial_session=SESSION_DIAGNOSTIC,
+        privileged_session=SESSION_ENGINEERING,
+        security=SecurityAccess(READ_REQUEST_SEED, READ_SEND_KEY, add32(key_add), "pq-eps-read"),
+        methods=("read-memory", "upload"),
+        upload_block_max=0x1000,
+        strict_upload_blocks=False,
+        mark_upload_before_request=False,
+        leave_requests=(bytes([0x10, SESSION_DIAGNOSTIC]),),
+    )
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    method: str
+    session: int
+    security_unlocked: bool
+    sample_address: int
+    sample_hex: str
+
+
+class PQEPSReader(PQMemoryReader):
+    def __init__(self, transport, *, key_add=READ_KEY_ADD, record=lambda event: None):
+        super().__init__(transport, make_eps_read_profile(key_add), record=record)
+
+    def unlock_engineering(self):
+        self.enter(ensure_diagnostic=False)
+
+    def probe(self, addresses, *, requested="auto") -> ProbeResult:
+        return ProbeResult(**super().probe(addresses, requested=requested))
+
+
+def capture_eps(reader: PQEPSReader, output: Path, start: int, length: int, method: str,
+            *, chunk: int, record=lambda event: None, progress=lambda done, total: None):
+    return capture_sparse(reader, output, start, length, method, chunk=chunk,
+                          image_size=EPS_IMAGE_SIZE, validate_range=validate_eps_range,
+                          record=record, progress=progress)
+
+
+# --- EPS flash target ---
+
+
+def make_eps_flash_profile(*, kwp_factory, image_preparer, device_factory,
+                           transport_factory, identify):
+    def validate_controller(info, metadata):
+        part = info.get("software_part_number", info.get("part_number", "")).upper()
+        if not part.startswith(("1K0909144", "8J0909144")):
+            raise RuntimeError(
+                f"Identification {part or '<empty>'} is not a recognized PQ EPS family")
+        full_flash = (metadata.get("start_addr"), metadata.get("end_addr")) == (
+            FLASH_START, EPS_IMAGE_SIZE - 1)
+        revision_text = str(
+            info.get("sw_version", info.get("firmware_revision", ""))).strip()
+        revision = (int(revision_text)
+                    if len(revision_text) == 4 and revision_text.isdigit() else None)
+        if not full_flash and (revision is None or revision < 3000):
+            raise RuntimeError(
+                f"EPS software revision {revision_text or 'unknown'!r} does not approve "
+                "partial-region flashing; select full firmware 0x0A000..0x05FFFF")
+
+    def validate_application(info):
+        if (not info.get("sw_version", "").strip()
+                or not info.get("part_number", "").strip()
+                or info.get("flash_status") not in (0, 1)):
+            raise RuntimeError("Fresh expected EPS application boot was not verified")
+
+    def verify_programming_channel(tp):
+        kwp = EPSKWPClient(tp)
+        info = decorate_identification(parse_vag_identification(
+            kwp.read_ecu_ident(0x9B), kwp.read_ecu_ident(0x9C)))
+        description = str(info.get("system_desc", "")).strip()
+        if not info["in_bootloader"]:
+            raise RuntimeError(
+                f"EPS did not enter its resident loader; identified {description or '<empty>'!r}")
+
+    return PQFlashProfile(
+        name="pq-eps",
+        module=EPS_MODULE_ADDR,
+        kwp_factory=kwp_factory,
+        prepare_image=image_preparer,
+        device_factory=device_factory,
+        transport_factory=transport_factory,
+        identify=identify,
+        validate_controller=validate_controller,
+        # The EPS loader reconnects on the same logical TP2 module/channel IDs;
+        # unlike Haldex there is no address change to use as a channel gate.
+        is_application_channel=lambda tp: True,
+        initial_session=None,
+        programming_session=SESSION_PROGRAMMING,
+        pre_programming_security=None,
+        programming_security=EPS_PROGRAMMING_SECURITY,
+        verify_programming_channel=verify_programming_channel,
+        chunk_size=CHUNK_SIZE,
+        erase_routine=RC_ERASE,
+        checksum_routine=RC_CHECKSUM,
+        erase_payload=lambda start, end, metadata: a3(start) + a3(end) + eps_flash_stamp(),
+        checksum_payload=lambda start, end, metadata:
+            a3(start) + a3(end) + struct.pack(">H", metadata["checksum"]),
+        validate_fresh_application=validate_application,
+        commit_services=(0x82,),
+        programming_reconnect_delay=1.0,
+    )
+
+
+class PQEPSFlasher(PQFlasher):
+    """PQ EPS binding backed by the controller-neutral PQ lifecycle."""
+
+    def __init__(self, channel: Optional[str] = None, module: int = EPS_MODULE_ADDR,
+                 device: Optional[Any] = None,
+                 device_factory: Optional[Callable[[], Any]] = None,
+                 progress_cb: Optional[Callable[..., None]] = None,
+                 log_cb: Optional[Callable[[str], None]] = None,
+                 debug: bool = False, interface: str = "socketcan"):
+        profile = make_eps_flash_profile(
+            kwp_factory=lambda tp, log, debug: EPSKWPClient(
+                tp, log_fn=log, debug=debug),
+            image_preparer=lambda *args, **kwargs: prepare_image(*args, **kwargs),
+            device_factory=lambda selected_channel: SocketCANDevice(
+                channel=selected_channel, interface=interface),
+            transport_factory=lambda *args, **kwargs: TP20Transport(
+                *args, legacy_ack=True, **kwargs),
+            identify=lambda kwp, tp: self._ident(kwp, tp),
+        )
+        super().__init__(profile, channel=channel, module=module, device=device,
+                         device_factory=device_factory, progress_cb=progress_cb,
+                         log_cb=log_cb, debug=debug)
+
+    @staticmethod
+    def prepare_image(source, start_addr=DEFAULT_START, end_addr=DEFAULT_END,
+                      file_off=None, simulator_mode=False, correct_checksums=False):
+        """Expose the common UI/controller keyword contract for EPS images."""
+        return prepare_image(
+            source, start_addr, end_addr, file_off=file_off,
+            simulator_mode=simulator_mode, correct_checksums=correct_checksums)
+
+    @staticmethod
+    def _ident(kwp, tp):
+        result = decorate_identification(parse_vag_identification(
+            kwp.read_ecu_ident(0x9B), kwp.read_ecu_ident(0x9C)))
+        result["connected"] = True
+        return result
+
+    def flash_binary(self, binary_data_or_path, start_addr=DEFAULT_START,
+                     end_addr=DEFAULT_END, file_off=None, dry_run=False,
+                     simulator_mode=False, recovery=False):
+        return super().flash_binary(
+            binary_data_or_path, start_addr, end_addr, file_off=file_off,
+            dry_run=dry_run, simulator_mode=simulator_mode, recovery=recovery)
+
+
+# --- Command-line controller interface ---
+
+
+def add_cli_arguments(parser):
+    parser.add_argument(
+        "--readout-method", choices=("auto", "read-memory", "upload"), default="auto",
+        help="Conventional KWP read service")
+    parser.add_argument(
+        "--eps-sa-add", type=lambda value: int(value, 0), default=READ_KEY_ADD,
+        help=f"27 03/04 additive constant (default 0x{READ_KEY_ADD:04X})")
+    parser.add_argument("--correct-checksum", action="store_true",
+                        help="Accept an input image with wrong dataset CRCs and recalculate them")
+
+
+def apply_defaults(args):
+    if getattr(args, "commit", False):
+        return
+    if getattr(args, "recovery_flash", False):
+        if args.start is None:
+            args.start = FLASH_START
+        if args.end is None:
+            args.end = EPS_IMAGE_SIZE - 1
+        return
+    if getattr(args, "probe_erase_budget", False):
+        return
+    if (args.read_eeprom or args.read_eps_faults or args.read_eps_motion
+            or args.read_eps_assist or args.read_eps_supply or args.read_eps_can_config):
+        return
+    flash = not args.readout and not args.ident_only
+    if (flash and args.input and args.start is None and args.end is None
+            and Path(args.input).is_file()
+            and Path(args.input).stat().st_size == DATASET_SIZE):
+        args.start, args.end = DATASET_START, DATASET_END
+    args.start = (DEFAULT_START if flash else 0) if args.start is None else args.start
+    args.end = (DEFAULT_END if flash else EPS_IMAGE_SIZE - 1) if args.end is None else args.end
+    args.out = args.out or "data/raw/readout/pq-eps"
+
+
+def validate_cli(parser, args):
+    if args.correct_checksum and not args.input:
+        parser.error("--correct-checksum only applies to a flash (--input)")
+    if args.read_eps_can_config:
+        if not args.out:
+            parser.error("--read-eps-can-config requires --out FILE")
+        if not 1 <= args.can_config_samples <= 200:
+            parser.error("--can-config-samples must be 1..200")
+        if not 50 <= args.can_config_interval_ms <= 1000:
+            parser.error("--can-config-interval-ms must be 50..1000")
+        if (args.input or args.recovery or args.start is not None or args.end is not None
+                or args.reference or args.readout_passes != 1
+                or args.readout_window != 0x10000 or args.readout_method != "auto"):
+            parser.error("--read-eps-can-config cannot be combined with flash or CPU-readout options")
+        return
+    if args.read_eps_supply:
+        if not args.out:
+            parser.error("--read-eps-supply requires --out FILE")
+        if not 1 <= args.supply_samples <= 200:
+            parser.error("--supply-samples must be 1..200")
+        if not 50 <= args.supply_interval_ms <= 1000:
+            parser.error("--supply-interval-ms must be 50..1000")
+        if (args.input or args.recovery or args.start is not None or args.end is not None
+                or args.reference or args.readout_passes != 1
+                or args.readout_window != 0x10000 or args.readout_method != "auto"):
+            parser.error("--read-eps-supply cannot be combined with flash or CPU-readout options")
+        return
+    if args.read_eps_assist:
+        if not args.out:
+            parser.error("--read-eps-assist requires --out FILE")
+        if not 1 <= args.assist_samples <= 200:
+            parser.error("--assist-samples must be 1..200")
+        if not 50 <= args.assist_interval_ms <= 1000:
+            parser.error("--assist-interval-ms must be 50..1000")
+        if (args.input or args.recovery or args.start is not None or args.end is not None
+                or args.reference or args.readout_passes != 1
+                or args.readout_window != 0x10000 or args.readout_method != "auto"):
+            parser.error("--read-eps-assist cannot be combined with flash or CPU-readout options")
+        return
+    if args.read_eps_motion:
+        if not args.out:
+            parser.error("--read-eps-motion requires --out FILE")
+        if not 1 <= args.motion_samples <= 200:
+            parser.error("--motion-samples must be 1..200")
+        if not 50 <= args.motion_interval_ms <= 1000:
+            parser.error("--motion-interval-ms must be 50..1000")
+        if (args.input or args.recovery or args.start is not None or args.end is not None
+                or args.reference or args.readout_passes != 1
+                or args.readout_window != 0x10000 or args.readout_method != "auto"):
+            parser.error("--read-eps-motion cannot be combined with flash or CPU-readout options")
+        return
+    if args.read_eps_faults:
+        if not args.out:
+            parser.error("--read-eps-faults requires --out FILE")
+        if (args.input or args.recovery or args.start is not None or args.end is not None
+                or args.reference or args.readout_passes != 1
+                or args.readout_window != 0x10000 or args.readout_method != "auto"):
+            parser.error("--read-eps-faults cannot be combined with flash or CPU-readout options")
+        return
+    if args.read_eeprom:
+        if not args.out:
+            parser.error("--read-eeprom requires --out FILE")
+        if (args.input or args.recovery or args.start is not None or args.end is not None
+                or args.reference or args.readout_passes != 1
+                or args.readout_window != 0x10000 or args.readout_method != "auto"):
+            parser.error("--read-eeprom cannot be combined with flash or CPU-readout options")
+        return
+    if getattr(args, "commit", False):
+        if args.input or args.readout:
+            parser.error("--commit cannot be combined with flash or readout options")
+        return
+    if getattr(args, "recovery_flash", False):
+        if not args.input:
+            parser.error("--recovery-flash requires --input (full CPU-linear image)")
+        if args.readout:
+            parser.error("--recovery-flash cannot be combined with readout options")
+        validate_selection(args.start, args.end)
+        return
+    if getattr(args, "probe_erase_budget", False):
+        if args.input or args.readout:
+            parser.error("--probe-erase-budget cannot be combined with flash or readout options")
+        return
+    if args.ident_only:
+        if args.input or args.dry_run:
+            parser.error("--ident-only cannot be combined with flash or dry-run options")
+        return
+    if args.readout:
+        if args.input or args.recovery:
+            parser.error("--readout cannot be combined with flash or recovery options")
+        if args.reference:
+            parser.error("--reference currently applies only to Haldex readout")
+        if args.readout_passes != 1:
+            parser.error("PQ EPS probing currently supports one pass")
+        validate_eps_range(args.start, args.end - args.start + 1)
+        return
+    if not args.input:
+        parser.error("--input is required unless --readout or --ident-only is selected")
+    validate_selection(args.start, args.end)
+    if args.start < APPLICATION_END and not args.recovery:
+        parser.error(APPLICATION_ERASE_BLOCKED)
+
+
+def run_flash(args, runtime):
+    prepared = prepare_image(args.input, args.start, args.end,
+                             correct_checksums=args.correct_checksum)
+    for row in prepared["metadata"].get("dataset_crcs", ()):
+        if row["corrected"]:
+            print(f"WARNING: input checksum corrected: {row['name']} CRC at "
+                  f"0x{row['address']:05X} 0x{row['stored']:04X} -> 0x{row['computed']:04X}")
+    if args.dry_run:
+        print(json.dumps(dict(prepared["metadata"], status="validated", dry_run=True,
+                              recovery_mode=args.recovery), indent=2, sort_keys=True))
+        print("No CAN traffic sent.")
+        return 0
+    print(json.dumps(dict(prepared["metadata"], recovery_mode=args.recovery),
+                     indent=2, sort_keys=True))
+    if not args.yes and input("Type YES to erase and flash the selected EPS range: ") != "YES":
+        print("Cancelled before adapter access.")
+        return 1
+    device = runtime.open_adapter(args)
+    flasher = PQEPSFlasher(
+        device=device, module=args.module,
+        device_factory=lambda: runtime.open_adapter(args),
+        progress_cb=runtime.progress, debug=args.verbose,
+    )
+    result = flasher.flash_prepared(prepared, recovery=args.recovery)
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+def _safe_disconnect(tp):
+    try:
+        tp.disconnect()
+    except Exception:
+        pass
+
+
+# Ascending erase windows drawn from the loader's RequestDownload table. Each is
+# an EXACT partition the loader accepts for 34/31 C4 (sub-ranges are rejected).
+PROBE_WINDOWS = (
+    ("dataset_4k_5D000", 0x5D000, 0x5DFFF),           # known-good: must SURVIVE (sanity)
+    ("dataset_36k_57000", 0x57000, 0x5FFFF),          # 0x9000
+    ("dataset_36k_57000_reerase", 0x57000, 0x5FFFF),  # 2nd pass over the now-blank region
+    ("app_min_A000_5BFFF", 0x0A000, 0x5BFFF),         # smallest application window (0x52000)
+)
+
+
+def run_probe(args, runtime):
+    """EPS loader recovery diagnostic: find the largest single erase that
+    completes WITHOUT resetting the loader's programming STATE.
+
+    Per window: unlock, 34 RequestDownload, 31 C4 erase (expect 71 C4 01), then
+    stay SILENT through the erase/deaf window, reconnect ONCE, and send ONLY
+    33 C4. 73 C4 00 => STATE survived (no reset); NRC 0x33 => the erase forced a
+    reset and STATE was lost (security gate). No data is ever written. The flash
+    attempt counter is 8-bit with no lockout (EPSRe notes/BOOT_2901_counters.md),
+    so repeated erases are safe. A 27 is never re-sent after the erase because the
+    key-accept path itself clears STATE.
+    """
+    plan = {
+        "operation": "probe_erase_budget", "module": args.module,
+        "windows": [{"name": n, "start": f"0x{s:05X}", "end": f"0x{e:05X}", "size": e - s + 1}
+                    for n, s, e in PROBE_WINDOWS],
+        "silent_wait_s": args.probe_wait_s, "reconnect_tries": args.probe_reconnect_tries,
+        "firmware_writes": False, "destructive_erase": True,
+    }
+    if args.dry_run:
+        print(json.dumps(plan, indent=2, sort_keys=True))
+        print("No CAN traffic sent.")
+        return 0
+    print(json.dumps(plan, indent=2, sort_keys=True))
+    if not args.yes and input(
+            "Type YES to run the destructive EPS erase-budget probe: ") != "YES":
+        print("Cancelled before adapter access.")
+        return 1
+
+    device = runtime.open_adapter(args)
+
+    def make_tp():
+        try:
+            device.can_clear(0xFFFF)
+        except Exception:
+            pass
+        tp = TP20Transport(device, module=args.module, timeout=2.0,
+                           debug=args.verbose, legacy_ack=True)
+        return tp, EPSKWPClient(tp)
+
+    results = []
+    try:
+        tp, kwp = make_tp()
+        info = decorate_identification(parse_vag_identification(
+            kwp.read_ecu_ident(0x9B), kwp.read_ecu_ident(0x9C)))
+        if not info.get("in_bootloader"):
+            raise RuntimeError(
+                f"EPS is not in its resident loader (system_desc={info.get('system_desc')!r}); "
+                "the probe only runs against the bootloader")
+        _safe_disconnect(tp)
+
+        for name, start, end in PROBE_WINDOWS:
+            size = end - start + 1
+            step = {"name": name, "start": f"0x{start:05X}", "end": f"0x{end:05X}", "size": size}
+            try:
+                tp, kwp = make_tp()
+                EPS_PROGRAMMING_SECURITY.unlock(kwp)
+                kwp.request_download(start, size)            # 34
+                kwp.routine(RC_ERASE, a3(start) + a3(end) + eps_flash_stamp())  # 31 C4 -> 71 C4 01
+                step["erase_accepted"] = True
+            except KWPNegativeResponse as nr:
+                step.update(erase_accepted=False, erase_nrc=f"0x{nr.code:02X}",
+                            verdict=f"erase rejected (NRC 0x{nr.code:02X})")
+                results.append(step)
+                _safe_disconnect(tp)
+                continue
+            except Exception as exc:
+                step.update(erase_accepted=False, error=f"{type(exc).__name__}: {exc}",
+                            verdict="erase step errored")
+                results.append(step)
+                _safe_disconnect(tp)
+                continue
+
+            _safe_disconnect(tp)
+            time.sleep(args.probe_wait_s)  # SILENCE through erase + deaf window
+
+            started = time.monotonic()
+            reconnected = False
+            for _ in range(args.probe_reconnect_tries):
+                try:
+                    tp, kwp = make_tp()
+                    reconnected = True
+                    break
+                except Exception:
+                    time.sleep(1.0)
+            step["reconnect_s"] = round(time.monotonic() - started, 1)
+            step["reconnected"] = reconnected
+            if not reconnected:
+                step["verdict"] = "no reconnect (still deaf past budget, or hung)"
+                results.append(step)
+                continue
+            try:
+                resp = kwp.routine_result(RC_ERASE)          # 33 C4, no 27 first
+                step.update(routine_result=resp.hex(), state_survived=True,
+                            verdict="SURVIVED - STATE intact after erase (73 C4 00)")
+            except KWPNegativeResponse as nr:
+                step["result_nrc"] = f"0x{nr.code:02X}"
+                if nr.code == 0x33:
+                    step.update(state_survived=False,
+                                verdict="RESET - STATE lost, security gate (0x33): erase over budget")
+                elif nr.code == 0x23:
+                    step.update(state_survived=True,
+                                verdict="SURVIVED - erase still pending (0x23); raise --probe-wait-s")
+                elif nr.code == 0x22:
+                    step.update(state_survived=False,
+                                verdict="STATE present but not 6 (0x22) - inspect sequence")
+                else:
+                    step["verdict"] = f"unexpected NRC 0x{nr.code:02X}"
+            except Exception as exc:
+                step.update(result_error=f"{type(exc).__name__}: {exc}", verdict="33 C4 errored")
+            results.append(step)
+            _safe_disconnect(tp)
+    finally:
+        try:
+            device.close()
+        except Exception:
+            pass
+
+    survived = [r["name"] for r in results if r.get("state_survived")]
+    report = dict(plan, results=results, survived_windows=survived, interpretation=(
+        "Largest SURVIVED window = the single-erase budget. If app_min_A000_5BFFF survived, the full "
+        "app flashes in one window (then 36 transferData + 37 + checksum). If it reset but dataset_36k "
+        "survived, use the two-pass route (let the first erase reset, then re-erase the now-blank "
+        "region). Attempt counter has no lockout, so iterate freely."))
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+def run_recoveryflash(args, runtime):
+    """Robust full-app EPS flash/recovery, two-phase, for a rack in its resident
+    loader. Works whether the erase is instant (blank app) or ~2 minutes (non-blank).
+
+    The loader erases the whole app window in one interrupts-off block, so a non-blank
+    erase freezes the CPU (seconds..~2 min) and TP2 drops. The trap that cost us: a
+    33 C4 poked into the frozen ECU times out its ACK and trips the loader's abort/
+    reset path -> STATE zeroed -> 33 C4 = 0x33. The fix is to NOT touch the ECU while
+    it erases:
+
+      27 -> 34 -> 31 C4 erase, then go SILENT: drop our channel and only retry a bare
+      TP2 setup until it succeeds (which only happens once the CPU is back == erase
+      done). A clean reconnect preserves STATE, so 33 C4 RESUMES at STATE 6 -> 73 C4 00
+      and we flash single-phase: 36 TransferData (+A3 keepalive/chunk) -> 37 ->
+      31 C5 / 33 C5 checksum -> 82 commit.
+
+    Fallback: if that resume returns 0x33 (the loader did reset STATE after all), the
+    app is now blank, so a second erase is fast, holds the channel, and reaches 6->7;
+    then the same transfer/checksum/commit runs. Works whether the erase is instant or
+    ~2 minutes. The 31 C4 payload carries a 6-byte date stamp (a zero stamp is rejected
+    0x22); 0x82 finalizes so the loader validates and boots the app. No attempt-counter
+    lockout exists, so this is safe to repeat.
+    """
+    prepared = prepare_image(args.input, args.start, args.end,
+                             correct_checksums=args.correct_checksum)
+    meta = prepared["metadata"]
+    start, end, size = meta["start_addr"], meta["end_addr"], meta["size"]
+    region, checksum = prepared["region"], meta["checksum"]
+    if size <= 0 or len(region) != size:
+        raise RuntimeError(f"Bad recovery region: size={size} len={len(region)}")
+    plan = {"operation": "recovery_flash", "module": args.module,
+            "start_addr": f"0x{start:05X}", "end_addr": f"0x{end:05X}", "size": size,
+            "checksum": f"0x{checksum:04X}", "prepared_sha256": meta["prepared_sha256"],
+            "reconnect_tries": args.recovery_reconnect_tries}
+    print(json.dumps(plan, indent=2, sort_keys=True))
+    if args.dry_run:
+        print("No CAN traffic sent.")
+        return 0
+    if not args.yes and input(
+            f"Type YES to ERASE and FLASH EPS 0x{start:05X}..0x{end:05X}: ") != "YES":
+        print("Cancelled before adapter access.")
+        return 1
+
+    def connect():
+        try:
+            device.can_clear(0xFFFF)
+        except Exception:
+            pass
+        tp = TP20Transport(device, module=args.module, timeout=2.0,
+                           debug=args.verbose, legacy_ack=True)
+        return tp, EPSKWPClient(tp)
+
+    def reconnect(tries, label):
+        last = None
+        for _ in range(tries):
+            time.sleep(1.0)
+            try:
+                return connect()
+            except Exception as exc:
+                last = exc
+                print(f"  {label}: waiting for channel... ({type(exc).__name__})")
+        raise RuntimeError(f"{label}: no reconnect after {tries}s ({last})")
+
+    result = dict(plan)
+    tp = kwp = None
+    device = runtime.open_adapter(args)
+    try:
+        def unlock_download_erase(session):
+            print("  [27] unlock  [34] requestDownload  [31 C4] erase + date stamp")
+            EPS_PROGRAMMING_SECURITY.unlock(session)
+            lim = session.request_download(start, size)
+            session.routine(RC_ERASE, a3(start) + a3(end) + eps_flash_stamp())
+            return lim
+
+        def wait_channel_back(tries, label):
+            # Silently wait for the loader to return after an erase. We ONLY retry a
+            # bare TP2 channel setup (connect) — no KWP frame is ever sent while the
+            # CPU may be frozen mid-erase, so nothing can trip the loader's abort/
+            # reset path. connect() can only succeed once the CPU is running again,
+            # i.e. the erase has finished. This is what keeps STATE intact.
+            last = None
+            for _ in range(tries):
+                time.sleep(1.0)
+                try:
+                    return connect()
+                except Exception as exc:
+                    last = type(exc).__name__
+                    print(f"  {label}: silent, waiting for erase/loader... ({last})")
+            raise RuntimeError(f"{label}: loader did not return after {tries}s ({last})")
+
+        tp, kwp = connect()
+        info = decorate_identification(parse_vag_identification(
+            kwp.read_ecu_ident(0x9B), kwp.read_ecu_ident(0x9C)))
+        result["ecu"] = info
+        if not info.get("in_bootloader"):
+            raise RuntimeError(
+                f"EPS not in resident loader (system_desc={info.get('system_desc')!r}); "
+                "recovery-flash requires the loader")
+
+        # Erase the whole app window. The loader does it in one interrupts-off block,
+        # so a non-blank erase freezes the CPU (seconds..~2 min) and the channel drops.
+        print("[27] unlock  [34] requestDownload  [31 C4] erase + date stamp")
+        limit = unlock_download_erase(kwp)
+
+        # Stay SILENT while the erase runs: drop our channel and only retry bare TP2
+        # setup until the CPU is back (erase done). Poking 33 C4 into the frozen ECU
+        # is exactly what trips the abort/reset -> 0x33; not doing so keeps STATE.
+        _safe_disconnect(tp)
+        tp = kwp = None
+        print("  erase running: silent, waiting for the loader to return...")
+        tp, kwp = wait_channel_back(args.recovery_reconnect_tries, "erase-wait")
+
+        # RESUME on the clean reconnect. A clean TP2 reconnect should preserve the
+        # loader's STATE (==6), so 33 C4 -> 73 C4 00 and we flash single-phase. Only
+        # if the loader actually reset STATE (33 C4 -> 0x33) do we fall back: the app
+        # is blank now, so a SECOND erase is fast, keeps the channel, and reaches 6->7.
+        print("[33 C4] resume on clean reconnect (no re-27)")
+        done = False
+        resume_nrc = None
+        for _ in range(args.recovery_result_tries):
+            try:
+                resp = kwp.routine_result(RC_ERASE)
+            except (TimeoutError, ConnectionError):
+                _safe_disconnect(tp)
+                tp, kwp = wait_channel_back(args.recovery_reconnect_tries, "erase-wait")
+                continue
+            except KWPNegativeResponse as nr:
+                resume_nrc = nr.code
+                break
+            if resp == bytes([0x73, RC_ERASE, 0]):
+                done = True
+                break
+            if resp == bytes([0x73, RC_ERASE, 0x23]):
+                time.sleep(0.5)
+                continue
+            raise RuntimeError(f"33 C4 unexpected: {resp.hex()}")
+
+        if done:
+            print("  resume OK — STATE survived the clean reconnect (single-phase).")
+            result["mode"] = "single_phase_resume"
+        else:
+            print(f"  resume blocked (NRC 0x{resume_nrc:02X}): STATE was reset. App is blank "
+                  f"now -> second fast erase on blank (two-phase fallback).")
+            result["mode"] = "two_phase_fallback"
+            limit = unlock_download_erase(kwp)      # fresh 27->34->31C4 on the blank app
+            time.sleep(3.0)
+            for _ in range(args.recovery_result_tries):
+                try:
+                    resp = kwp.routine_result(RC_ERASE)
+                except (TimeoutError, ConnectionError):
+                    _safe_disconnect(tp)
+                    tp, kwp = reconnect(args.recovery_reconnect_tries, "erase-poll")
+                    continue
+                except KWPNegativeResponse as nr:
+                    raise RuntimeError(
+                        f"fallback 33 C4 rejected NRC 0x{nr.code:02X} "
+                        f"({'blank erase still too slow to hold the channel' if nr.code == 0x33 else 'sequence'})")
+                if resp == bytes([0x73, RC_ERASE, 0]):
+                    done = True
+                    break
+                if resp == bytes([0x73, RC_ERASE, 0x23]):
+                    time.sleep(0.5)
+                    continue
+                raise RuntimeError(f"33 C4 unexpected: {resp.hex()}")
+            if not done:
+                raise TimeoutError("second (blank) erase never reported complete")
+
+        chunk = min(CHUNK_SIZE, limit - 1)
+        if chunk < 4:
+            raise RuntimeError("Controller transfer size too small")
+        result["erase_ok"] = True
+
+        print(f"[36] transfer {len(region)} bytes in {chunk}-byte chunks (+A3 keepalive)")
+        sent = 0
+        for off in range(0, len(region), chunk):
+            kwp.transfer(region[off:off + chunk])
+            try:
+                tp.send_keep_alive()  # explicit A3 per chunk, matching 03_flasher.py
+            except Exception as exc:
+                raise RuntimeError(f"channel lost during transfer near 0x{start + off:05X}: {exc}")
+            sent += min(chunk, len(region) - off)
+            runtime.progress("WRITING", 100.0 * sent / len(region), f"0x{start + off:05X}")
+        print("[37] request transfer exit")
+        kwp.transfer_exit()
+        print(f"[31 C5] checksum 0x{checksum:04X}")
+        kwp.routine(RC_CHECKSUM, a3(start) + a3(end) + struct.pack(">H", checksum))
+        print("[33 C5] checksum result")
+        cres = None
+        for _ in range(args.recovery_result_tries):
+            try:
+                resp = kwp.routine_result(RC_CHECKSUM)
+            except KWPNegativeResponse as nr:
+                raise RuntimeError(f"33 C5 rejected NRC 0x{nr.code:02X}")
+            if resp == bytes([0x73, RC_CHECKSUM, 0]):
+                cres = resp
+                break
+            if resp == bytes([0x73, RC_CHECKSUM, 0x23]):
+                time.sleep(0.5)
+                continue
+            raise RuntimeError(f"33 C5 unexpected: {resp.hex()}")
+        if cres is None:
+            raise RuntimeError("checksum verify did not complete (image checksum mismatch?)")
+        # Finalize: StopCommunication (0x82). The loader's 0x82 handler (STATE 3 ->
+        # 0x8D76) validates the app and writes its valid/"Ende" marker so it boots.
+        # Without this the flash verifies but the rack stays in the loader.
+        print("[82] finalize (StopCommunication / commit app)")
+        try:
+            kwp.request(b"\x82")
+        except Exception as exc:
+            print(f"  finalize unconfirmed (can be normal if it resets the ECU): {type(exc).__name__}")
+        result["status"] = "flashed"
+    except Exception as exc:
+        result["status"] = "failed"
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        if tp is not None:
+            _safe_disconnect(tp)
+        try:
+            device.close()
+        except Exception:
+            pass
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if result.get("status") == "flashed" else 1
+
+
+def run_commit(args, runtime):
+    """Finalize an already-written EPS app WITHOUT re-flashing: unlock (27) then
+    StopCommunication (0x82). The loader's 0x82 handler (STATE 3 -> 0x8D76)
+    validates the flashed app and writes its valid/"Ende" marker so it boots. Use
+    when a flash completed (33 C5 -> 73 C5 00) but the rack stayed in the loader
+    because the finalize was never sent. Does not erase or write any flash."""
+    device = runtime.open_adapter(args)
+    tp = kwp = None
+    result = {"operation": "commit_app", "module": args.module}
+    try:
+        tp = TP20Transport(device, module=args.module, timeout=2.0,
+                           debug=args.verbose, legacy_ack=True)
+        kwp = EPSKWPClient(tp)
+        info = decorate_identification(parse_vag_identification(
+            kwp.read_ecu_ident(0x9B), kwp.read_ecu_ident(0x9C)))
+        result["ecu_before"] = info
+        if not info.get("in_bootloader"):
+            result["status"] = "already_application"
+            print("EPS is already running the application (not in loader) — nothing to commit.")
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        print("[27] security unlock")
+        EPS_PROGRAMMING_SECURITY.unlock(kwp)
+        print("[82] StopCommunication — finalize/validate the written app")
+        try:
+            resp = kwp.request(b"\x82")
+            result["commit_response"] = resp.hex()
+        except Exception as exc:
+            # 0x82 may reset/close the channel as it commits; that is expected.
+            result["commit_response"] = f"no clean response (normal on finalize): {type(exc).__name__}: {exc}"
+        result["status"] = "commit_sent"
+    except Exception as exc:
+        result["status"] = "failed"
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        if tp is not None:
+            _safe_disconnect(tp)
+        try:
+            device.close()
+        except Exception:
+            pass
+    print(json.dumps(result, indent=2, sort_keys=True))
+    print("Now ignition-cycle the EPS and run --ident-only: it should boot the app "
+          "(in_bootloader false). If it still shows the loader, the flashed image lacks a "
+          "valid app signature and we inspect 0x8D76's validation.")
+    return 0 if result.get("status") in ("commit_sent", "already_application") else 1
+
+
+def run_readout(args, runtime):
+    length = args.end - args.start + 1
+    plan = {
+        "operation": "readout", "controller_family": args.family.name,
+        "adapter": args.adapter, "module": args.module, "start": args.start,
+        "end": args.end, "length": length, "method": args.readout_method,
+        "security_level": "27 03/04", "security_algorithm": "add32",
+        "security_constant": args.eps_sa_add,
+        "hardware_access": not args.dry_run, "firmware_writes": False,
+    }
+    if args.dry_run:
+        print(json.dumps(plan, indent=2, sort_keys=True))
+        return 0
+
+    output = Path(args.out)
+    output.mkdir(parents=True, exist_ok=False)
+    events = []
+    cleanup_errors = []
+    report = dict(plan, status="in_progress", cleanup_errors=cleanup_errors)
+    device = tp = reader = None
+    try:
+        device = runtime.open_adapter(args)
+        tp = TP20Transport(device, module=args.module, timeout=2.0, debug=args.verbose)
+        reader = PQEPSReader(tp, key_add=args.eps_sa_add, record=events.append)
+        report["controller"] = reader.identification()
+        args.family.validate_identification(report["controller"])
+        candidates = []
+        for address in (args.start, 0xA000, 0x5E000):
+            if args.start <= address <= args.end - 15 and address not in candidates:
+                candidates.append(address)
+        probe = reader.probe(candidates, requested=args.readout_method)
+        report["probe"] = probe.__dict__
+        chunk = (MAX_READ_MEMORY_BLOCK if probe.method == "read-memory"
+                 else min(args.readout_window, 0xFFFFFF))
+        tracker = ByteProgress(runtime.progress, "EPS READ", length)
+        report["capture"] = capture_eps(
+            reader, output, args.start, length, probe.method, chunk=chunk,
+            record=events.append, progress=lambda done, total: tracker.update(done),
+        )
+        report["status"] = (
+            "captured_complete" if report["capture"]["unreadable_bytes"] == 0
+            else "captured_partial")
+    except Exception as exc:
+        report.update(status="requires_attention", error=f"{type(exc).__name__}: {exc}")
+    finally:
+        if reader is not None:
+            cleanup_errors.extend(reader.leave())
+        if tp is not None:
+            try:
+                tp.disconnect()
+            except Exception as exc:
+                cleanup_errors.append(f"disconnect: {exc}")
+        if device is not None:
+            try:
+                device.close()
+            except Exception as exc:
+                cleanup_errors.append(f"adapter close: {exc}")
+        if cleanup_errors:
+            report["status"] = "requires_attention"
+        (output / "events.json").write_text(json.dumps(events, indent=2), encoding="utf-8")
+        (output / "report.json").write_text(
+            json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report["status"] in ("captured_complete", "captured_partial") else 1
+
+
+def run_eeprom(args, runtime):
+    """Capture the full 1 KiB EPS serial EEPROM via read-only KWP upload."""
+    output = Path(args.out)
+    if output.exists():
+        raise ValueError(f"Refusing to overwrite {output}")
+    plan = {
+        "operation": "read_eeprom", "controller_family": args.family.name,
+        "adapter": args.adapter, "module": args.module,
+        "eeprom_offset": 0, "length": 0x400,
+        "kwp_upload_request": "35 00 00 00 00 00 04 00",
+        "security_level": "27 03/04", "security_constant": args.eps_sa_add,
+        "output": str(output), "hardware_access": not args.dry_run,
+        "firmware_writes": False,
+    }
+    if args.dry_run:
+        print(json.dumps(plan, indent=2, sort_keys=True))
+        return 0
+
+    device = tp = reader = None
+    cleanup_errors = []
+    data = identity = None
+    read_error = None
+    try:
+        device = runtime.open_adapter(args)
+        tp = TP20Transport(device, module=args.module, timeout=2.0, debug=args.verbose)
+        reader = PQEPSReader(tp, key_add=args.eps_sa_add)
+        identity = reader.identification()
+        args.family.validate_identification(identity)
+        reader.diagnostic_session()
+        reader.enter(ensure_diagnostic=False)
+        data = reader.read_upload(0, 0x400)
+        if len(data) != 0x400:
+            raise PQReadError(f"Expected 1024 EEPROM bytes, got {len(data)}")
+    except Exception as exc:
+        read_error = f"{type(exc).__name__}: {exc}"
+    finally:
+        if reader is not None:
+            cleanup_errors.extend(reader.leave())
+        if tp is not None:
+            try:
+                tp.disconnect()
+            except Exception as exc:
+                cleanup_errors.append(f"disconnect: {exc}")
+        if device is not None:
+            try:
+                device.close()
+            except Exception as exc:
+                cleanup_errors.append(f"adapter close: {exc}")
+
+    if read_error is not None:
+        print(json.dumps(dict(plan, status="requires_attention", error=read_error,
+                              cleanup_errors=cleanup_errors), indent=2, sort_keys=True))
+        return 1
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("xb") as stream:
+        stream.write(data)
+    result = dict(plan, controller=identity, status="captured_complete",
+                  sha256=hashlib.sha256(data).hexdigest().upper(),
+                  cleanup_errors=cleanup_errors)
+    if cleanup_errors:
+        result["status"] = "requires_attention"
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0 if not cleanup_errors else 1
+
+
+EPS_FAULT_GROUPS = tuple(range(0x32, 0x46))
+EPS_FAULT_HEADERS = frozenset((0x32, 0x36, 0x3A, 0x3E, 0x42))
+
+
+def run_faults(args, runtime):
+    """Save all five EPS fault slots and their three snapshot pages via SID 21."""
+    output = Path(args.out)
+    if output.exists():
+        raise ValueError(f"Refusing to overwrite {output}")
+    report = {
+        "operation": "read_eps_faults", "controller_family": args.family.name,
+        "adapter": args.adapter, "module": args.module,
+        "service": "21", "groups": [f"{group:02X}" for group in EPS_FAULT_GROUPS],
+        "hardware_access": not args.dry_run, "firmware_writes": False,
+        "output": str(output),
+    }
+    if args.dry_run:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+
+    device = tp = None
+    responses = {}
+    errors = []
+    cleanup_errors = []
+    try:
+        device = runtime.open_adapter(args)
+        tp = TP20Transport(device, module=args.module, timeout=2.0, debug=args.verbose)
+        kwp = EPSKWPClient(tp)
+        identity = parse_vag_identification(
+            kwp.read_ecu_ident(0x9B), kwp.read_ecu_ident(0x9C))
+        args.family.validate_identification(identity)
+        report["controller"] = identity
+        for group in EPS_FAULT_GROUPS:
+            try:
+                payload = kwp.read_local_identifier(group)
+                if len(payload) < 2 or payload[1] != group:
+                    raise PQReadError(f"SID 21 group {group:02X} response echo mismatch")
+                responses[f"{group:02X}"] = payload.hex(" ").upper()
+                if (group in EPS_FAULT_HEADERS and len(payload) == 14
+                        and payload[2] == 0x4B and payload[5] == 0x4B
+                        and payload[8] == 0xA1 and payload[11] == 0x6B):
+                    report.setdefault("headers", {})[f"{group:02X}"] = {
+                        "internal_id": int.from_bytes(payload[3:5], "big"),
+                        "subcode": int.from_bytes(payload[6:8], "big"),
+                        "flags": int.from_bytes(payload[9:11], "big"),
+                        "occurrences": payload[12],
+                    }
+            except Exception as exc:
+                errors.append(f"21 {group:02X}: {type(exc).__name__}: {exc}")
+    except Exception as exc:
+        errors.append(f"session: {type(exc).__name__}: {exc}")
+    finally:
+        if tp is not None:
+            try:
+                tp.disconnect()
+            except Exception as exc:
+                cleanup_errors.append(f"disconnect: {exc}")
+        if device is not None:
+            try:
+                device.close()
+            except Exception as exc:
+                cleanup_errors.append(f"adapter close: {exc}")
+
+    report.update(responses=responses, errors=errors, cleanup_errors=cleanup_errors,
+                  status="captured_complete" if not errors and not cleanup_errors
+                  else "captured_partial" if responses else "requires_attention")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("x", encoding="utf-8") as stream:
+        json.dump(report, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report["status"] == "captured_complete" else 1
+
+
+def decode_eps_motion_response(payload: bytes) -> int:
+    """Extract TT 3001 SID 21 01 field 3 (signed gp-0x665E)."""
+    if len(payload) != 14 or payload[:2] != b"\x61\x01" or payload[8] != 0x74:
+        raise PQReadError("Unexpected TT 3001 21 01 motion-rate field layout")
+    return int.from_bytes(payload[9:11], "big", signed=True)
+
+
+def decode_eps_post_slew_selector(payload: bytes) -> int:
+    """Extract TT 3001 SID 21 01 field 1 raw gp-0x65C7 byte."""
+    if len(payload) != 14 or payload[:4] != b"\x61\x01\x1A\x46":
+        raise PQReadError("Unexpected TT 3001 21 01 cap-selector field layout")
+    return payload[4]
+
+
+def run_motion(args, runtime):
+    """Read the stock motion-rate group on a stationary EPS; never enter programming."""
+    output = Path(args.out)
+    if output.exists():
+        raise ValueError(f"Refusing to overwrite {output}")
+    report = {
+        "operation": "read_eps_motion", "controller_family": args.family.name,
+        "adapter": args.adapter, "module": args.module,
+        "request": "21 01", "sample_count": args.motion_samples,
+        "minimum_interval_ms": args.motion_interval_ms,
+        "hardware_access": not args.dry_run, "firmware_writes": False,
+        "output": str(output),
+        "limiter_branch_rate_magnitude": 3650,
+        "post_slew_cap_source_ram": "0x03FF2B39",
+        "post_slew_minimum_cap_selector_max": 38,
+        "limitation": "Stationary sampling only; host timestamps and KWP latency can miss brief motion-rate or cap-selector changes.",
+    }
+    if args.dry_run:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+
+    device = tp = None
+    samples = []
+    errors = []
+    cleanup_errors = []
+    try:
+        device = runtime.open_adapter(args)
+        tp = TP20Transport(device, module=args.module, timeout=2.0, debug=args.verbose)
+        kwp = EPSKWPClient(tp)
+        identity = parse_vag_identification(
+            kwp.read_ecu_ident(0x9B), kwp.read_ecu_ident(0x9C))
+        args.family.validate_identification(identity)
+        report["controller"] = identity
+        for index in range(args.motion_samples):
+            started_mono_ns = time.monotonic_ns()
+            started_ns = time.time_ns()
+            try:
+                payload = kwp.read_local_identifier(0x01)
+                rate = decode_eps_motion_response(payload)
+                cap_selector = decode_eps_post_slew_selector(payload)
+                samples.append({"index": index, "host_time_ns": started_ns,
+                                "response": payload.hex(" ").upper(),
+                                "signed_rate": rate, "rate_magnitude": abs(rate),
+                                "at_or_above_branch": abs(rate) >= 3650,
+                                "post_slew_cap_selector": cap_selector,
+                                "at_min_post_slew_cap_knot": cap_selector <= 38})
+            except Exception as exc:
+                errors.append(f"sample {index}: {type(exc).__name__}: {exc}")
+            if index + 1 < args.motion_samples:
+                elapsed_ms = (time.monotonic_ns() - started_mono_ns) / 1_000_000
+                time.sleep(max(0, args.motion_interval_ms - elapsed_ms) / 1000)
+    except Exception as exc:
+        errors.append(f"session: {type(exc).__name__}: {exc}")
+    finally:
+        if tp is not None:
+            try:
+                tp.disconnect()
+            except Exception as exc:
+                cleanup_errors.append(f"disconnect: {exc}")
+        if device is not None:
+            try:
+                device.close()
+            except Exception as exc:
+                cleanup_errors.append(f"adapter close: {exc}")
+
+    report.update(samples=samples, errors=errors, cleanup_errors=cleanup_errors,
+                  status="captured_complete" if len(samples) == args.motion_samples
+                  and not errors and not cleanup_errors else
+                  "captured_partial" if samples else "requires_attention")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("x", encoding="utf-8") as stream:
+        json.dump(report, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report["status"] == "captured_complete" else 1
+
+
+def run_assist(args, runtime):
+    """Read stock group 05 assist stages on a stationary EPS, without security access."""
+    output = Path(args.out)
+    if output.exists():
+        raise ValueError(f"Refusing to overwrite {output}")
+    report = {
+        "operation": "read_eps_assist", "controller_family": args.family.name,
+        "adapter": args.adapter, "module": args.module,
+        "request": "21 05", "sample_count": args.assist_samples,
+        "minimum_interval_ms": args.assist_interval_ms,
+        "hardware_access": not args.dry_run, "firmware_writes": False,
+        "output": str(output),
+        "fields": ["speed-selected assist map output", "protected motor request",
+                   "pre-limiter final assist", "published driver torque"],
+        "limitation": "Stationary sampling only; stock values are compressed formatter fields and KWP can miss fast transients.",
+    }
+    if args.dry_run:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+
+    device = tp = None
+    samples = []
+    errors = []
+    cleanup_errors = []
+    try:
+        device = runtime.open_adapter(args)
+        tp = TP20Transport(device, module=args.module, timeout=2.0, debug=args.verbose)
+        kwp = EPSKWPClient(tp)
+        identity = parse_vag_identification(
+            kwp.read_ecu_ident(0x9B), kwp.read_ecu_ident(0x9C))
+        args.family.validate_identification(identity)
+        report["controller"] = identity
+        for index in range(args.assist_samples):
+            started_mono_ns = time.monotonic_ns()
+            started_ns = time.time_ns()
+            try:
+                payload = kwp.read_local_identifier(0x05)
+                ended_ns = time.time_ns()
+                round_trip_ns = time.monotonic_ns() - started_mono_ns
+                layout_valid = (len(payload) == 14 and payload[:2] == b"\x61\x05"
+                                and [payload[pos] for pos in (2, 5, 8, 11)]
+                                == [0x5D, 0x5D, 0x5D, 0x5E])
+                samples.append({"index": index, "host_time_ns": started_ns,
+                                "host_end_time_ns": ended_ns,
+                                "request_round_trip_ms": round(round_trip_ns / 1_000_000, 3),
+                                "response": payload.hex(" ").upper(),
+                                "layout_valid": layout_valid,
+                                "field_triples": [payload[pos:pos + 3].hex(" ").upper()
+                                                  for pos in (2, 5, 8, 11)]
+                                if layout_valid else []})
+                if not layout_valid:
+                    errors.append(f"sample {index}: unexpected TT 3001 21 05 assist-field layout")
+            except Exception as exc:
+                errors.append(f"sample {index}: {type(exc).__name__}: {exc}")
+            if index + 1 < args.assist_samples:
+                elapsed_ms = (time.monotonic_ns() - started_mono_ns) / 1_000_000
+                time.sleep(max(0, args.assist_interval_ms - elapsed_ms) / 1000)
+    except Exception as exc:
+        errors.append(f"session: {type(exc).__name__}: {exc}")
+    finally:
+        if tp is not None:
+            try:
+                tp.disconnect()
+            except Exception as exc:
+                cleanup_errors.append(f"disconnect: {exc}")
+        if device is not None:
+            try:
+                device.close()
+            except Exception as exc:
+                cleanup_errors.append(f"adapter close: {exc}")
+
+    report.update(samples=samples, errors=errors, cleanup_errors=cleanup_errors,
+                  status="captured_complete" if len(samples) == args.assist_samples
+                  and not errors and not cleanup_errors else
+                  "captured_partial" if samples else "requires_attention")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("x", encoding="utf-8") as stream:
+        json.dump(report, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report["status"] == "captured_complete" else 1
+
+
+def run_supply(args, runtime):
+    """Read TT 3001 group 02 while stationary, without security access."""
+    output = Path(args.out)
+    if output.exists():
+        raise ValueError(f"Refusing to overwrite {output}")
+    report = {
+        "operation": "read_eps_supply", "controller_family": args.family.name,
+        "adapter": args.adapter, "module": args.module,
+        "request": "21 02", "sample_count": args.supply_samples,
+        "minimum_interval_ms": args.supply_interval_ms,
+        "hardware_access": not args.dry_run, "firmware_writes": False,
+        "output": str(output),
+        "source_ram_address": "0x03FF2BAA",
+        "encoding": "byte 4 = (u16(raw supply proxy) >> 3) & 0xFF",
+        "normal_adc_producer_range": [19, 1703],
+        "limitation": "Stationary sampling only; field is an eight-count raw supply-proxy interval, not a calibrated voltage or held rate factor.",
+    }
+    if args.dry_run:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+
+    device = tp = None
+    samples = []
+    errors = []
+    cleanup_errors = []
+    try:
+        device = runtime.open_adapter(args)
+        tp = TP20Transport(device, module=args.module, timeout=2.0, debug=args.verbose)
+        kwp = EPSKWPClient(tp)
+        identity = parse_vag_identification(
+            kwp.read_ecu_ident(0x9B), kwp.read_ecu_ident(0x9C))
+        args.family.validate_identification(identity)
+        report["controller"] = identity
+        for index in range(args.supply_samples):
+            started_mono_ns = time.monotonic_ns()
+            started_ns = time.time_ns()
+            try:
+                payload = kwp.read_local_identifier(0x02)
+                ended_ns = time.time_ns()
+                round_trip_ns = time.monotonic_ns() - started_mono_ns
+                layout_valid = (len(payload) >= 5 and
+                                payload[:4] == b"\x61\x02\x06\x7D")
+                sample = {
+                    "index": index, "host_time_ns": started_ns,
+                    "host_end_time_ns": ended_ns,
+                    "request_round_trip_ms": round(round_trip_ns / 1_000_000, 3),
+                    "response": payload.hex(" ").upper(),
+                    "layout_valid": layout_valid,
+                }
+                if layout_valid:
+                    encoded = payload[4]
+                    sample.update(encoded_byte=encoded,
+                                  raw_count_interval_mod_2048=[encoded * 8, encoded * 8 + 7])
+                else:
+                    errors.append(f"sample {index}: unexpected TT 3001 21 02 supply-field layout")
+                samples.append(sample)
+            except Exception as exc:
+                errors.append(f"sample {index}: {type(exc).__name__}: {exc}")
+            if index + 1 < args.supply_samples:
+                elapsed_ms = (time.monotonic_ns() - started_mono_ns) / 1_000_000
+                time.sleep(max(0, args.supply_interval_ms - elapsed_ms) / 1000)
+    except Exception as exc:
+        errors.append(f"session: {type(exc).__name__}: {exc}")
+    finally:
+        if tp is not None:
+            try:
+                tp.disconnect()
+            except Exception as exc:
+                cleanup_errors.append(f"disconnect: {exc}")
+        if device is not None:
+            try:
+                device.close()
+            except Exception as exc:
+                cleanup_errors.append(f"adapter close: {exc}")
+
+    report.update(samples=samples, errors=errors, cleanup_errors=cleanup_errors,
+                  status="captured_complete" if len(samples) == args.supply_samples
+                  and not errors and not cleanup_errors else
+                  "captured_partial" if samples else "requires_attention")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("x", encoding="utf-8") as stream:
+        json.dump(report, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report["status"] == "captured_complete" else 1
+
+
+def decode_eps_can_config_response(payload: bytes) -> dict:
+    """Decode stock TT3001 21 08 field 1; retain the full raw response."""
+    if len(payload) < 5 or payload[:3] != b"\x61\x08\x6B":
+        raise ValueError("unexpected TT 3001 21 08 first-field layout")
+    secondary_word = int.from_bytes(payload[3:5], "big")
+    secondary_byte = secondary_word & 0xFF
+    return {
+        "secondary_config_word": secondary_word,
+        "secondary_config_byte": secondary_byte,
+        "secondary_bit0_set": bool(secondary_byte & 1),
+        "secondary_telemetry_gate_open_if_selected": not bool(secondary_byte & 1),
+    }
+
+
+def run_can_config(args, runtime):
+    """Read stock group 08 on a stationary EPS; no programming or security."""
+    output = Path(args.out)
+    if output.exists():
+        raise ValueError(f"Refusing to overwrite {output}")
+    report = {
+        "operation": "read_eps_can_config", "controller_family": args.family.name,
+        "adapter": args.adapter, "module": args.module,
+        "request": "21 08", "sample_count": args.can_config_samples,
+        "minimum_interval_ms": args.can_config_interval_ms,
+        "hardware_access": not args.dry_run, "firmware_writes": False,
+        "output": str(output),
+        "source_ram_address": "0x03FF3238",
+        "limitation": "Stationary read only. Field 1 exposes the secondary word, not the primary-branch selectors, page, CAN readiness or actual 0x6D0/1 transmission.",
+    }
+    if args.dry_run:
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0
+
+    device = tp = None
+    samples, errors, cleanup_errors = [], [], []
+    try:
+        device = runtime.open_adapter(args)
+        tp = TP20Transport(device, module=args.module, timeout=2.0, debug=args.verbose)
+        kwp = EPSKWPClient(tp)
+        identity = parse_vag_identification(
+            kwp.read_ecu_ident(0x9B), kwp.read_ecu_ident(0x9C))
+        args.family.validate_identification(identity)
+        report["controller"] = identity
+        for index in range(args.can_config_samples):
+            started_mono_ns = time.monotonic_ns()
+            started_ns = time.time_ns()
+            try:
+                payload = kwp.read_local_identifier(0x08)
+                ended_ns = time.time_ns()
+                sample = {
+                    "index": index, "host_time_ns": started_ns,
+                    "host_end_time_ns": ended_ns,
+                    "request_round_trip_ms": round(
+                        (time.monotonic_ns() - started_mono_ns) / 1_000_000, 3),
+                    "response": payload.hex(" ").upper(),
+                }
+                try:
+                    sample.update(decode_eps_can_config_response(payload))
+                    sample["layout_valid"] = True
+                except ValueError as exc:
+                    sample["layout_valid"] = False
+                    errors.append(f"sample {index}: {exc}")
+                samples.append(sample)
+            except Exception as exc:
+                errors.append(f"sample {index}: {type(exc).__name__}: {exc}")
+            if index + 1 < args.can_config_samples:
+                elapsed_ms = (time.monotonic_ns() - started_mono_ns) / 1_000_000
+                time.sleep(max(0, args.can_config_interval_ms - elapsed_ms) / 1000)
+    except Exception as exc:
+        errors.append(f"session: {type(exc).__name__}: {exc}")
+    finally:
+        if tp is not None:
+            try:
+                tp.disconnect()
+            except Exception as exc:
+                cleanup_errors.append(f"disconnect: {exc}")
+        if device is not None:
+            try:
+                device.close()
+            except Exception as exc:
+                cleanup_errors.append(f"adapter close: {exc}")
+
+    report.update(samples=samples, errors=errors, cleanup_errors=cleanup_errors,
+                  status="captured_complete" if len(samples) == args.can_config_samples
+                  and not errors and not cleanup_errors else
+                  "captured_partial" if samples else "requires_attention")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("x", encoding="utf-8") as stream:
+        json.dump(report, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report["status"] == "captured_complete" else 1

@@ -83,8 +83,14 @@ def gs_usb_devices() -> list:
             backend = libusb1.get_backend(find_library=libusb_package.find_library)
         except ImportError:
             pass
-        devices = list(usb.core.find(find_all=True, backend=backend,
-                                     custom_match=lambda d: (d.idVendor, d.idProduct) in GS_USB_IDS))
+        def _is_gs_usb(d):
+            # Reading the descriptor of a busy/foreign device (e.g. an Integrated Engineering POWERlink
+            # claimed by its own app) can raise USBError 19; skip it, don't fail the scan.
+            try:
+                return (d.idVendor, d.idProduct) in GS_USB_IDS
+            except Exception:
+                return False
+        devices = list(usb.core.find(find_all=True, backend=backend, custom_match=_is_gs_usb))
     except Exception as exc:  # no libusb backend, permissions, ...
         return [{"adapter": "gs_usb", "channel": 0, "label": "gs_usb (scan failed)",
                  "present": False, "problem": str(exc)}]
@@ -94,6 +100,33 @@ def gs_usb_devices() -> list:
         result.append({"adapter": "gs_usb", "channel": index,
                        "label": f"gs_usb · {kind} #{index}", "present": True})
     return result
+
+
+def gs_usb_ids():
+    """(bus, address) of every candleLight / gs_usb plugged in right now, or None if USB can't be
+    listed. Unplugging and plugging back in gives a device a new address, so an open handle whose
+    (bus, address) isn't here any more is stale."""
+    if not (has_module("usb") and has_module("gs_usb")):
+        return None
+    try:
+        import usb.core
+        backend = None
+        try:
+            import libusb_package
+            from usb.backend import libusb1
+            backend = libusb1.get_backend(find_library=libusb_package.find_library)
+        except ImportError:
+            pass
+
+        def _is_gs_usb(d):
+            try:
+                return (d.idVendor, d.idProduct) in GS_USB_IDS
+            except Exception:
+                return False
+        return {(d.bus, d.address) for d in usb.core.find(find_all=True, backend=backend,
+                                                          custom_match=_is_gs_usb)}
+    except Exception:
+        return None
 
 
 def socketcan_devices() -> list:

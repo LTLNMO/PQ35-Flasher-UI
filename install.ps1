@@ -1,11 +1,13 @@
 # PQ35 Flasher UI installer for Windows.
 #
-#   irm https://raw.githubusercontent.com/DSparks156x/PQ35-Flasher-UI/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/LTLNMO/PQ35-Flasher-UI/main/install.ps1 | iex
 #
 # or run .\install.ps1 from a checkout. Re-run it any time to update.
 # Installs uv (per-user), a private 64-bit Python for the app, a private 32-bit
 # Python for J2534 adapters, and (if you say yes) Start menu and desktop
 # shortcuts. No admin needed. Set PQ35_YES=1 to accept every question.
+# Also offers the AI command-line tools (Claude Code, Gemini CLI, Codex CLI) so
+# AI features can use your own subscription; PQ35_NO_AI_TOOLS=1 skips them.
 #
 # The app's "Update" button runs this with PQ35_UPDATE=1 and PQ35_WAIT_PID set:
 # it waits for the app to close, updates without asking anything, and reopens it.
@@ -15,7 +17,7 @@ $ErrorActionPreference = "Stop"
 # stderr here: Windows PowerShell 5.1 turns each line into a terminating error.
 # PowerShell 7.3+ can opt into that too; keep it off and check exit codes instead.
 $PSNativeCommandUseErrorActionPreference = $false
-$Repo = "DSparks156x/PQ35-Flasher-UI"
+$Repo = "LTLNMO/PQ35-Flasher-UI"
 $InstallDir = Join-Path $env:LOCALAPPDATA "PQ35-Flasher-UI"
 
 function Step($text) { Write-Host "==> $text" -ForegroundColor Cyan }
@@ -68,33 +70,26 @@ if ($here -and (Test-Path (Join-Path $here "pyproject.toml")) -and -not $zipUpda
             git clone --recurse-submodules "https://github.com/$Repo.git" $AppDir
         }
     } else {
-        # No git: fetch zips of the app and of the exact flasher commit it pins.
+        # No git: fetch a zip of the app (the flasher is included in it).
         Step "Downloading into $AppDir (git not found, using zip downloads)"
         $tmp = Join-Path $env:TEMP ("pq35-" + [guid]::NewGuid())
         New-Item -ItemType Directory -Force $tmp | Out-Null
         $head = (Invoke-RestMethod "https://api.github.com/repos/$Repo/commits/main").sha
         Invoke-WebRequest "https://github.com/$Repo/archive/$head.zip" -OutFile "$tmp\app.zip"
-        $sub = Invoke-RestMethod "https://api.github.com/repos/$Repo/contents/flasher?ref=main"
-        $flasherRepo = ($sub.submodule_git_url -replace '^https://github.com/', '') -replace '\.git$', ''
-        Invoke-WebRequest "https://github.com/$flasherRepo/archive/$($sub.sha).zip" -OutFile "$tmp\flasher.zip"
         Expand-Archive "$tmp\app.zip" "$tmp\app"
-        Expand-Archive "$tmp\flasher.zip" "$tmp\flasher"
         if (Test-Path $AppDir) {
             # Keep the venv and local settings across updates.
             Get-ChildItem $AppDir -Exclude ".venv", ".python32" | Remove-Item -Recurse -Force
         }
         New-Item -ItemType Directory -Force $AppDir | Out-Null
         Copy-Item -Recurse -Force "$((Get-ChildItem "$tmp\app")[0].FullName)\*" $AppDir
-        $flasherDir = Join-Path $AppDir "flasher"
-        if (Test-Path $flasherDir) { Remove-Item -Recurse -Force $flasherDir }
-        Copy-Item -Recurse "$((Get-ChildItem "$tmp\flasher")[0].FullName)" $flasherDir
         # Lets the app tell which version a zip install is on.
         Set-Content -Path (Join-Path $AppDir ".install-commit") -Value $head -Encoding ASCII -NoNewline
         Remove-Item -Recurse -Force $tmp
     }
 }
 if (-not (Test-Path (Join-Path $AppDir "flasher\runner.py"))) {
-    throw "The flasher submodule is missing from $AppDir\flasher."
+    throw "The flasher folder is missing from $AppDir\flasher."
 }
 
 # 2. uv.
@@ -109,10 +104,10 @@ $uv = $uv.Source
 
 # 3. App environment (64-bit Python + PySide6 + CAN backends).
 Step "Installing the app (this takes a minute the first time)"
-& $uv sync --project $AppDir --frozen
+& $uv sync --project $AppDir --frozen --extra ai
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Retrying without the lockfile pin..."
-    & $uv sync --project $AppDir
+    & $uv sync --project $AppDir --extra ai
 }
 if ($LASTEXITCODE -ne 0) { throw "uv sync failed" }
 
@@ -125,6 +120,21 @@ if ($py32 -and (Test-Path $py32)) {
     Set-Content -Path (Join-Path $AppDir ".python32") -Value $py32 -Encoding UTF8 -NoNewline
 } else {
     Write-Warning "Couldn't set up 32-bit Python. J2534 adapters won't work; others will."
+}
+
+# 4b. AI command-line tools (optional: a failure never stops the install).
+$aiTools = Join-Path $InstallDir "ai-tools"
+$aiScript = Join-Path $AppDir "install-ai-tools.ps1"
+if (-not $env:PQ35_NO_AI_TOOLS -and (Test-Path $aiScript)) {
+    $wanted = if ($Updating) { Test-Path $aiTools } else {
+        Ask "Install the AI tools (Claude Code, Gemini CLI, Codex CLI) so AI features can use your own subscription instead of an API key? About 1 GB."
+    }
+    if ($wanted) {
+        Step "Setting up the AI tools"
+        try { & $aiScript } catch {
+            Write-Warning "The AI tools didn't install: $_. The app works without them; run $aiScript later."
+        }
+    }
 }
 
 # 5. Shortcuts, if wanted.
