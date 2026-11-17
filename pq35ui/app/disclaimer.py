@@ -1,7 +1,7 @@
 """Notices over a dimmed main window: the disclaimer shown on every start (unless "Don't show
 this again"), the patcher
 warning, and "this tab needs a module"."""
-from PySide6.QtCore import QEvent, QEventLoop, QObject, Qt, Signal
+from PySide6.QtCore import QEvent, QEventLoop, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel,
                                QPushButton, QVBoxLayout, QWidget)
@@ -215,6 +215,16 @@ class _InputGuard(QObject):
             return False  # a notice opened on top of this one handles the keys
         inside = isinstance(obj, QWidget) and (obj is self.overlay or self.overlay.isAncestorOf(obj))
         if not inside:
+            box = self.card.focus_widget
+            if box is not None and event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+                # Focus slipped back behind the card (a closing menu restores it to its button):
+                # put it back in the card's text box and let this key go there, so typing works.
+                try:
+                    box.setFocus()
+                    QApplication.sendEvent(box, event)
+                except RuntimeError:
+                    pass
+                return True
             if event.type() == QEvent.Type.KeyPress:
                 self.card.keyPressEvent(event)  # e.g. Return/Escape while focus is elsewhere
             return True
@@ -297,6 +307,17 @@ def run_card(window, make_card, finished=None) -> bool:
     target = card.focus_widget or card.agree
     if target is not None:
         target.setFocus()
+        # Opened from a menu item: the menu closes after this and restores focus to its button.
+        # Take it back once that's done.
+        def refocus(t=target):
+            try:
+                if result == [] and t.isVisible():
+                    t.window().activateWindow()
+                    t.setFocus()
+            except RuntimeError:
+                pass
+        QTimer.singleShot(0, refocus)
+        QTimer.singleShot(150, refocus)
     try:
         loop.exec()
     finally:

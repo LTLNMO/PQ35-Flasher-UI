@@ -85,7 +85,7 @@ class PresetButton(QPushButton):
         self.setIcon(T.toolbar_icon("bookmark", theme.colors()["tab_text"], dropdown=True))
 
     def _key(self):
-        family = self.state.family
+        family = self.state.setup_family
         return f"presets:{family['name']}" if family else None
 
     def presets(self):
@@ -98,7 +98,7 @@ class PresetButton(QPushButton):
             self.state.settings.set(key, presets)
 
     def _builtins(self):
-        family = self.state.family
+        family = self.state.setup_family
         return BUILTIN_PRESETS.get(family["name"], {}) if family else {}
 
     def menu(self):

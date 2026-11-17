@@ -328,6 +328,8 @@ class DynoPage(QWidget):
             self.record_button.setEnabled(False)  # until it has stopped and saved
             self.recorder.stop()
             return
+        if self.state.need_adapter("log"):
+            return  # no empty session
         self.banner.hide()
         self.recorder.start()
 
@@ -588,8 +590,12 @@ class DynoPage(QWidget):
         rec = self.recording()
         self.record_button.set_recording(rec)
         other = self.state.busy and not rec  # a Logger recording, Live View or another job
-        can = bool(self.state.adapter and self.state.family and self.state.family.get("can_log"))
-        self.record_button.setEnabled(rec or (can and not other))
+        can = bool(self.state.family and self.state.family.get("can_log"))
+        from .needs_car import gate
+        if rec:
+            self.record_button.setEnabled(True)  # Stop must always work
+        else:
+            gate(self.record_button, self.state, can and not other)
         if rec:
             self.record_button.setToolTip("Stop recording dyno pulls")
         elif other:

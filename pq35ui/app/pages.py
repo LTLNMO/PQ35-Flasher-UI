@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QSpinBox, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from .needs_car import gate
 from .storage import images_dir, patched_dir, timestamp
 from .widgets import Badge, Banner, Card, DropZone, ProgressPanel, kib, muted, restyle
 
@@ -285,16 +286,20 @@ class ConnectPage(Page):
         self.generic_cards = {}  # other gateway modules from the last scan ("addr:XX")
 
         find = self.add(Card())
-        find.add(muted("Ignition on, engine off. Scan reads every module on the gateway's list: "
-                       "what it is and its fault codes. It only reads; nothing is written."))
+        find.add(muted("Ignition on, engine off. Scan reads the main modules (choose which in "
+                       "Settings → General); Full Scan reads every module on the gateway's list. "
+                       "Both only read: what each module is and its fault codes."))
         row = QHBoxLayout()
         self.scan_button = QPushButton("Scan")
         self.scan_button.setObjectName("primary")
-        self.scan_button.setToolTip("Like a VCDS Auto-Scan: opens every module the gateway lists and "
-                                    "reads who it is and its fault codes. Read-only; about 1–2 s per "
-                                    "module.")
         self.scan_button.clicked.connect(lambda: self.scan())
         row.addWidget(self.scan_button)
+        self.full_scan_button = QPushButton("Full Scan")
+        self.full_scan_button.setToolTip("Like a VCDS Auto-Scan: opens every module the gateway lists and "
+                                         "reads who it is and its fault codes. Read-only; about 1–2 s per "
+                                         "module.")
+        self.full_scan_button.clicked.connect(lambda: self.scan(full=True))
+        row.addWidget(self.full_scan_button)
         self.pick_button = QToolButton()
         self.pick_button.setText("Select manually  ▾")
         self.pick_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
@@ -464,8 +469,14 @@ class ConnectPage(Page):
         modules = [m for m in gateway.get("modules") or ()
                    if not (m.get("coded") is False and m.get("status") != "ok")]
         answered = sum(1 for m in modules if m.get("status") == "ok")
-        self.others.setText(f"{len(modules)} modules on the gateway list, {answered} answered. "
-                            "Every module's scan log and fault codes are on Diagnostics.")
+        if not getattr(self, "scan_full", True):
+            listed = len({e["tp2"] for e in gateway.get("entries") or () if e.get("coded", True)})
+            self.others.setText(f"Quick scan: {len(modules)} of the {listed} modules on the gateway "
+                                f"list, {answered} answered. Full Scan reads them all (its scan log "
+                                "and every module's fault codes are on Diagnostics).")
+        else:
+            self.others.setText(f"{len(modules)} modules on the gateway list, {answered} answered. "
+                                "Every module's scan log and fault codes are on Diagnostics.")
         self.others.show()
 
     def resizeEvent(self, event):
@@ -511,9 +522,13 @@ class ConnectPage(Page):
         self.state.select_module(family)
         self.state.start_recovery.emit()
 
-    def scan(self):
-        """The scan: every module on the gateway's list, its identity and fault codes."""
-        self.scan_banner.show_message("Reading every module on the gateway list…", "info")
+    def scan(self, full=False):
+        """The scan: the quick one reads the modules picked in Settings (quick_scan); the full one
+        every module on the gateway's list. Each module's identity and fault codes."""
+        from . import quick_scan
+        only = None if full else quick_scan.addresses(self.state.settings)
+        self.scan_banner.show_message("Reading every module on the gateway list…" if full else
+                                      f"Quick scan: {quick_scan.describe(self.state.settings)}…", "info")
         self.banner.hide()
 
         def done(result):
@@ -523,6 +538,7 @@ class ConnectPage(Page):
                 return
             self.scan_results = {e["family"]: e for e in entries}
             self.gateway = result.get("gateway")
+            self.scan_full = result.get("full", True)
             self._set_generic(result)
             car = (self.gateway or {}).get("vehicle") or {}
             self.state.set_vehicle(car.get("vin"), car.get("source", ""))
@@ -570,6 +586,8 @@ class ConnectPage(Page):
                         "ok")
             self._refresh_cards()
             self.state.last_scan = result
+            if result.get("full"):
+                self.state.last_full_scan = result
             self.state.modules_scanned.emit(result)
 
         def failed(error):
@@ -582,8 +600,10 @@ class ConnectPage(Page):
             result["started"], result["elapsed"] = started, time.time() - started
             inner_done(result)
 
-        self.state.run("scan", {"freeze_frames": bool(self.state.settings.get("scan_freeze_frames", True))},
-                       done, failed)
+        params = {"freeze_frames": bool(self.state.settings.get("scan_freeze_frames", True))}
+        if only is not None:
+            params["only"] = only
+        self.state.run("scan", params, done, failed)
 
     def refresh(self):
         adapter = self.state.adapter
@@ -617,10 +637,15 @@ class ConnectPage(Page):
                 problem = f"The registered driver DLL is missing: {adapter.get('dll')}"
             self.adapter_help.show_message(problem or "", "warning")
         idle = not self.state.busy
-        self.scan_button.setEnabled(bool(adapter) and idle)
+        gate(self.scan_button, self.state, idle)
+        gate(self.full_scan_button, self.state, idle)
+        from . import quick_scan
+        self.scan_button.setToolTip("Quick scan: " + quick_scan.describe(self.state.settings)
+                                    + ". Change which in Settings → General → Scan.")
         self.pick_button.setEnabled(idle)
         for card in {**self.cards, **self.generic_cards}.values():
             card.setEnabled(idle)
+            gate(card.identify, self.state, idle)  # Read info
         self._next_hint()
 
     def bring_up_socketcan(self):
@@ -755,7 +780,7 @@ class BackupPage(Page):
             "Saves the resident boot page and the BCM's identity/coding. The application "
             "firmware can't be read back, so this is not a full-image backup."
             if family == BCM else "")
-        self.read_button.setEnabled(bool(record) and not self.state.busy)
+        gate(self.read_button, self.state, bool(record) and not self.state.busy)
         self.open_button.setEnabled(bool(record))
         self.list.clear()
         if not record:
@@ -1066,7 +1091,7 @@ class DiagnosticsPage(Page):
         ops = set(self.state.family["operations"]) if self.state.family else set()
         for op, button in self.buttons.items():
             button.setVisible(op in ops)
-            button.setEnabled(bool(self.state.identity) and not self.state.busy)
+            gate(button, self.state, bool(self.state.identity) and not self.state.busy)
         bcm = bool(self.state.family) and self.state.family["name"] == BCM
         reads = bool(ops & set(self.buttons))
         # Fault codes for every module live in the card above; this part is the extra
@@ -1109,7 +1134,7 @@ class DiagnosticsPage(Page):
 
     def _refresh_pageff(self):
         available = self._pageff_available()
-        self.pageff_button.setEnabled(available and bool(self.state.identity) and not self.state.busy)
+        gate(self.pageff_button, self.state, available and bool(self.state.identity) and not self.state.busy)
         for button, key in ((self.pageff_open, "image"), (self.pageff_sidecar, "sidecar"),
                             (self.pageff_folder, "out")):
             button.setEnabled(bool(self.pageff_paths.get(key)))

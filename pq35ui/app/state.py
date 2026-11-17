@@ -23,8 +23,10 @@ class AppState(QObject):
     open_tab = Signal(str)                # switch to a tab by NAV key
     modules_scanned = Signal(dict)        # Connect's scan finished (scan result)
     faults_changed = Signal(int)          # fault codes found by the last check (all modules)
-    request_scan = Signal()               # "Scan" from anywhere (Diagnostics): Connect runs it
+    request_scan = Signal()               # "Scan" from anywhere (Dashboard): Connect runs the quick scan
+    request_full_scan = Signal()          # "Full Scan" from anywhere (Diagnostics): Connect runs it
     car_changed = Signal(str)             # the car connected now: its VIN once read, "" when it's gone
+    connect_needed = Signal(str)          # a job was asked for with no interface: the window prompts
 
     def __init__(self, pool, settings, parent=None):
         super().__init__(parent)
@@ -32,7 +34,8 @@ class AppState(QObject):
         self.settings = settings
         self.adapter = None
         self.family = None
-        self.last_scan = None  # Connect's latest scan result (Diagnostics reads from it)
+        self.last_scan = None  # Connect's latest scan result, quick or full
+        self.last_full_scan = None  # the latest Full Scan (Diagnostics' scan log and compare read it)
         self.fault_summary = {}  # family name -> (codes, still active), read this session
         self.families = []
         # Other gateway modules from the last full scan, as family-like dicts (generic=True):
@@ -69,9 +72,14 @@ class AppState(QObject):
             return
         if adapter != self.adapter:
             self.adapter = adapter
+            if not adapter:
+                # Unplugged: nothing is connected, so nothing shows as picked on Connect. The
+                # "module" setting stays, so Logger / Live View keep setting up on it (setup_family).
+                self.family = None
             self.identity = None
             self.record = None
             self.last_scan = None  # a different (or no) adapter: what was found no longer applies
+            self.last_full_scan = None
             self.fault_summary = {}
             self.extra_families = {}
             self.car_gone()
@@ -88,6 +96,15 @@ class AppState(QObject):
             self.set_identity(identity)  # emits changed
         else:
             self.changed.emit()
+
+    @property
+    def setup_family(self):
+        """The module whose channel lists Logger and Live View show (and whose presets, alarms
+        and layouts they edit): the picked one, else the last one used, else the engine. Lets
+        you set things up unplugged without anything showing as connected on Connect."""
+        if self.family is not None:
+            return self.family
+        return self.family_by_name(self.settings.get("module") or "engine") or self.family_by_name("engine")
 
     def family_by_name(self, name):
         return next((f for f in self.families if f["name"] == name), None) or self.extra_families.get(name)
@@ -143,6 +160,14 @@ class AppState(QObject):
             except RuntimeError:
                 pass
 
+    def need_adapter(self, operation=""):
+        """True (and the "Connect first" card shows) when no interface is plugged in. Pages call
+        it before setting anything up for a job (a log file, cleared graphs)."""
+        if self.adapter:
+            return False
+        self.connect_needed.emit(operation)
+        return True
+
     def run(self, operation, params=None, on_done=None, on_error=None, module=None):
         """Start a hardware job. Returns False (and reports) if one can't start.
         module: a family dict to target instead of the selected one (all-module scans)."""
@@ -150,7 +175,12 @@ class AppState(QObject):
             if on_error:
                 on_error({"message": "Another operation is still running."})
             return False
-        if not self.adapter or (not (module or self.family) and operation != "scan"):
+        if not self.adapter:
+            self.connect_needed.emit(operation)  # "Connect first" card, not a dead button
+            if on_error:
+                on_error({"message": "No interface plugged in.", "type": "NoAdapter"})
+            return False
+        if not (module or self.family) and operation != "scan":
             if on_error:
                 on_error({"message": "Choose an interface and a module first."})
             return False

@@ -45,7 +45,7 @@ def _summary_dir() -> Path:
 
 def current_result(state):
     """The last full scan with each module's latest fault read (re-reads, clears) merged in."""
-    scan = state.last_scan
+    scan = state.last_full_scan
     if not scan or not scan.get("full"):
         return None
     result = copy.deepcopy(scan)
@@ -184,11 +184,11 @@ class AutoScanView(QWidget):
         side = Card()  # no title or collapse button (user: the list explains itself)
         side.setMinimumWidth(270)
         row = QHBoxLayout()
-        self.scan_button = QPushButton("Scan")
+        self.scan_button = QPushButton("Full Scan")
         self.scan_button.setObjectName("primary")
         self.scan_button.setToolTip("Read every module on the gateway's list: what it is and its fault "
                                     "codes. Read-only.")
-        self.scan_button.clicked.connect(self.state.request_scan.emit)
+        self.scan_button.clicked.connect(self.state.request_full_scan.emit)
         self.reread_button = QPushButton("Re-read all")
         self.reread_button.setToolTip("Read every module's fault codes again (read-only).")
         self.reread_button.clicked.connect(self.health.start)
@@ -323,7 +323,8 @@ class AutoScanView(QWidget):
 
     def refresh(self):
         idle = bool(self.state.adapter) and not self.state.busy and not self.health.running
-        self.scan_button.setEnabled(bool(self.state.adapter) and not self.state.busy)
+        from .needs_car import gate
+        gate(self.scan_button, self.state, not self.state.busy)
         self.reread_button.setEnabled(idle and bool(self.state.last_scan))
         self.clear_button.setEnabled(idle and bool(self.health.faulty()))
         self._mirror_message()

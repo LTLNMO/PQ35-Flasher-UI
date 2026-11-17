@@ -194,7 +194,7 @@ NAV = (
     ("liveview",    "\ue9e4", "Live View",   LiveViewPage),           # speed
     ("logger",      "timeline", "Logger",     LoggerPage),
     ("playback",    "troubleshoot", "Analyze", PlaybackPage),
-    ("dyno",        "rocket_launch", "Dyno",    DynoPage),
+    ("dyno",        "ssid_chart",    "Dyno",    DynoPage),
     ("maps",        "\ue55b", "Maps",        MapsPage),               # map
     ("help",        "\ue887", "Help",        HelpPage),               # help
     ("settings",    "\ue8b8", "Settings",    SettingsPage),           # settings
@@ -332,6 +332,7 @@ class MainWindow(QMainWindow):
 
         self.state.changed.connect(self._state_changed)
         self.state.busy_changed.connect(self._busy_changed)
+        self.state.connect_needed.connect(self._connect_needed)
         self.state.progress.connect(lambda m: self.busy_bar.setValue(int(m.get("percent", 0))))
         # A page built during one of these signals connected too late to receive it, so it's
         # handed the call directly (_open_built). Pages built earlier get it via their own slot.
@@ -352,6 +353,7 @@ class MainWindow(QMainWindow):
         self.state.restart_app.connect(self._restart)
         self.state.modules_scanned.connect(self._scan_finished)
         self.state.request_scan.connect(lambda: self._ensure_page("connect")[0].scan())
+        self.state.request_full_scan.connect(lambda: self._ensure_page("connect")[0].scan(full=True))
         self.state.faults_changed.connect(self._set_fault_count)
         self.state.faults_changed.connect(self._refresh_car)
         from . import cars
@@ -798,6 +800,23 @@ class MainWindow(QMainWindow):
         self.state.families = families
         self.state.changed.emit()
 
+    def _connect_needed(self, _operation):
+        """Something that talks to the car was pressed with no interface plugged in."""
+        if getattr(self, "_connect_prompt_open", False):
+            return
+        from .disclaimer import confirm
+        self._connect_prompt_open = True
+        try:
+            go = confirm(self, title="Connect first", icon="settings_ethernet", level="info",
+                         decline=None, accept="Go to Connect", closable=True, size="compact",
+                         text="<p>That needs the car. Plug in your adapter and turn the ignition on; "
+                              "it's found on its own.</p><p>Everything else (channels, presets, "
+                              "alarms, logs) works without it.</p>")
+        finally:
+            self._connect_prompt_open = False
+        if go:
+            self.navigate("connect")
+
     def _hello(self, info):
         self.state.hello = info
         python = ".".join(str(info.get("python", "?")).split(".")[:2])
@@ -946,8 +965,9 @@ class MainWindow(QMainWindow):
             # The module you're working on (every module's faults are on the Dashboard).
             # Every module's scan and faults, with or without a chosen module.
             "diagnostics": True,
-            "logger": has_family and state.family.get("can_log", False),
-            "liveview": has_family and state.family.get("can_log", False),
+            # set up unplugged on the last-used module (nothing shows as picked on Connect)
+            "logger": bool(state.setup_family and state.setup_family.get("can_log", False)),
+            "liveview": bool(state.setup_family and state.setup_family.get("can_log", False)),
         }
         # Hide/show tabs: turned off in Settings → Features, or (Back up) not for this module
         hidden = pages.hidden_features(self.settings)

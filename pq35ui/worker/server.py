@@ -545,7 +545,7 @@ class Server:
             return live.run_dtc(self, params, open_car, clear=operation == "dtc_clear")
         started = time.monotonic()
         results, gateway = scan(params["adapter"], self.progress, open_car,
-                                freeze_frames=bool(params.get("freeze_frames")))
+                                freeze_frames=bool(params.get("freeze_frames")), only=params.get("only"))
         check = car.check(results, gateway)
         check["seconds"] = round(time.monotonic() - started, 1)
         log = logging.getLogger("SimulatedCar")
@@ -554,7 +554,7 @@ class Server:
         for problem in check["problems"]:
             log.warning("Simulated car check failed: %s", problem)
         return {"operation": "scan", "exit_code": 0, "result": results, "gateway": gateway,
-                "full": True, "selftest": check}
+                "full": params.get("only") is None, "selftest": check}
 
     def haldex_checksums(self, path):
         from flasher.controllers.haldex_gen4.patches import application_checksums, IMAGE_SIZE
@@ -624,7 +624,8 @@ class Server:
                 for attempt in (1, 2):
                     # The VIN is read every scan: the car may have changed since the last one.
                     results, gateway = scan(adapter, self.progress, self._open_adapter,
-                                            freeze_frames=bool(params.get("freeze_frames")))
+                                            freeze_frames=bool(params.get("freeze_frames")),
+                                            only=params.get("only"))
                     if not _adapter_failed(results, gateway):
                         break
                     # The adapter, not the car: reopen it (opening resets the USB device, like
@@ -639,7 +640,7 @@ class Server:
                 if (gateway.get("vehicle") or {}).get("vin"):
                     self._vehicle = gateway["vehicle"]  # cache for later scans
                 return {"operation": "scan", "exit_code": 0, "result": results, "gateway": gateway,
-                        "full": True}
+                        "full": params.get("only") is None}  # a quick scan reads only some
             except Exception:
                 self._release_kept()
                 raise

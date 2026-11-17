@@ -2,9 +2,11 @@
 
 A limit is {"min": float|None, "max": float|None, "beep": bool}, stored per
 module family in settings under "alarms:<family>" keyed by channel key."""
+from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QCheckBox, QDialogButtonBox, QDoubleSpinBox, QGridLayout, QLabel,
-    QVBoxLayout,
+    QVBoxLayout, QWidget,
 )
 
 from .widgets import muted
@@ -100,3 +102,54 @@ class AlarmDialog(OverlayDialog):
             "max": self.max_value.value() if self.max_on.isChecked() else None,
             "beep": self.beep.isChecked(),
         }
+
+
+class ScreenFlash(QWidget):
+    """A see-through red layer over the whole window that pulses on and off while an alarm is
+    tripped. Clicks go straight through it; popups opened after it sit above it."""
+
+    PERIOD_MS = 400  # on for this long, then off for this long
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.lit = False
+        self.timer = QTimer(self)
+        self.timer.setInterval(self.PERIOD_MS)
+        self.timer.timeout.connect(self._blink)
+        window.installEventFilter(self)
+        self.hide()
+
+    def eventFilter(self, obj, event):
+        if obj is self.parentWidget() and event.type() == QEvent.Type.Resize:
+            self.setGeometry(obj.rect())
+        return False
+
+    def start(self):
+        if self.timer.isActive():
+            return
+        self.setGeometry(self.parentWidget().rect())
+        self.lit = True
+        self.show()
+        self.raise_()  # once: an alarm popup opened after this stays on top of it
+        self.timer.start()
+
+    def stop(self):
+        self.timer.stop()
+        self.lit = False
+        self.hide()
+
+    def _blink(self):
+        self.lit = not self.lit
+        self.update()
+
+    def paintEvent(self, event):
+        if not self.lit:
+            return
+        from . import theme
+        red = QColor(theme.colors()["err"])
+        p = QPainter(self)
+        red.setAlpha(120)
+        p.fillRect(self.rect(), red)

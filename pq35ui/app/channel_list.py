@@ -27,6 +27,7 @@ CATEGORY_ROLE = Qt.ItemDataRole.UserRole + 9  # heading it sits under in Select 
 FIXED_ROLE = Qt.ItemDataRole.UserRole + 10  # always on, not in Select channels (Logger raw groups)
 RAW_GROUP_ROLE = Qt.ItemDataRole.UserRole + 11  # Logger / Live View: the raw group (int) a row belongs to (✕ removes it)
 STALE_ROLE = Qt.ItemDataRole.UserRole + 12  # Logger: True while a channel has stopped updating (values in amber)
+ALARM_ROLE = Qt.ItemDataRole.UserRole + 13  # Logger: True while a channel is past its alarm limit (values in red)
 RAW_CATEGORY = "Raw groups"
 
 ROW_H = 46
@@ -88,6 +89,8 @@ class _RowDelegate(QStyledItemDelegate):
             painter.setFont(font)
             if index.siblingAtColumn(0).data(STALE_ROLE):
                 painter.setPen(QColor(c["warn"]))  # stopped updating ("no data 4 s")
+            elif index.siblingAtColumn(0).data(ALARM_ROLE):
+                painter.setPen(QColor(c["err"]))  # past its alarm limit
             else:
                 painter.setPen(QColor(c["text"] if index.column() == self.tree.primary_column() else c["muted"]))
             painter.drawText(band.adjusted(0, 0, -10, 0),

@@ -235,6 +235,7 @@ class SettingsPage(Page):
         self._row(rows, "Caution", self.caution_check,
                   "The safety caution shows on every start unless you ticked “Don't show this again” "
                   "on it. Tick this to bring it back.")
+        self._build_quick_scan_card()
         from .security import SecurityCard
         self.add(SecurityCard(state.settings))
         self._build_demo_card()
@@ -733,6 +734,65 @@ class SettingsPage(Page):
         self.state.restart_app.emit(bool(os.environ.get("PQ35_DEMO")))
 
     # --- demo mode ---
+
+    def _build_quick_scan_card(self):
+        """Settings → General → Scan: which modules the quick Scan reads."""
+        from PySide6.QtWidgets import QGridLayout
+        rows = self._rows(self.add(Card("Scan")))
+        box = QVBoxLayout()
+        box.setSpacing(8)
+        self.quick_grid = QGridLayout()
+        self.quick_grid.setHorizontalSpacing(18)
+        self.quick_grid.setVerticalSpacing(6)
+        box.addLayout(self.quick_grid)
+        buttons = QHBoxLayout()
+        default = QPushButton("Use default")
+        default.setToolTip("Engine, Transmission, ABS Brakes, AWD and Steering Assist.")
+        default.clicked.connect(self._quick_scan_default)
+        buttons.addWidget(default)
+        buttons.addStretch(1)
+        box.addLayout(buttons)
+        self._row(rows, "Quick scan", box,
+                  "The modules Scan (Connect) and Quick Scan (Dashboard) read. Full Scan always reads "
+                  "every module on the gateway's list. Modules a Full Scan found on your car are added "
+                  "to this list.", center=False)
+        self._fill_quick_scan()
+        self.state.modules_scanned.connect(lambda _r: self._fill_quick_scan())
+
+    def _fill_quick_scan(self):
+        from . import quick_scan
+        while self.quick_grid.count():
+            w = self.quick_grid.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        picked = set(quick_scan.addresses(self.state.settings))
+        self.quick_checks = {}
+        choices = quick_scan.choices(self.state)
+        per_col = (len(choices) + 2) // 3
+        for i, (address, name) in enumerate(choices):
+            check = QCheckBox(f"{address:02X}  {name}")
+            check.setChecked(address in picked)
+            check.toggled.connect(self._quick_scan_changed)
+            self.quick_checks[address] = check
+            self.quick_grid.addWidget(check, i % per_col, i // per_col)
+
+    def _quick_scan_changed(self):
+        from . import quick_scan
+        picked = [a for a, c in self.quick_checks.items() if c.isChecked()]
+        if not picked:  # a scan of nothing: keep at least one (the engine, or what was last ticked)
+            check = self.quick_checks.get(0x01) or next(iter(self.quick_checks.values()))
+            check.blockSignals(True)
+            check.setChecked(True)
+            check.blockSignals(False)
+            picked = [a for a, c in self.quick_checks.items() if c.isChecked()]
+        quick_scan.set_addresses(self.state.settings, picked)
+        self.state.changed.emit()  # Connect's and the Dashboard's hints name the modules
+
+    def _quick_scan_default(self):
+        from . import quick_scan
+        quick_scan.set_addresses(self.state.settings, quick_scan.DEFAULT)
+        self._fill_quick_scan()
+        self.state.changed.emit()
 
     def _build_demo_card(self):
         import os

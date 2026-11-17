@@ -5,6 +5,7 @@ Layout: log controls, then the channels list (Analyze's channel list, full width
 Now / Min / Max / Avg, gauge bar; amber "no data" when a channel stops updating)."""
 import collections
 import csv
+from html import escape
 import sys
 import time
 from pathlib import Path
@@ -12,17 +13,17 @@ from pathlib import Path
 from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QDialogButtonBox,
+    QApplication, QDialogButtonBox,
     QComboBox, QHBoxLayout, QHeaderView, QMenu, QPushButton,
     QDoubleSpinBox, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
-from . import channel_info, log_export, recent_logs
+from . import alarms, channel_info, log_export, recent_logs
 from . import units as unitconv
 from .storage import datalogs_dir
 from .presets import PresetButton
-from .channel_list import (CATEGORY_ROLE, FIXED_ROLE, FRAC_ROLE, RAW_GROUP_ROLE, ROLE, STALE_ROLE, VALUE_ROLE,
+from .channel_list import (ALARM_ROLE, CATEGORY_ROLE, FIXED_ROLE, FRAC_ROLE, RAW_GROUP_ROLE, ROLE, STALE_ROLE, VALUE_ROLE,
                            ChannelDropdown,
                            ask_raw_group, groups_summary)
 from .channel_sidebar import ChannelSidebar
@@ -343,6 +344,11 @@ class LoggerPage(QWidget):
         self.stat_conv = {}   # column key -> display conversion
         self.latest_num = {}  # column key -> latest number (shown units), for the sidebar bars
         self.scales = {}      # column key -> ScaleTracker: the bar's gauge scale (as Live View's)
+        self.latest_raw = {}  # column key -> latest number (module units): what alarm limits compare
+        self.alarm_active = set()  # column keys past their alarm limit right now
+        self.alarm_popped = {}     # column key -> time.time() its popup last showed
+        self._alarm_popup_open = False
+        self._flash = None         # alarms.ScreenFlash over the window while any alarm is tripped
 
         state.changed.connect(self.refresh)
         state.busy_changed.connect(lambda _busy: self.refresh())
@@ -374,6 +380,7 @@ class LoggerPage(QWidget):
         self.selector = self.channels.selector
         self.selector.raw_groups_enabled = True
         self.selector.add_raw_group.connect(self._add_raw)
+        self.selector.menu_requested.connect(self._selector_menu)
         self.selector.remove_raw_group.connect(self._remove_raw)
         self.sidebar.as_main()
 
@@ -511,7 +518,7 @@ class LoggerPage(QWidget):
 
     def refresh(self):
         self._show_name()
-        family = self.state.family
+        family = self.state.setup_family
         module = family["module"] if family and family.get("can_log") else None
         if module != self.catalog_module and not self.running:
             self.catalog_module = module
@@ -522,7 +529,13 @@ class LoggerPage(QWidget):
                 self.state.offline("catalog", {"module": module}, self._catalog_loaded,
                                    lambda e: self.banner.show_message(self.error_text(e), "error"))
         idle = not self.state.busy or self.running
-        self.start_button.setEnabled(bool(module is not None and self.state.adapter) and idle)
+        from .needs_car import gate
+        # recording carries on if the adapter goes mid-log: Stop must always work
+        if self.running:
+            self.start_button.setEnabled(True)
+        else:
+            picked = self.state.family is not None and self.state.family.get("can_log")
+            gate(self.start_button, self.state, bool(picked) and idle)  # plugged in: needs a real pick
         # channels can't change while logging, but the list stays live: it shows the readings
         self.channels.setEnabled(not self.running)
         self.tree.setDragEnabled(not self.running)  # the log's columns are fixed once it starts
@@ -534,7 +547,7 @@ class LoggerPage(QWidget):
             "Watch in Analyze: graph this recording live on the Analyze page while it records")
         if self.running:
             self.channels.close_picker()
-        self.presets.setEnabled(not self.running and self.state.family is not None)
+        self.presets.setEnabled(not self.running and self.state.setup_family is not None)
         for w in (self.mode, self.trigger_panel):
             w.setEnabled(not self.running)
         if module is None and not self.running:
@@ -547,7 +560,7 @@ class LoggerPage(QWidget):
         return error.get("message", str(error)) if isinstance(error, dict) else str(error)
 
     def _settings_key(self):
-        return f"logger:{self.state.family['name']}" if self.state.family else None
+        return f"logger:{self.state.setup_family['name']}" if self.state.setup_family else None
 
     def _catalog_loaded(self, values):
         self.catalog = values or []
@@ -572,7 +585,7 @@ class LoggerPage(QWidget):
             item = self.tree.new_item(f"{value['name']} ({shown})" if shown else value["name"], key)
             item.setData(0, VALUE_ROLE, value)
             item.setData(0, CATEGORY_ROLE, value.get("category") or "Other")
-            item.setToolTip(0, channel_info.tooltip(value))
+            item.setToolTip(0, self._tip(value, key))
             item.setText(self.sidebar.col["group"], key)
             if value["id"] in checked:
                 item.setCheckState(0, Qt.CheckState.Checked)
@@ -666,7 +679,7 @@ class LoggerPage(QWidget):
             self.banner.show_message("Export… will now start on Integrated Engineering CSV.", "info")
 
     def _rates_key(self):
-        return f"logger_rates:{self.state.family['name']}" if self.state.family else None
+        return f"logger_rates:{self.state.setup_family['name']}" if self.state.setup_family else None
 
     def _group_rates(self):
         key = self._rates_key()
@@ -908,6 +921,13 @@ class LoggerPage(QWidget):
             self.start()
 
     def start(self):
+        if self.state.need_adapter("log"):
+            return  # nothing created: no empty log file
+        if self.state.family is None:
+            self.banner.show_message("No module picked yet. Press Scan on the Connect page (or "
+                                     "Select manually there) first.", "warning",
+                                     actions={"Go to Connect": lambda: self.state.open_tab.emit("connect")})
+            return
         values = self._checked_values()
         groups = sorted({v["group"] for v in values} | self.raw_groups)
         if not groups:
@@ -915,7 +935,7 @@ class LoggerPage(QWidget):
             return
         self.columns = [(f"{v['group']}.{v['field']}", v["name"]) for v in values]
         self._preview(values)
-        module = self.state.family or {}
+        module = self.state.setup_family or {}
         mode = self.mode.currentData()
         # Recorded into Datalogs; the car's VIN goes in its index entry (exports and Analyze
         # find it there), so the name stays short: engine_2026-11-09_073012.csv
@@ -937,6 +957,8 @@ class LoggerPage(QWidget):
                                     pre_s=self.pre_s.value(), post_s=self.post_s.value())
         self.samples = self.errors = 0
         self.stats = {}
+        self.latest_raw = {}
+        self._reset_alarms()
         rates = self._group_rates()
         self.periods = {g: (rates.get(str(g)) or self.rate.currentData() or 0) / 1000 for g in groups}
         self.started = time.time()
@@ -1002,6 +1024,11 @@ class LoggerPage(QWidget):
                 T.menu_action(menu, "Remove from log", "close",
                               lambda: (item.setCheckState(0, Qt.CheckState.Unchecked),
                                        self._channels_changed(), self.channels.refresh()), enabled=idle)
+                key = item.data(0, ROLE)
+                value = item.data(0, VALUE_ROLE) or {}
+                # alarms can be set or changed mid-recording
+                T.menu_action(menu, f"Set alarm for {value.get('name', 'this channel')}…", "notifications",
+                              lambda: self._edit_alarm(key))
         T.menu_header(menu, "All channels")
         T.menu_action(menu, "Select channels…", "checklist", self.channels.click, enabled=idle)
         T.menu_action(menu, "Remove all", "clear_all", self._remove_all, enabled=idle)
@@ -1076,7 +1103,7 @@ class LoggerPage(QWidget):
                         f"max {item.text(col['max'])}, avg {item.text(col['avg'])})")
         if not rows:
             return None
-        family = self.state.family or {}
+        family = self.state.setup_family or {}
         context = (f"Module: {family.get('label', '?')}, part {self.state.part() or '?'}\n"
                    f"Logger {'recording' if self.running else 'stopped'}: {self.status.fullText()}\n"
                    "Values (reading now, then min/max/avg since Start; units in brackets):\n"
@@ -1084,6 +1111,130 @@ class LoggerPage(QWidget):
         return {"title": "Logger", "context": context,
                 "question": "Explain what these logged values say about the car: what's normal, what looks "
                             "off, and what to check or log next."}
+
+    # --- alarms (the same limits as Live View's: set in either, they work in both) ---
+
+    POPUP_AGAIN_S = 30  # a channel hovering at its limit pops up at most this often
+
+    def _alarms_key(self):
+        return f"alarms:{self.state.setup_family['name']}" if self.state.setup_family else None
+
+    def _limits(self):
+        key = self._alarms_key()
+        return (self.state.settings.get(key) or {}) if key else {}
+
+    def _tip(self, value, key, limits=None):
+        limits = self._limits() if limits is None else limits
+        conv = unitconv.conversion(value.get("unit") or "", self.state.settings)[1]
+        alarm = alarms.describe(unitconv.limit_to_display(limits.get(key), conv))
+        return channel_info.tooltip(value) + (f"<br>Alarm: {alarm}" if alarm
+                                              else "<br>No alarm (right-click to set one)")
+
+    def _selector_menu(self, key, global_pos):
+        """Right-click a channel in Select channels: its alarm."""
+        item = next((it for it in self.tree.items() if it.data(0, ROLE) == key), None)
+        value = item.data(0, VALUE_ROLE) if item is not None else None
+        if not isinstance(value, dict) or not value.get("id"):
+            return  # raw groups have no named channel to set a limit on
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        T.menu_action(menu, f"Set alarm for {value['name']}…", "notifications",
+                      lambda: (self.channels.close_picker(), self._edit_alarm(key)))
+        menu.exec(global_pos)
+
+    def _edit_alarm(self, key):
+        settings_key = self._alarms_key()
+        item = next((it for it in self.tree.items() if it.data(0, ROLE) == key), None)
+        value = item.data(0, VALUE_ROLE) if item is not None else None
+        if not settings_key or not isinstance(value, dict) or not value.get("id"):
+            return
+        limits = dict(self._limits())
+        shown, conv = unitconv.conversion(value.get("unit") or "", self.state.settings)
+        dialog = alarms.AlarmDialog(value["name"], shown, unitconv.limit_to_display(limits.get(key), conv), self)
+        if not dialog.exec():
+            return
+        limit = unitconv.limit_to_raw(dialog.limit(), conv)
+        if limit is None:
+            limits.pop(key, None)
+        else:
+            limits[key] = limit
+        self.state.settings.set(settings_key, limits)
+        self.alarm_popped.pop(key, None)  # a new limit may pop up straight away
+        for it in self.tree.items():
+            v = it.data(0, VALUE_ROLE)
+            if isinstance(v, dict) and v.get("id"):
+                it.setToolTip(0, self._tip(v, it.data(0, ROLE), limits))
+
+    def _check_alarms(self):
+        """Mark channels past their limits red, beep, and pop up a warning for newly tripped ones."""
+        if not self.running:
+            return
+        limits = self._limits()
+        active = {key for key, number in self.latest_raw.items()
+                  if key in self.logged and alarms.tripped(limits.get(key), number)}
+        new = active - self.alarm_active
+        if active and not self.alarm_active:
+            if self._flash is None:
+                self._flash = alarms.ScreenFlash(self.window())
+            self._flash.start()
+        elif self.alarm_active and not active and self._flash is not None:
+            self._flash.stop()
+        if active != self.alarm_active:
+            for item in self.tree.items():
+                key = item.data(0, ROLE)
+                item.setData(0, ALARM_ROLE, True if key in active else None)
+        self.alarm_active = active
+        if not new:
+            return
+        if any(limits[key].get("beep", True) for key in new):
+            QApplication.beep()
+        now = time.time()
+        due = [k for k in sorted(new) if now - self.alarm_popped.get(k, 0) > self.POPUP_AGAIN_S]
+        if due and not self._alarm_popup_open:
+            for k in due:
+                self.alarm_popped[k] = now
+            # after this paint returns: the popup waits for an answer while recording carries on
+            QTimer.singleShot(0, lambda keys=due: self._alarm_popup(keys))
+
+    def _alarm_text(self, key, limits):
+        name = self.columns_name(key) or key
+        text, unit = self.latest.get(key, ("–", ""))
+        reading = text[:-len(unit)].strip() if unit and text.endswith(unit) else text
+        unit = f" {unit}" if unit else ""
+        conv = self.stat_conv.get(key, unitconv.IDENTITY)
+        limit = alarms.describe(unitconv.limit_to_display(limits.get(key), conv))
+        return f"<b>{escape(name)}</b> is <b>{escape(reading + unit)}</b> (alarm: {escape(limit + unit)})"
+
+    def _alarm_popup(self, keys):
+        from .disclaimer import run_card
+        from .popups import _host
+        window = _host(self)
+        if window is None or not self.running or self._alarm_popup_open:
+            return
+        limits = self._limits()
+        lines = "<br>".join(self._alarm_text(k, limits) for k in keys if k in limits)
+        if not lines:
+            return
+        from .disclaimer import Disclaimer
+        self._alarm_popup_open = True
+        try:
+            keep = run_card(window, lambda overlay: Disclaimer(
+                overlay, title="Alarm", icon="warning", level="err", size="compact",
+                text=f"<p>{lines}</p><p>Recording carries on.</p>",
+                decline="Stop recording", accept="Keep recording"))
+        finally:
+            self._alarm_popup_open = False
+        if not keep and self.running:
+            self.stop()
+
+    def _reset_alarms(self):
+        self.alarm_active = set()
+        self.alarm_popped = {}
+        if self._flash is not None:
+            self._flash.stop()
+        for item in self.tree.items():
+            if item.data(0, ALARM_ROLE):
+                item.setData(0, ALARM_ROLE, None)
 
     def _watch(self):
         """Watch in Analyze: Analyze opens the recording and follows it as rows are written."""
@@ -1123,6 +1274,7 @@ class LoggerPage(QWidget):
                         scale = self.scales[key] = ScaleTracker(self.latest[key][1], self.columns_name(key))
                     scale.update(shown_number)
                     self.latest_num[key] = shown_number
+                    self.latest_raw[key] = number
                     st = self.stats.get(key)
                     if st is None:
                         self.stats[key] = [number, number, number, 1]
@@ -1135,6 +1287,7 @@ class LoggerPage(QWidget):
         self.writer.update(group, values, units, sample.get("wall_time", time.time()) - self.started)
 
     def _paint(self):
+        self._check_alarms()
         self._update_sidebar()
         elapsed = time.time() - self.started
         rate = self.samples / elapsed if elapsed > 0 else 0
@@ -1149,6 +1302,7 @@ class LoggerPage(QWidget):
         self.state.logger_recording.emit(False)
         self.ticker.stop()
         self._paint()
+        self._reset_alarms()
         for item in self.tree.items():  # no "no data" once stopped: the last readings stay
             if item.data(0, STALE_ROLE):
                 item.setData(0, STALE_ROLE, None)

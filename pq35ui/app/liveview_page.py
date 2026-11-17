@@ -762,9 +762,9 @@ class LiveViewPage(QWidget):
 
     def _remember_layout(self):
         """The last layout per module comes back next time."""
-        if getattr(self, "_applying", False) or not self.state.family or not self.catalog:
+        if getattr(self, "_applying", False) or not self.state.setup_family or not self.catalog:
             return
-        self.state.settings.set(f"liveview_layout:{self.state.family['name']}", self.dashboard_state())
+        self.state.settings.set(f"liveview_layout:{self.state.setup_family['name']}", self.dashboard_state())
 
     def _build_layout(self):
         """Tear down and rebuild the panel area based on the selected grid."""
@@ -847,7 +847,7 @@ class LiveViewPage(QWidget):
     # --- catalog / tree ---
 
     def refresh(self):
-        family = self.state.family
+        family = self.state.setup_family
         module = family["module"] if family and family.get("can_log") else None
         if module != self.catalog_module and not self.running and not self.mirroring:
             self.catalog_module = module
@@ -857,15 +857,19 @@ class LiveViewPage(QWidget):
             if module is not None:
                 self.state.offline("catalog", {"module": module}, self._catalog_loaded,
                                    lambda e: self.banner.show_message(self.error_text(e), "error"))
-        self.start_button.setEnabled(bool(module is not None and self.state.adapter)
-                                     and (not self.state.busy or self.running))
+        from .needs_car import gate
+        if self.running:
+            self.start_button.setEnabled(True)  # Stop must always work
+        else:
+            picked = self.state.family is not None and self.state.family.get("can_log")
+            gate(self.start_button, self.state, bool(picked) and not self.state.busy)  # plugged in: needs a real pick
         # channels can't change while running (the module is reading those groups), but the list
         # stays live: it shows the values
         live = self.running or self.mirroring
         self.channels.setEnabled(not live)
         if live:
             self.channels.close_picker()
-        self.presets.setEnabled(not live and self.state.family is not None)
+        self.presets.setEnabled(not live and self.state.setup_family is not None)
         if self.mirroring:
             self.start_button.setToolTip("Live View is showing the Logger's recording. "
                                          "Stop it in the Logger to read on your own.")
@@ -881,8 +885,8 @@ class LiveViewPage(QWidget):
         self.catalog = values or []
         self.raw_groups = self._load_raw()
         saved = self.state.settings.get(self._settings_key()) or []
-        layout = self.state.settings.get(f"liveview_layout:{self.state.family['name']}") \
-            if self.state.family else None
+        layout = self.state.settings.get(f"liveview_layout:{self.state.setup_family['name']}") \
+            if self.state.setup_family else None
         if layout:
             self.apply_dashboard(layout, channels=False)
         self._build_tree(set(saved))
@@ -892,7 +896,7 @@ class LiveViewPage(QWidget):
             self.summary.setText("No named values available for this module.")
 
     def _settings_key(self):
-        return f"liveview:{self.state.family['name']}" if self.state.family else None
+        return f"liveview:{self.state.setup_family['name']}" if self.state.setup_family else None
 
     def _conv(self, value):
         return units.conversion(value.get("unit", ""), self.state.settings)
@@ -1038,7 +1042,7 @@ class LiveViewPage(QWidget):
     # --- raw groups ---
 
     def _raw_key(self):
-        return f"liveview_raw:{self.state.family['name']}" if self.state.family else None
+        return f"liveview_raw:{self.state.setup_family['name']}" if self.state.setup_family else None
 
     def _load_raw(self):
         key = self._raw_key()
@@ -1118,7 +1122,7 @@ class LiveViewPage(QWidget):
     # --- alarms ---
 
     def _alarms_key(self):
-        return f"alarms:{self.state.family['name']}" if self.state.family else None
+        return f"alarms:{self.state.setup_family['name']}" if self.state.setup_family else None
 
     def _limits(self):
         key = self._alarms_key()
@@ -1174,7 +1178,8 @@ class LiveViewPage(QWidget):
         active = {key for key, ch in self.channel_data.items()
                   if alarms.tripped(limits.get(key), ch["last_raw"])}
         new = active - self.alarm_active
-        if any(limits[key].get("beep", True) for key in new):
+        # showing the Logger's recording: the Logger beeps (and pops up) for these itself
+        if not self.mirroring and any(limits[key].get("beep", True) for key in new):
             QApplication.beep()
         self.alarm_active = active
         flash = "on" if int(time.time() * 4) % 2 == 0 else "dim"
@@ -1211,6 +1216,13 @@ class LiveViewPage(QWidget):
             self._start()
 
     def _start(self):
+        if self.state.need_adapter("log"):
+            return
+        if self.state.family is None:
+            self.banner.show_message("No module picked yet. Press Scan on the Connect page (or "
+                                     "Select manually there) first.", "warning",
+                                     actions={"Go to Connect": lambda: self.state.open_tab.emit("connect")})
+            return
         values = self._checked_values()
         groups = self._groups(values)
         if not groups:
@@ -1326,7 +1338,7 @@ class LiveViewPage(QWidget):
                         + f" (recent min {min(ys):.4g}, max {max(ys):.4g}, {len(ys)} readings)")
         if not rows:
             return None
-        family = self.state.family or {}
+        family = self.state.setup_family or {}
         tripped = [self.channel_data[k]["name"] for k in getattr(self, "alarm_active", ()) if k in self.channel_data]
         context = (f"Module: {family.get('label', '?')}, part {self.state.part() or '?'}\n"
                    f"Live View {'running' if self.running else 'stopped'}; values shown in "

@@ -133,6 +133,12 @@ PREFERRED_NAMES = {0x01: "Engine", 0x02: "Transmission", 0x09: "Central Electron
                    0x22: "AWD", 0x44: "Steering Assist"}
 
 
+# Each supported family's workshop address (what a quick scan's address list names). Not its
+# TP2 channel id: the EPS opens on TP2 0x09, the same number as the BCM's workshop address.
+FAMILY_ADDRESS = {"engine": 0x01, "transmission": 0x02, "pq-bcm": 0x09, "haldex-gen4": 0x22,
+                  "pq-eps": 0x44}
+
+
 def address_name(address: int, name: str = "") -> str:
     """The VCDS-style name for a workshop address."""
     if address in PREFERRED_NAMES:
@@ -330,8 +336,11 @@ def read_module(device, tp2: int, log, identity=None, identify=True) -> dict:
     return out
 
 
-def scan(adapter: dict, progress, open_adapter, known_vehicle=None, freeze_frames=False):
+def scan(adapter: dict, progress, open_adapter, known_vehicle=None, freeze_frames=False, only=None):
     """(supported-module results, gateway info with "modules": every listed module read).
+
+    only: workshop addresses to read (a quick scan), or None for every module (a full scan).
+    The gateway is always asked first: its list says which channel each address opens on.
 
     known_vehicle: a {"vin", ...} already read in an earlier scan. When given, the VIN read is
     skipped (it only needs reading once per car)."""
@@ -348,7 +357,7 @@ def scan(adapter: dict, progress, open_adapter, known_vehicle=None, freeze_frame
         for entry in gateway.get("entries") or ():
             entry["name"] = address_name(entry["address"], entry.get("name", ""))
         results, gateway["modules"], vehicle = _one_pass(device, gateway, progress, log, vehicle,
-                                                         freeze_frames)
+                                                         freeze_frames, only)
         progress("SCAN", 100, "Done")
     finally:
         device.close()
@@ -356,7 +365,7 @@ def scan(adapter: dict, progress, open_adapter, known_vehicle=None, freeze_frame
     return annotate(results, gateway), gateway
 
 
-def _one_pass(device, gateway, progress, log, vehicle, freeze_frames=False):
+def _one_pass(device, gateway, progress, log, vehicle, freeze_frames=False, only=None):
     """Every gateway-listed module, then supported addresses the list doesn't name (e.g. a
     bench with no gateway), each opened once; listed modules that didn't answer get a second,
     slower try at the end. Returns (results, modules, vehicle):
@@ -364,12 +373,18 @@ def _one_pass(device, gateway, progress, log, vehicle, freeze_frames=False):
     modules = one entry per listed module (key, address, name, tp2, family, coded, status, identity, dtc)."""
     families = {family.module: family for family in FAMILIES}
     targets, seen = [], set()
+    only = None if only is None else {int(a) for a in only}
     for entry in gateway.get("entries") or ():
+        if only is not None and entry["address"] not in only:
+            seen.add(entry["tp2"])  # listed, just not part of this quick scan
+            continue
         if entry["tp2"] not in seen:
             seen.add(entry["tp2"])
             targets.append({"address": entry["address"], "name": entry["name"], "tp2": entry["tp2"],
                             "coded": entry.get("coded", True)})
     for family in FAMILIES:
+        if only is not None and FAMILY_ADDRESS.get(family.name) not in only:
+            continue
         if family.module not in seen:
             targets.append({"address": None, "name": "", "tp2": family.module, "coded": None})
     visits = []  # (target, result or None, module or None)

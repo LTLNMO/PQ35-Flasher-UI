@@ -22,16 +22,22 @@ changes are in logging, diagnostics and the interface.
 
 ### Added
 
-- **Dashboard**: a Find modules button, a fault-code summary for every module, recent
+- **Dashboard**: a Quick Scan button, a fault-code summary for every module, recent
   datalogs, your modules and projects.
-- **Diagnostics**: a VCDS-style auto-scan. It reads every module in the gateway's
+- **Scan and Full Scan**: Scan (on Connect, and Quick Scan on the Dashboard) reads just
+  the main modules: engine, transmission, ABS brakes, AWD and steering by default, and you
+  can change the list in Settings → General → Scan. Full Scan reads every module the
+  gateway lists.
+- **Diagnostics**: a VCDS-style auto-scan (Full Scan). It reads every module in the gateway's
   installation list in one pass, with fault codes and freeze frames (status, mileage, date
   and time). You can re-read or clear one module or all of them, every scan is saved, a new
   scan is compared with the last one, and you can copy or save the scan log.
 - **Logger**:
   - A channel picker with presets, including an Integrated Engineering preset.
-  - Four recording modes: Continuous, Triggered (records around a trigger), Rolling
-    (keeps the last few minutes) and Dyno (records full-throttle pulls).
+  - Three recording modes: Continuous, Triggered (records around a trigger) and Rolling
+    (keeps the last few minutes).
+  - Alarms (the same limits as Live View's): a channel past its limit turns red, the window
+    flashes red, and a popup lets you keep recording or stop.
   - Per-group read rates. A value that sits in several groups (engine speed, for example)
     is filled from every group that's read, so it updates more often.
   - Every recording goes to Recent logs automatically. Export saves a copy as Standard
@@ -43,8 +49,11 @@ changes are in logging, diagnostics and the interface.
     table, a heatmap and min/max/avg.
   - Working with logs: compare two logs, smart presets, trimming and renaming logs, and
     following a recording live.
-  - A **Dyno** view that estimates wheel and engine power and torque from pulls, using
-    car weight and drag settings.
+- **Dyno** (its own tab): records full-throttle pulls and estimates wheel and engine power
+  and torque, using car weight and drag settings.
+- **Set up without the car**: every tab except Flash and Patches opens unplugged, so you can
+  pick channels and build presets, alarms and layouts. Buttons that need the car (Record,
+  Start, Scan, Read) look greyed out, and clicking one says to connect first.
 - **Importing logs** from other tools (CSV formats that Datazap reads).
 - **Assistant (Ask AI)**: optional. It uses your own AI provider and knows what's on the
   current page.
@@ -64,6 +73,8 @@ changes are in logging, diagnostics and the interface.
 - **Fault-code reads**: if one read service answers with no codes, the next one is tried.
   Modules that report "busy" are retried, and a dropped TP2 channel is reopened.
 - **BCM 8P0907063K** is no longer mistaken for a module in its bootloader.
+- **Name boxes opened from a menu** (Save preset… and others) take typing again: the closing
+  menu no longer steals the keyboard focus.
 - `flasher/` is kept in this repo as a plain folder with these fixes, not as a submodule.
 - The updater and installers point at this fork.
 

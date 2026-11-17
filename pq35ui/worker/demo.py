@@ -237,14 +237,19 @@ class DemoModule:
                 entry.update(status="ok", identity=identity)
         return results
 
-    def scan(self, freeze_frames=False):
-        """(results, gateway) like scan.scan: one pass over the pretend gateway list."""
-        from .scan import address_name, annotate
+    def scan(self, freeze_frames=False, only=None):
+        """(results, gateway) like scan.scan: one pass over the pretend gateway list
+        (only: the workshop addresses of a quick scan, or None for all)."""
+        from .scan import FAMILY_ADDRESS, address_name, annotate
         gateway = self._gateway()
         gateway["vehicle"] = {"vin": DEMO_VIN, "source": "engine"}
-        results = annotate(self._families(), gateway)
+        families = self._families()
+        if only is not None:
+            only = {int(a) for a in only}
+            families = [r for r in families if FAMILY_ADDRESS.get(r["family"]) in only]
+        results = annotate(families, gateway)
         by_tp2 = {e["module"]: e for e in results}
-        entries = gateway.get("entries") or []
+        entries = [e for e in gateway.get("entries") or [] if only is None or e["address"] in only]
         modules = []
         for index, entry in enumerate(entries):
             name = address_name(entry["address"], entry.get("name", ""))
@@ -375,9 +380,9 @@ class DemoModule:
     def run(self, params) -> dict:
         if params["operation"] == "scan":
             self.log("DEMO scan: no CAN traffic")
-            results, gateway = self.scan(bool(params.get("freeze_frames")))
+            results, gateway = self.scan(bool(params.get("freeze_frames")), params.get("only"))
             return {"operation": "scan", "exit_code": 0, "demo": True,
-                    "result": results, "gateway": gateway, "full": True}
+                    "result": results, "gateway": gateway, "full": params.get("only") is None}
         operation = params["operation"]
         tp2 = parse_module(params["module"])
         try:

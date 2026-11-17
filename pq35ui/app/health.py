@@ -295,7 +295,11 @@ class ModuleHealthCard(QObject):
                    if not (m.get("coded") is False and m.get("status") != "ok")]
         previous = {key: row["active"] for key, row in self.rows.items()}
         when = _now()
-        self.rows, self.fresh = {}, set()
+        if result.get("full", True):
+            self.rows, self.fresh = {}, set()
+        else:
+            # A quick scan read only some modules: update those, keep the rest as they were.
+            self.rows, self.fresh = dict(self.rows), set()
         for m in modules:
             key = m["key"]
             family = self.state.family_by_name(m.get("family")) if m.get("family") else None
@@ -492,7 +496,7 @@ class ModuleHealthCard(QObject):
 
     def refresh(self):
         idle = bool(self.state.adapter) and not self.state.busy and not self.running
-        self.button.setText("Re-read all" if self.state.last_scan else "Scan")
+        self.button.setText("Re-read all" if self.state.last_scan else "Quick Scan")
         self.button.setEnabled(idle)
         self.clear_all_button.setEnabled(idle and bool(self.faulty()))
         for key, row in self.rows.items():  # saved rows keep their old names otherwise

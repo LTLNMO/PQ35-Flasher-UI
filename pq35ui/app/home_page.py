@@ -135,7 +135,7 @@ class HomePage(Page):
         # Everything starts with a scan, so the Dashboard's one big button is Scan.
         # (Interface and module already show in the top bar.)
         scan_card = Card()
-        self.find_button = QPushButton("Scan")
+        self.find_button = QPushButton("Quick Scan")
         self.find_button.setObjectName("primary")
         self.find_button.setProperty("hero", True)  # theme.py: big button
         self.find_button.clicked.connect(self._find_modules)
@@ -247,7 +247,9 @@ class HomePage(Page):
         elif s.busy:
             hint, usable = "Busy: wait for the current job to finish.", False
         else:
-            hint, usable = "Ignition on, engine off. Only reads: nothing on the car is changed.", True
+            from . import quick_scan
+            hint, usable = ("Ignition on, engine off. Reads " + quick_scan.describe(s.settings)
+                            + " (Full Scan is on Connect). Only reads: nothing on the car is changed."), True
         self.find_button.setEnabled(usable)
         self.find_hint.setText(hint)
 
