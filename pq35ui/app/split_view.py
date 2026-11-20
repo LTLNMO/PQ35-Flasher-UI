@@ -8,7 +8,7 @@ like the Single graph. Zoom, pan and the cursor stay in step with the Single gra
 timeline, stats range and sidebar values work the same."""
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QMimeData, QPoint, Qt, QTimer
+from PySide6.QtCore import QEvent, QMimeData, QPoint, Qt, QTimer
 from PySide6.QtGui import QColor, QDrag, QFont
 from PySide6.QtWidgets import (QApplication, QFrame, QGraphicsPixmapItem, QGraphicsSimpleTextItem,
                                QGraphicsTextItem, QLabel, QScrollArea, QSplitter, QVBoxLayout,
@@ -186,6 +186,31 @@ class _Row(pg.PlotWidget):
         self.bar = QFrame(self)  # drop hint: a line on the edge where the new row would go
         self.bar.setFixedHeight(3)
         self.bar.hide()
+
+    def wheelEvent(self, ev):
+        """Two-finger up/down over the graph scrolls the list of rows (when there are more than
+        fit); over a value axis it still zooms that row's values. Time zooms by pinching, or by
+        scrolling over the timeline."""
+        vb = self.getPlotItem().vb
+        if vb.sceneBoundingRect().contains(self.mapToScene(ev.position().toPoint())):
+            QApplication.sendEvent(self.view.scroll.verticalScrollBar(), ev)
+            ev.accept()
+            return
+        super().wheelEvent(ev)
+
+    def viewportEvent(self, ev):
+        """Trackpad pinch: zoom time around the pointer (every row follows: they're linked)."""
+        if ev.type() == QEvent.Type.NativeGesture and \
+                ev.gestureType() == Qt.NativeGestureType.ZoomNativeGesture:
+            vb = self.getPlotItem().vb
+            center = vb.mapSceneToView(self.mapToScene(ev.position().toPoint()))
+            s = 1.0 / max(1.0 + ev.value(), 0.05)  # pinch out (value > 0): zoom in
+            vb._resetTarget()
+            vb.scaleBy(x=s, y=None, center=center)
+            vb.sigRangeChangedManually.emit([True, False])
+            ev.accept()
+            return True
+        return super().viewportEvent(ev)
 
     def _ours(self, ev):
         return ev.mimeData().hasFormat(MIME)
@@ -571,6 +596,8 @@ class SplitView(QWidget):
             xs, ys, brushes = [], [], []
             y = 0.0
             for name in r["names"]:
+                if name not in page.columns or name not in r["lines"]:
+                    continue  # renamed or gone since the rows were built (log reloaded, units changed)
                 val = page.columns[name][idx]
                 drawn = r["lines"][name][idx]
                 if np.isfinite(drawn):

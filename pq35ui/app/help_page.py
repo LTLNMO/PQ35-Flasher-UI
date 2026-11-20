@@ -339,7 +339,8 @@ graph, then use ← / → to step one sample (Shift: ten).</li>
 <li><b>Zoom</b>: scroll (two fingers on a trackpad) over the graph to zoom. Scroll over the value
 numbers on the left (or a channel's own axis) to stretch or flatten the lines only, or over the time
 numbers to zoom the time only. Double-click the value numbers to put the values back. On Split,
-scrolling over a row's value numbers changes just that row.</li>
+scrolling over the graphs moves up and down the rows (when there are more than fit); pinch to zoom
+the time, or scroll over the timeline. Scrolling over a row's value numbers changes just that row.</li>
 <li><b>Timeline</b> (the strip under the graph): the whole log in miniature. Drag the band to move
 through the log, drag its edges or scroll to zoom, click to move the cursor, double-click to show it all.</li>
 <li><b>Min / Max / Avg use</b>: which part of the log Min / Max / Avg, the heatmap, scatter
@@ -365,12 +366,21 @@ highlighted; click a row to move the cursor there.</li>
 </ul>
 <h3>Comparing runs</h3>
 <ul>
-<li><b>Compare logs</b> (icon beside the sidebar icon): load a second log. Its channels draw as dashed lines in the same colours, and
+<li><b>Compare logs ▾</b> (beside Open, right of the log's name) → <i>Overlay a log on the graph…</i>:
+load a second log. Its channels draw as dashed lines in the same colours, and
 the cursor box shows its value too. Turn on the <i>Compared</i> and <i>Δ</i> columns to see them
 for every channel.</li>
 <li>While comparing, a row under the toolbar has <b>Shift</b>: move the compared log in time. <b>Auto-align</b> lines both logs up where the first
 ticked channel (throttle or rpm works best) first rises past halfway.</li>
 <li><b>Clear</b>: remove the compared log.</li>
+<li><b>Compare logs ▾ → Compare logs with AI…</b>: pick any number of logs (up to 12; <i>Add logs…</i>, <i>Recent ▾</i>,
+drag to reorder; A is the baseline), then <b>Analyze with AI</b>. The app finds each log's full-throttle pulls,
+matches channels by what they are (so Standard and IE logs line up) and sends your AI tables averaged per
+500 rpm with a column per log, plus checks (timing retard per cylinder, boost and rail pressure against target,
+lambda control, temperatures, voltage). Untick <i>full-throttle pulls only</i> to use the whole logs. The Ask AI
+window opens with one-click questions: rank the runs, what changed, which is safest, real change or noise, what next.</li>
+<li>The Assistant reads a log the same way: pulls, checks and rpm tables rather than a thin sample, and with a log
+overlaid, both side by side.</li>
 </ul>
 <p><b>⚙ → Math channels…</b> adds formula channels to the loaded log (see Live View).
 <b>⋮ → Export…</b> saves the log as Standard CSV (Datazap), Integrated Engineering CSV,

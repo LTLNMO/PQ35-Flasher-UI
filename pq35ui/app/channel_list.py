@@ -540,6 +540,12 @@ class ChannelSelector(QWidget):
         raw = sorted((it for it in items if is_raw(it)),
                      key=lambda it: (bool(it.data(0, FIXED_ROLE)), self._header_index(it)))
         rows = sorted((it for it in items if not is_raw(it)), key=self._header_index)
+        # One heading per category (as Drew's logger had): the catalog interleaves them, so
+        # gather each category's channels together, categories in first-seen order.
+        first_seen = {}
+        for it in rows:
+            first_seen.setdefault(it.data(0, CATEGORY_ROLE), len(first_seen))
+        rows.sort(key=lambda it: first_seen[it.data(0, CATEGORY_ROLE)])  # stable: keeps catalog order inside
 
         def add_heading(category, fixed):
             hi = QListWidgetItem(category)

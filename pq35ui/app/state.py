@@ -71,18 +71,13 @@ class AppState(QObject):
             self.changed.emit()
             return
         if adapter != self.adapter:
+            # As in Drew's version: unplugging (or another adapter) keeps the picked module and
+            # the last scan on show; only the module's identification is dropped. Scan again
+            # to refresh them.
             self.adapter = adapter
-            if not adapter:
-                # Unplugged: nothing is connected, so nothing shows as picked on Connect. The
-                # "module" setting stays, so Logger / Live View keep setting up on it (setup_family).
-                self.family = None
             self.identity = None
             self.record = None
-            self.last_scan = None  # a different (or no) adapter: what was found no longer applies
-            self.last_full_scan = None
-            self.fault_summary = {}
-            self.extra_families = {}
-            self.car_gone()
+            self.car_gone()  # recordings carry no car until one answers again
             self.changed.emit()
 
     def select_module(self, family, identity=None):

@@ -149,8 +149,23 @@ class HardwareLock:
     def __init__(self, path: Path):
         self.path = path
         self.handle = None
+        # Within this worker: a job waits for the quick background VIN read to let go of the
+        # adapter (the file lock below can't wait, and would blame "another window").
+        self._mine = threading.Lock()
 
-    def acquire(self):
+    def acquire(self, wait=True):
+        """Take the adapter. wait=True (jobs): wait up to 15 s for this worker's own VIN read;
+        wait=False (the VIN read): give up at once. Raises WorkerError when it can't."""
+        got = self._mine.acquire(timeout=15) if wait else self._mine.acquire(blocking=False)
+        if not got:
+            raise WorkerError("The CAN adapter is busy. Try again in a moment.")
+        try:
+            self._lock_file()
+        except BaseException:
+            self._mine.release()
+            raise
+
+    def _lock_file(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         handle = open(self.path, "a+b")
         try:
@@ -181,6 +196,7 @@ class HardwareLock:
         finally:
             self.handle.close()
             self.handle = None
+            self._mine.release()
 
 
 class Capture(io.TextIOBase):
@@ -232,6 +248,25 @@ class EventHandler(logging.Handler):
                 pass
 
 
+def _quiet_leftover_gs_usb_buses():
+    """python-can's BusABC.__del__ runs GsUsbBus.shutdown() for any bus that wasn't closed,
+    e.g. one whose open failed halfway (USB "No such device"). That shutdown sends the adapter
+    RESET mode and then starts and stops it again, at whatever moment the garbage collector
+    picks. If a log or scan is using the adapter then, the adapter stops under it (seen
+    2026-11-17: two "GsUsbBus was not properly shut down" warnings, then the log channel
+    timed out until it was reopened). The buses we keep are closed with close_can_bus, so a
+    leftover is just dropped here; pyusb gives its USB handle back on its own."""
+    try:
+        from can.interfaces.gs_usb import GsUsbBus
+    except Exception:
+        return
+
+    def __del__(self):
+        self._is_shutdown = True  # never touch the device from the garbage collector
+
+    GsUsbBus.__del__ = __del__
+
+
 class _KeepOpenAdapter:
     """Delegates to a real adapter but makes close() a no-op, so an operation
     that opens and closes per call leaves a reused gs_usb bus open."""
@@ -270,6 +305,7 @@ class Server:
         # Reset the adapter even on an abrupt exit, so gs_usb is left clean.
         import atexit
         atexit.register(self._release_kept)
+        _quiet_leftover_gs_usb_buses()
         try:
             import signal
             signal.signal(signal.SIGTERM, lambda *_: (self._release_kept(), os._exit(0)))
@@ -345,7 +381,11 @@ class Server:
         if adapter["adapter"] == "simcar":
             from .simcar import VIN
             return {"vin": VIN, "busy": False}
-        if self.job is not None or not self.lock.acquire(blocking=False):
+        if self.job is not None:
+            return {"vin": None, "busy": True}
+        try:
+            self.lock.acquire(wait=False)  # never waits: a job or another window has it
+        except WorkerError:
             return {"vin": None, "busy": True}
         try:
             import argparse

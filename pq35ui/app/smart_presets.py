@@ -24,22 +24,27 @@ from . import log_export, theme
 AI_KEY = "smart_presets:ai"          # generate with AI automatically (default on)
 BAR_KEY = "playback:smart_bar"       # show the chip row (default on)
 CACHE_FILE = "smart_presets.json"
-CACHE_VERSION = 1
+CACHE_VERSION = 2  # 2: stricter prompt + unit check (older AI answers are asked again)
 
 # ── built-in layouts: (name, description, rows); a row = (include patterns, exclude patterns) ──
 RULES = (
-    ("Boost control", "Boost actual vs requested, wastegate duty, load",
-     ((r"boost", ()), (r"n75|wastegate", ()), (r"\bload\b|throttle", ()))),
-    ("Timing and knock", "Ignition timing, per-cylinder retard, knock",
-     ((r"ignition|timing", r"retard"), (r"retard", ()), (r"knock", ()))),
-    ("Fueling", "Lambda, fuel trims, rail pressure, injection",
-     ((r"lambda|\bafr\b", ()), (r"trim", ()), (r"rail|fuel pressure", ()), (r"inject|pump", ()))),
-    ("Airflow", "Mass air flow, load and throttle",
-     ((r"\bmaf\b|mass air|air mass|airflow", ()), (r"\bload\b", ()), (r"throttle", ()))),
+    ("Boost control", "Boost vs target, N75 duty, load",
+     ((r"boost pressure|boost \(|actual boost|requested boost|specified boost", r"control"),
+      (r"n75|wastegate|boost control valve", ()), (r"\bload\b", r"corrected"))),
+    ("Timing and knock", "Ignition timing and retard per cylinder",
+     ((r"ignition timing|ignition angle", r"retard|correct"), (r"retard|ignition correction", ()),
+      (r"knock sensor", ()))),
+    ("Fuel pressure", "Rail pressure vs target, pump, injection",
+     ((r"rail", ()), (r"fuel pump|lpfp", ()), (r"inject", ()))),
+    ("Mixture", "Lambda vs target, lambda control and trims",
+     ((r"lambda|\bafr\b", r"control|adapt|temp"), (r"lambda control|trim|adapt", r"temp"))),
+    ("Airflow and torque", "Mass air flow, torque and load",
+     ((r"\bmaf\b|mass air|air mass|airflow", ()), (r"torque|engine moment", r"transmission|trans\b"),
+      (r"\bload\b", r"corrected"))),
     ("Temperatures", "Coolant, intake air, oil and fuel temperatures",
-     ((r"coolant|oil temp", ()), (r"intake air temp|\biat\b|charge air temp", ()), (r"temp", ()))),
+     ((r"temp", r"lambda|exhaust"),)),
     ("Driving", "Vehicle speed, gear, accelerator and throttle",
-     ((r"vehicle speed|road speed|\bgear\b", ()), (r"accelerat|pedal|throttle", ()))),
+     ((r"vehicle speed|road speed", ()), (r"\bgear\b", ()), (r"accelerat|pedal|throttle", r"specified"))),
 )
 _RPM = re.compile(r"engine speed|\brpm\b", re.I)
 
@@ -55,10 +60,9 @@ def rule_layouts(headers):
     for name, desc, rows in RULES:
         used, charts = set(rpm), []
         for include, exclude in rows:
-            found = [h for h in headers if h not in used and _matches(h, include, exclude)][:4]
-            if found:
-                used.update(found)
-                charts.append(found)
+            found = [h for h in headers if h not in used and _matches(h, include, exclude)][:8]
+            used.update(found)
+            charts += [part[:8] for part in _split_units(found)]
         if sum(len(c) for c in charts) >= 2:
             charts = ([rpm] if rpm else []) + charts
             out.append({"name": name, "description": desc,
@@ -139,7 +143,7 @@ def resolve(layouts, headers):
     """Layouts with every channel matched to this log's headers; unknown ones dropped, and
     layouts or charts left empty removed."""
     find = _lookup(headers)
-    out = []
+    out, layouts_seen = [], set()
     for l in layouts or []:
         if not isinstance(l, dict) or not l.get("name"):
             continue
@@ -151,35 +155,74 @@ def resolve(layouts, headers):
                 if h and h not in seen:
                     seen.add(h)
                     chans.append(h)
-            if chans:
-                charts.append({"title": str(c.get("title") or ""), "channels": chans[:6]})
-        if charts:
+            parts = _split_units(chans[:8])
+            for part in parts:  # split by unit: each new chart is named after its first channel
+                title = str(c.get("title") or "") if len(parts) == 1 else log_export.split_header(part[0])[0]
+                charts.append({"title": title, "channels": part})
+        sig = frozenset(seen)
+        if sum(len(c["channels"]) for c in charts) >= 2 and sig not in layouts_seen:
+            layouts_seen.add(sig)
             out.append({"name": str(l["name"]).replace("_", " ").strip()[:40],
                         "description": str(l.get("description") or "").strip()[:90],
-                        "charts": charts[:5]})
+                        "charts": charts[:6]})
     return out[:8]
+
+
+def _stem(name):
+    """First two words of a channel's name: 'fuel rail' for 'Fuel Rail Actual (mbar)'."""
+    return " ".join(re.findall(r"[a-z0-9]+", _base(name))[:2])
+
+
+def _split_units(chans):
+    """A chart's channels, split into one chart per unit when they mix units, except channels
+    of the same thing ('Fuel Rail Actual (mbar)' + 'Fuel Rail Spec (%)': IE's labels can be wrong)."""
+    groups = {}
+    for h in chans:
+        unit = log_export.split_header(h)[1].strip().lower()
+        key = next((k for k, g in groups.items() if k == unit or any(_stem(h) == _stem(x) for x in g)), unit)
+        groups.setdefault(key, []).append(h)
+    return list(groups.values())
 
 
 # ── asking the AI ──
 
 SYSTEM = (
-    "You design analysis views for car engine datalogs in a VW/Audi (PQ35 platform) ECU tuning app. "
-    "Reply with JSON only: no prose, no code fences.")
+    "You design analysis views for engine datalogs in a VW/Audi (PQ35 platform: 2.0 TFSI, 1.8T, "
+    "1.4 TSI) ECU tuning app, the way an experienced tuner lays out Datazap. Reply with JSON only: "
+    "no prose, no code fences.")
+
+RULES_TEXT = """Rules:
+1. Each layout answers one question a tuner asks of a log. Good ones, when the channels exist:
+   - Boost control: boost actual + specified (one chart), N75/wastegate duty, load actual + specified.
+   - Timing and knock: ignition timing; timing retard / ignition correction for every cylinder (one chart).
+   - Fuel pressure: rail pressure actual + specified (one chart); fuel pump duty / LPFP; injection time.
+   - Mixture: lambda actual + specified (one chart); lambda control / fuel trims (another chart).
+   - Airflow and torque: mass air flow; engine torque actual (+ requested); load.
+   - Temperatures: coolant, intake air, oil, fuel temperatures (one chart, all the same unit).
+   - Driveability: engine speed, vehicle speed, gear, throttle / accelerator pedal.
+2. Every chart holds ONE kind of quantity in ONE unit. Always pair actual with specified/requested of
+   the same thing on one chart. Never put different quantities on one chart (no lambda with pump duty,
+   no throttle with N75 duty, no knock sensor volts with retard degrees).
+3. A chart's title names exactly what is on it, in 1 to 3 words.
+4. Start each pull-analysis layout (boost, timing, fuel, mixture, airflow) with a chart holding only
+   engine speed, so the rpm is always in view. That chart counts toward the 4.
+5. 2 to 4 charts per layout, 1 to 4 channels per chart (up to 8 for per-cylinder channels).
+6. Copy channel names exactly from the list. Skip a layout if the log lacks its main channels;
+   never pad a layout with unrelated channels.
+7. Integrated Engineering logs can carry wrong units in brackets (e.g. "LPFP Duty (mbar)"): judge a
+   channel by its name, not its unit."""
 
 
 def prompt(headers):
     names = "\n".join(f"- {h}" for h in headers)
     return (
         "These are the channels in a datalog:\n" + names + "\n\n"
-        "Make 3 to 6 analysis layouts a tuner would use with this log, each for one job "
-        "(for example boost control, timing and knock, fueling, airflow, temperatures, driveability). "
-        "Each layout has 1 to 4 charts stacked on a shared time axis; put channels with similar units "
-        "and scales on the same chart (e.g. boost actual with boost requested), 1 to 4 channels per "
-        "chart. Use only channel names from the list, copied exactly. Skip a layout if the log lacks "
-        "the channels for it.\n\n"
-        'Answer as: {"layouts": [{"name": "Boost control", "description": "one short line", '
-        '"charts": [{"title": "Boost", "channels": ["exact channel name", "..."]}]}]}\n'
-        "name: at most 3 words. description: at most 60 characters.")
+        "Make 4 to 7 analysis layouts for this log. Each layout is a stack of charts on a shared time "
+        "axis.\n\n" + RULES_TEXT + "\n\n"
+        'Answer as: {"layouts": [{"name": "Boost control", "description": "Boost vs target, N75 duty, load", '
+        '"charts": [{"title": "Engine speed", "channels": ["Engine speed (rpm)"]}, '
+        '{"title": "Boost", "channels": ["exact actual name", "exact specified name"]}]}]}\n'
+        "name: at most 3 words. description: at most 60 characters, listing what's shown.")
 
 
 def parse(text):
@@ -250,7 +293,7 @@ class Generator(QObject):
         self.cancel()
         self.busy, self.error, self._reply = True, "", ""
         self.changed.emit()
-        self._req = ai.Ask(self.settings, SYSTEM, [{"role": "user", "content": prompt(self.headers)}], "low", self)
+        self._req = ai.Ask(self.settings, SYSTEM, [{"role": "user", "content": prompt(self.headers)}], "medium", self)
         self._req.text.connect(self._chunk)
         self._req.done.connect(self._done)
         self._req.failed.connect(self._failed)

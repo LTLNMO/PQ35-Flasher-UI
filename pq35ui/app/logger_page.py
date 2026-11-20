@@ -106,7 +106,9 @@ class DatazapWriter:
     """CSV with a "Time" column in seconds and one "Name (unit)" column per
     value. A row is made per group read; values forward-fill between reads.
     Rows wait until every group has been read and every column has a value,
-    so the columns are final and no cell is empty.
+    so the columns are final and no cell is empty, but never more than WAIT_S:
+    a group the module doesn't answer must not lose the whole recording. Its
+    columns stay blank (filled in if it answers later) and are listed in .missing.
 
     mode:
       "continuous" - every row goes to the file.
@@ -115,9 +117,13 @@ class DatazapWriter:
                      pre_s seconds before it and post_s seconds after it ends.
                      Re-arms after each event, so several pulls land in one file."""
 
+    WAIT_S = 5.0  # seconds to wait for every value before writing rows anyway
+
     def __init__(self, path, columns, groups, mode="continuous", keep_s=300.0,
                  trigger=None, pre_s=5.0, post_s=3.0):
         self.path = path
+        self.wait_since = None
+        self.missing = []  # column titles with no value when rows started
         self.columns = columns  # [(key, title)]; raw groups add theirs on first read
         self.groups = set(groups)
         self.seen = set()
@@ -143,10 +149,14 @@ class DatazapWriter:
         self.latest.update({k: v for k, v in values.items() if v is not None})
         self.units.update({k: u for k, u in units.items() if u})
         if not self.ready:
-            if self.seen < self.groups or not all(key in self.latest for key, _ in self.columns):
+            if self.wait_since is None:
+                self.wait_since = seconds
+            complete = self.seen >= self.groups and all(key in self.latest for key, _ in self.columns)
+            if not complete and seconds - self.wait_since < self.WAIT_S:
                 return
             self.ready = True
-        row = [f"{seconds:.3f}"] + [self.latest[key] for key, _ in self.columns]
+            self.missing = [title for key, title in self.columns if key not in self.latest]
+        row = [f"{seconds:.3f}"] + [self.latest.get(key, "") for key, _ in self.columns]
         if self.mode == "loop":
             self._buffer(seconds, row, self.keep_s)
         elif self.mode == "trigger":
@@ -201,6 +211,10 @@ class DatazapWriter:
             self.first_t = self.last_t
         if self.rows % 50 == 0:
             self.file.flush()
+
+    def latest_titles(self):
+        """Titles of the columns that have had a value by now."""
+        return {title for key, title in self.columns if key in self.latest}
 
     def _title(self, key, title):
         unit = self.units.get(key, "")
@@ -1340,10 +1354,13 @@ class LoggerPage(QWidget):
             else:
                 links["Export…"] = lambda: self._export(path)
             links["Discard…"] = lambda: self._discard(path)
+            silent = [t for t in writer.missing if t not in writer.latest_titles()]
+            silent_note = (" No reply from the module for: " + ", ".join(silent[:6]) + ("…" if len(silent) > 6 else "")
+                           + " (blank in the log; untick them next time).") if silent else ""
             self.banner.show_message(
                 f"Logged {rows:,} rows ({int(secs // 60)}:{int(secs % 60):02d}), saved in Datalogs as {path.name}."
-                + (note or " Min / max / avg are in the list."),
-                "error" if note and written is None else "ok", links)
+                + (note or ("" if silent else " Min / max / avg are in the list.")) + silent_note,
+                "error" if note and written is None else ("warning" if silent else "ok"), links)
         elif writer and writer.mode == "trigger" and writer.ready:
             self.banner.show_message("Stopped. The trigger never fired, so nothing was recorded.", "warning")
         else:

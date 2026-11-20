@@ -183,9 +183,10 @@ class PlaybackPage(QWidget):
         ctrl.addWidget(self.sidebar_button)
         # Hidden sidebar: Select channels moves to the front of this toolbar (and back when shown),
         # in step with the sidebar's slide (ChannelSidebar._shown).
-        self.compare_button = self._icon_button("compare", "Compare logs: overlay a second log "
-                                                "(dashed) to compare runs")
-        self.compare_button.clicked.connect(self._open_compare)
+        self.compare_button = self._icon_button("compare", "Compare logs: overlay a second log on the "
+                                                "graph, or compare several logs with AI", dropdown=True)
+        self.compare_button.clicked.connect(
+            lambda: analyze_tools.popup_menu(self._compare_menu(), self.compare_button))
         ctrl.addStretch(1)
 
         self.legend_button = self._icon_button("list", "Show or hide the legend under the graph "
@@ -2124,47 +2125,34 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
 
     # --- AI ---
 
-    def log_context(self, max_rows=80, max_cols=14):
-        """Text summary of the loaded log (range-limited) for an AI to read."""
+    def log_context(self, max_rows=120, max_cols=16):
+        """What an AI reads about the loaded log (log_digest: pulls, checks, rpm tables, rows
+        sampled densely in the pulls), limited to the selection when one is set. With a log
+        overlaid, both side by side instead."""
         if self.times is None:
             return ""
+        from . import log_digest
         mask = self._range_mask()
-        t = self.times[mask]
-        if not len(t):
+        if not mask.any():
             return "The selected range is empty."
-        lines = [f"Log: {self.csv_path.name}", f"Duration: {t[-1] - t[0]:.1f} s, {len(t)} rows"
-                 f" (about {len(t) / max(t[-1] - t[0], 1e-3):.1f} rows/s)"]
+        lines = []
         if self._stats_range() is not None:
             a, b = self._stats_range()
             lines.append(f"Only the selected range {a:.1f}–{b:.1f} s is included.")
         checked = self._checked_channels()
         if checked:
-            lines.append("Channels the user is looking at: " + ", ".join(checked))
-        lines.append("\nPer-channel stats (min / max / avg / 95th percentile):")
-        for name in self.headers:
-            col = self.columns[name][mask]
-            col = col[~np.isnan(col)]
-            if len(col):
-                lines.append(f"- {name}: {col.min():.4g} / {col.max():.4g} / {col.mean():.4g} / "
-                             f"{np.percentile(col, 95):.4g}")
-        names = (checked + [h for h in self.headers if h not in checked])[:max_cols]
-        step = max(1, len(t) // max_rows)
-        lines.append(f"\nSampled rows (every {step}th row, CSV):")
-        lines.append(",".join(["Time (s)"] + names))
-        idx = np.nonzero(mask)[0][::step]
-        for i in idx:
-            lines.append(",".join([f"{self.times[i]:.2f}"] + [
-                "" if np.isnan(self.columns[n][i]) else f"{self.columns[n][i]:.4g}" for n in names]))
-        if self.compare is not None:
+            lines.append("Channels the user has on the graph: " + ", ".join(checked))
+        if self.compare is None:
+            lines.append(log_digest.digest(self.csv_path.name, self.headers, self.times, self.columns,
+                                           mask=mask, focus=checked, max_rows=max_rows, max_cols=max_cols))
+        else:
             ct = self.compare["times"] + self.offset.value()
-            cmask = self._range_mask(ct)
-            lines.append(f"\nCompared log: {self.compare['path'].name} (shifted {self.offset.value():+.2f} s). Stats:")
-            for name in self.compare["headers"]:
-                col = self.compare["columns"][name][cmask]
-                col = col[~np.isnan(col)]
-                if len(col):
-                    lines.append(f"- {name}: {col.min():.4g} / {col.max():.4g} / {col.mean():.4g} / "
-                                 f"{np.percentile(col, 95):.4g}")
+            lines.append(f"The user is comparing two logs on the graph (B shifted {self.offset.value():+.2f} s "
+                         "to line the runs up).")
+            lines.append(log_digest.compare([
+                (self.csv_path.name, self.headers, self.times, self.columns, mask),
+                (self.compare["path"].name, self.compare["headers"], ct, self.compare["columns"],
+                 self._range_mask(ct))]))
         return "\n".join(lines)
 
     def ai_context(self):
@@ -2176,9 +2164,11 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
         if self.compare is not None:
             question = ("Compare these two runs. What changed between them, is the second one better or "
                         "worse, and is anything risky?")
+        from . import log_digest
         return {"title": f"log {self.csv_path.name}", "context": self.log_context(), "question": question,
                 "extra": "The data is a measuring-block datalog from a VW PQ35 module, logged over "
-                         "KWP2000/TP2.0. Values are in the units given in each channel name."}
+                         "KWP2000/TP2.0. Values are in the units given in each channel name.\n"
+                         + log_digest.ANALYSIS_SYSTEM}
 
     # --- compare log ---
 
@@ -2254,13 +2244,37 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
 
 
     def _set_compare_enabled(self):
-        loaded = self.times is not None
         has = self.compare is not None
-        self.compare_button.setEnabled(loaded)
         for w in (self.offset, self.align_button, self.clear_compare_button):
             w.setEnabled(has)
         self._update_title()
         self.compare_row.setVisible(has)
+
+    def _compare_menu(self):
+        T = analyze_tools
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        loaded = self.times is not None
+        T.menu_action(menu, "Overlay a log on the graph…", "stacked_line_chart", self._open_compare,
+                      enabled=loaded, tip="Show a second log as dashed lines over this one" if loaded
+                      else "Open a log first")
+        T.menu_action(menu, "Compare logs with AI…", "auto_awesome", self._compare_with_ai,
+                      tip="Pick any number of logs; your AI compares them side by side, by rpm")
+        if self.compare is not None:
+            T.menu_header(menu, "Overlay")
+            T.menu_action(menu, "Stop overlaying", "close", self._clear_compare)
+        return menu
+
+    def _load_for_ai(self, path):
+        headers, times, columns = _parse_csv(log_import.native_path(path)[0])
+        headers, columns = self._to_display_units(headers, columns)
+        return headers, times, columns
+
+    def _compare_with_ai(self):
+        from . import log_compare_ai
+        paths = [p for p in (self.csv_path if self.times is not None else None,
+                             self.compare["path"] if self.compare else None) if p]
+        log_compare_ai.open_compare(self, self.state.settings, self._load_for_ai, paths)
 
     def _open_compare(self):
         path, _ = QFileDialog.getOpenFileName(
