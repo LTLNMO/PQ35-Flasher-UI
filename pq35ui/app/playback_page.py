@@ -48,6 +48,7 @@ RAW_COL_MIN = 150  # px: Raw columns at least this wide, so a useful part of the
 
 
 from .units import fmt as _fmt  # one number style on every tab
+from .toolbar import ToolIcon
 
 
 def _parse_csv(path: Path):
@@ -126,7 +127,6 @@ class PlaybackPage(QWidget):
         self.state = state
         self.setObjectName("page")
         self.headers = []
-        self._icon_buttons = []  # (button, glyph) re-tinted when the theme changes
         self.times = None
         self.columns = {}
         self.csv_path = None      # the Standard log on screen (an imported log's converted copy)
@@ -176,44 +176,44 @@ class PlaybackPage(QWidget):
         # (Open and compare sit on the view-tab row, right of the log's name.)
         ctrl = self.ctrl_row = QHBoxLayout()
         ctrl.setSpacing(8)  # one gap for every toolbar row (Logger, Live View too)
-        self.open_button = self._icon_button("file_open", "Open a log: a recent recording, or a file "
+        self.open_button = ToolIcon("file_open", "Open a log: a recent recording, or a file "
                                              "from this app or another tool (the logs Datazap takes: "
                                              "COBB, MHD, VCDS, ME7Logger, Torque, MegaLogViewer, "
                                              "Integrated Engineering …)", dropdown=True)
         self.open_button.clicked.connect(self._open_menu)
         # speed_4_progress, by codepoint: the glyph is in the font but its name ligature draws junk
-        self.sidebar_button = self._icon_button("\U000ffe94", "Show or hide the channels "
+        self.sidebar_button = ToolIcon("\U000ffe94", "Show or hide the channels "
                                                 "sidebar", checkable=True)
         self._right_layout = rl  # its left margin follows the sidebar (ChannelSidebar._shown)
         ctrl.addWidget(self.sidebar_button)
         # It and Select channels are a pair at the top left (ChannelSidebar.install): the column's
         # first row while it shows, the front of this row while it's hidden.
-        self.compare_button = self._icon_button("compare", "Compare logs: overlay a second log on the "
+        self.compare_button = ToolIcon("compare", "Compare logs: overlay a second log on the "
                                                 "graph, or compare several logs with AI", dropdown=True)
         self.compare_button.clicked.connect(
             lambda: analyze_tools.popup_menu(self._compare_menu(), self.compare_button))
         ctrl.addStretch(1)
 
-        self.legend_button = self._icon_button("list", "Show or hide the legend under the graph "
+        self.legend_button = ToolIcon("list", "Show or hide the legend under the graph "
                                                "(click a channel there to hide or show its line)",
                                                checkable=True)
         self.legend_button.setChecked(bool(state.settings.get("playback:legend", True)))
         self.legend_button.toggled.connect(self._legend_toggled)
         ctrl.addWidget(self.legend_button)
-        self.timeline_button = self._icon_button("acute", "Show or hide the timeline under "
+        self.timeline_button = ToolIcon("acute", "Show or hide the timeline under "
                                                  "the graph (the whole log in miniature)", checkable=True)
         self.timeline_button.setChecked(bool(state.settings.get("playback:timeline", True)))
         self.timeline_button.toggled.connect(self._timeline_toggled)
         ctrl.addWidget(self.timeline_button)
-        self.math_button = self._icon_button("function", "Math channels: add channels computed "
+        self.math_button = ToolIcon("function", "Math channels: add channels computed "
                                              "from formulas")
         self.math_button.clicked.connect(self._edit_math)
         ctrl.addWidget(self.math_button)
-        self.presets_button = self._icon_button("bookmark", "Presets: put a ready-made set of "
+        self.presets_button = ToolIcon("bookmark", "Presets: put a ready-made set of "
                                                 "channels on the graph, or save your own",
                                                 dropdown=True)
         self.presets_button.clicked.connect(lambda: analyze_tools.popup_menu(self._presets_menu(), self.presets_button))
-        self.smart_button = self._icon_button("auto_awesome", "Smart presets: show or hide the row of "
+        self.smart_button = ToolIcon("auto_awesome", "Smart presets: show or hide the row of "
                                               "ready-made layouts above the graph", checkable=True)
         self.smart_button.setChecked(smart_presets.bar_on(state.settings))
         self.smart_button.toggled.connect(self._smart_bar_toggled)
@@ -227,7 +227,7 @@ class PlaybackPage(QWidget):
                                     "Applies to the Single graph and to Split rows holding several channels.")
         self.axis_button.clicked.connect(lambda: analyze_tools.popup_menu(self._axis_menu(), self.axis_button))
         ctrl.addWidget(self.axis_button)
-        self.more_button = self._icon_button("more_vert", "Log details, edit, reset view, download")
+        self.more_button = ToolIcon("more_vert", "Log details, edit, reset view, download")
         self.more_button.clicked.connect(lambda: analyze_tools.popup_menu(self._more_menu(), self.more_button))
         self._more_menu_width = 0
         ctrl.addWidget(self.more_button)
@@ -839,7 +839,7 @@ class PlaybackPage(QWidget):
             self.smart_button.blockSignals(True)
             self.smart_button.setChecked(on)
             self.smart_button.blockSignals(False)
-            self._tint_icons()
+            self.smart_button.retint()
         self.smart_bar.setVisible(on and self.times is not None and self._view() in ("single", "split"))
         # Nothing to show or hide without a log: greyed out, so a click never seems to do nothing
         has_log = self.times is not None
@@ -906,34 +906,6 @@ class PlaybackPage(QWidget):
                                  stem=(self.source_path or self.csv_path).stem)
 
     # --- toolbar ---
-
-    def _icon_button(self, glyph, tip, checkable=False, dropdown=False):
-        """Toolbar icon button. dropdown: a small ▾ beside the icon, for buttons that open a menu."""
-        from . import theme
-        b = QPushButton()
-        b.setObjectName("iconTool")
-        b.setToolTip(tip)
-        b.setCheckable(checkable)
-        w, h, strip, g = analyze_tools.tool_metrics(dropdown)
-        b.setFixedSize(w, h)
-        b.setIconSize(analyze_tools.icon_size(glyph, dropdown))
-        b.setProperty("dropdown", dropdown)
-        if not self._icon_buttons:
-            def tint():
-                for button, g in self._icon_buttons:
-                    color = analyze_tools.tool_color(button.isCheckable() and button.isChecked())
-                    button.setIcon(self._toolbar_icon(g, color, bool(button.property("dropdown"))))
-            self._tint_icons = tint
-            theme.on_apply(tint)
-        self._icon_buttons.append((b, glyph))
-        if checkable:
-            b.toggled.connect(lambda _: self._tint_icons())
-        self._tint_icons()
-        return b
-
-    @staticmethod
-    def _toolbar_icon(glyph, color, dropdown=False):
-        return analyze_tools.toolbar_icon(glyph, color, dropdown)
 
     def _legend_toggled(self, on):
         self.state.settings.set("playback:legend", on)
@@ -1014,7 +986,7 @@ class PlaybackPage(QWidget):
         old_toggle = self.sidebar_button
         old_toggle.setParent(self)
         old_toggle.hide()
-        self.sidebar_button = analyze_tools.icon_button(
+        self.sidebar_button = ToolIcon(
             "left_panel_close", "Show or hide the channels column", checkable=True)
         self.sidebar_button.setProperty("plain", True)  # a sidebar toggle: no grey square when on
         top = QHBoxLayout()

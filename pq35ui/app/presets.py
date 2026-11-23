@@ -1,10 +1,9 @@
 """Channel presets: named sets of ticked channels, shared by Logger and Live View.
 
 Stored per module family under settings "presets:<family>" as {name: [value ids]}."""
-from PySide6.QtCore import QSize
-from PySide6.QtWidgets import QMenu, QPushButton
 
 from .popups import InputDialog, MessageBox
+from .toolbar import ToolIcon
 
 # Built-in presets offered for a module on top of the user's own. Keyed by
 # family name. "Integrated Engineering Logger" reads exactly the 27 measuring-block fields Integrated
@@ -59,7 +58,7 @@ BUILTIN_PRESETS = {
 }
 
 
-class PresetButton(QPushButton):
+class PresetButton(ToolIcon):
     """Presets, as on Analyze: a bookmark ▾ button whose menu loads a ready-made (built-in) or
     saved preset, saves the ticked channels as a new one, overwrites one, or manages them.
 
@@ -68,23 +67,9 @@ class PresetButton(QPushButton):
     on_loaded(name, builtin) -> optional, called after a preset is loaded"""
 
     def __init__(self, state, get_ids, apply_ids, parent=None, on_loaded=None):
-        super().__init__(parent)
         self.state, self.get_ids, self.apply_ids, self.on_loaded = state, get_ids, apply_ids, on_loaded
-        self.setObjectName("iconTool")
-        self.setToolTip("Presets: load a ready-made or saved set of channels, or save the ticked ones")
-        from .analyze_tools import tool_metrics
-        w, h, strip, g = tool_metrics(dropdown=True)
-        self.setFixedSize(w, h)
-        self.setIconSize(QSize(strip, g))
-        from .analyze_tools import popup_menu
-        self.clicked.connect(lambda: popup_menu(self.menu(), self))
-        self._tint()
-        from . import theme
-        theme.on_apply(self._tint)
-
-    def _tint(self):
-        from . import analyze_tools as T, theme
-        self.setIcon(T.toolbar_icon("bookmark", theme.colors()["tab_text"], dropdown=True))
+        super().__init__("bookmark", "Presets: load a ready-made or saved set of channels, or save the ticked ones",
+                         dropdown=True, menu=self.fill_menu, parent=parent)
 
     def _key(self):
         family = self.state.setup_family
@@ -103,11 +88,9 @@ class PresetButton(QPushButton):
         family = self.state.setup_family
         return BUILTIN_PRESETS.get(family["name"], {}) if family else {}
 
-    def menu(self):
+    def fill_menu(self, menu):
         from . import analyze_tools as T
         from .smart_presets import icon_for
-        menu = QMenu(self)
-        menu.setToolTipsVisible(True)
         builtins = self._builtins()
         if builtins:
             T.menu_header(menu, "Ready-made")

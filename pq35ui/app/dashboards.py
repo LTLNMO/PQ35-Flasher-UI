@@ -3,11 +3,11 @@ stored per module family and exportable as JSON to share."""
 import json
 from pathlib import Path
 
-from PySide6.QtCore import QSize
-from PySide6.QtWidgets import QFileDialog, QMenu, QPushButton
+from PySide6.QtWidgets import QFileDialog
 
 from .storage import user_dir
 from .popups import InputDialog, MessageBox
+from .toolbar import ToolIcon
 
 FORMAT_TAG = "pq35-dashboard"
 
@@ -16,33 +16,17 @@ def dashboards_dir() -> Path:
     return user_dir() / "Dashboards"
 
 
-class DashboardButton(QPushButton):
+class DashboardButton(ToolIcon):
     """Saved dashboards, shown like the Presets button beside it (icon ▾); its menu: load /
     save as / delete / export / import."""
 
     GLYPH = "dashboard_customize"  # Material Symbols: a grid of panels with a +
 
     def __init__(self, page, parent=None):
-        super().__init__(parent)
         self.page = page
-        self.setObjectName("iconTool")
-        self.setToolTip("Saved dashboards: load, save, delete, export or import Live View layouts")
-        from .analyze_tools import tool_metrics
-        w, h, strip, g = tool_metrics(dropdown=True)  # as Presets: icon + ▾
-        self.setFixedSize(w, h)
-        self.setIconSize(QSize(strip, g))
         self.current = None  # name of the dashboard last loaded or saved (ticked in the menu)
-        self.menu_ = QMenu(self)
-        self.menu_.aboutToShow.connect(self._fill)
-        from .analyze_tools import popup_menu
-        self.clicked.connect(lambda: popup_menu(self.menu_, self))
-        from . import theme
-        self._restyle()
-        theme.on_apply(self._restyle)
-
-    def _restyle(self):
-        from . import analyze_tools as T, theme
-        self.setIcon(T.toolbar_icon(self.GLYPH, theme.colors()["tab_text"], dropdown=True))
+        super().__init__(self.GLYPH, "Saved dashboards: load, save, delete, export or import Live View layouts",
+                         dropdown=True, menu=self._fill, parent=parent)
 
     # --- storage ---
 
@@ -61,12 +45,9 @@ class DashboardButton(QPushButton):
 
     # --- menu ---
 
-    def _fill(self):
+    def _fill(self, menu):
         """Like Analyze's menus: saved dashboards (✓ on the one loaded), then actions with icons."""
         from . import analyze_tools as T
-        menu = self.menu_
-        menu.clear()
-        menu.setToolTipsVisible(True)
         saved = self.saved()
         if not self._key():
             menu.addAction("Choose a module first").setEnabled(False)

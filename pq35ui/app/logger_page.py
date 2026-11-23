@@ -31,6 +31,7 @@ from . import analyze_tools as T
 from .widgets import Banner, muted, scrollable
 from .popups import OverlayDialog
 from .gauges import ScaleTracker
+from .toolbar import ToolIcon
 
 # Per-group read interval: 0 is as fast as the module answers.
 RATES = (("As fast as possible", 0), ("10 Hz", 100), ("5 Hz", 200), ("2 Hz", 500), ("1 Hz", 1000))
@@ -459,7 +460,7 @@ class LoggerPage(QWidget):
         ctrl.addWidget(self.sidebar.columns_button)
         ctrl.addWidget(self.sidebar.bars_button)
         # Watch in Analyze: the recording in progress, graphed live there
-        self.watch_button = T.icon_button("troubleshoot", "Watch in Analyze: graph this recording "
+        self.watch_button = ToolIcon("troubleshoot", "Watch in Analyze: graph this recording "
                                           "live on the Analyze page while it records")
         self.watch_button.clicked.connect(self._watch)
         self.watch_button.setEnabled(False)
@@ -468,8 +469,8 @@ class LoggerPage(QWidget):
         self.presets = PresetButton(state, lambda: {v["id"] for v in self._checked_values()},
                                     lambda ids: self._build_tree(ids), on_loaded=self._preset_loaded)
         ctrl.addWidget(self.presets)
-        self.options = T.MenuIconButton("instant_mix", "Logger settings: rate, group rates, how long Rolling keeps",
-                                        self._fill_options)
+        self.options = ToolIcon("instant_mix", "Logger settings: rate, group rates, how long Rolling keeps",
+                                  menu=self._fill_options)
         ctrl.addWidget(self.options)
         # The settings' values live in these; the ⚙ menu and the Triggered popup set them.
         for w in (self.rate,):
@@ -511,9 +512,9 @@ class LoggerPage(QWidget):
         self.name_preview = ElidedLabel("")  # the log being recorded, or the last one
         self.name_preview.setObjectName("muted")
         self.name_preview.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.recent_button = T.MenuIconButton(
+        self.recent_button = ToolIcon(
             "history", "Recent logs: your recordings, newest first (each one is saved in Datalogs as "
-            "it records). Open, export or discard them.", self._fill_recent, dropdown=True)
+            "it records). Open, export or discard them.", menu=self._fill_recent, dropdown=True)
         self._export_ok = False
 
         def fill_more(menu):
@@ -522,8 +523,8 @@ class LoggerPage(QWidget):
                               "Engineering, MegaLogViewer or generic CSV")
             T.menu_action(menu, "Open Datalogs folder", "folder_open", self._open_datalogs,
                           tip="Where exports go")
-        self.more_button = T.MenuIconButton("more_vert", "More: export the last log, open the Datalogs folder",
-                                            fill_more)
+        self.more_button = ToolIcon("more_vert", "More: export the last log, open the Datalogs folder",
+                                    menu=fill_more)
         mode_row.addWidget(self.name_preview, 1)
         for b in (self.recent_button, self.more_button):
             mode_row.addWidget(b)

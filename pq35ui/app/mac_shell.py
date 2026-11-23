@@ -476,67 +476,23 @@ class _SlotFollow(QObject):
         return False
 
 
-class _IconPaint(QObject):
-    """Draws a row icon's glyph itself: the button kind (push or tool button) paints only its
-    background (hover, on), and the icon goes at exactly the same spot in every box. Qt's push and
-    tool buttons centre an icon a pixel apart, so the same ⋯ sat higher on one tab than another."""
-
-    def eventFilter(self, obj, event):
-        from PySide6.QtCore import QEvent
-        if event.type() != QEvent.Type.Paint:
-            return False
-        from PySide6.QtGui import QIcon
-        from PySide6.QtWidgets import QStyle, QStyleOptionButton, QStyleOptionToolButton, QStylePainter, QToolButton
-        p = QStylePainter(obj)
-        if isinstance(obj, QToolButton):
-            opt = QStyleOptionToolButton()
-            obj.initStyleOption(opt)
-            opt.icon = QIcon()
-            p.drawComplexControl(QStyle.ComplexControl.CC_ToolButton, opt)
-        else:
-            opt = QStyleOptionButton()
-            obj.initStyleOption(opt)
-            opt.icon = QIcon()
-            opt.text = ""
-            p.drawControl(QStyle.ControlElement.CE_PushButton, opt)
-        size = obj.iconSize()
-        mode = QIcon.Mode.Normal if obj.isEnabled() else QIcon.Mode.Disabled
-        state = QIcon.State.On if obj.isChecked() else QIcon.State.Off
-        x = (obj.width() - size.width()) // 2
-        y = (obj.height() - size.height()) // 2
-        obj.icon().paint(p, x, y, size.width(), size.height(),
-                         Qt.AlignmentFlag.AlignCenter, mode, state)
-        p.end()
-        return True
-
-
-_ICON_PAINT = None
-
-
-def _icon_paint():
-    global _ICON_PAINT
-    if _ICON_PAINT is None:
-        _ICON_PAINT = _IconPaint()
-    return _ICON_PAINT
-
-
 def row_icons(row, tools=(), recent=None, presets=None, settings=None, more=None):
     """Rule 7: row 1's right-hand icons in the one order every tab uses: the tab's own `tools`,
     then 🕘 `recent`, 🔖 `presets`, ⚙ `settings`, ⋯ `more` (each optional; none leaves a gap). Each
     sits in an ICON_SLOT-wide slot with its glyph at the slot's left, so icons land on the same
     columns on every tab whatever mix of plain and ▾ icons it has. Call it last on the row, after
     its stretch, so the last slot ends on the right margin."""
+    from .toolbar import ToolIcon
     icons = [w for w in (*tools, recent, presets, settings, more) if w is not None]
     for w in icons:
+        if not isinstance(w, ToolIcon):  # one size rule and one paint path for every row icon
+            raise TypeError(f"row_icons takes ToolIcon buttons, not {type(w).__name__}")
         cell = QWidget()
         lay = QHBoxLayout(cell)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         lay.addWidget(w, 0, Qt.AlignmentFlag.AlignLeft)  # full row height, glyph at the slot's left
-        if type(w).paintEvent in (QPushButton.paintEvent, __import__("PySide6.QtWidgets", fromlist=["QToolButton"]).QToolButton.paintEvent):
-            w.installEventFilter(_icon_paint())  # one way of drawing the icon for every kind of button
-        # icon buttons pin their width (30 plain, 42 with ▾); their size hints don't say it
-        width = w.minimumWidth() if w.minimumWidth() == w.maximumWidth() else w.sizeHint().width()
+        width = w.sizeHint().width()  # 30 plain, 42 with ▾
         # the last slot is just its icon (⋯ / ⚙, plain on every tab), so it ends on the margin
         cell.setFixedWidth(width if w is icons[-1] else max(ICON_SLOT, width))
         _SlotFollow(cell, w)
@@ -583,9 +539,15 @@ def fit_row(area, row, buttons):
 
 def first_row(layout):
     """Mac: a page's first content row: the shared height (its controls centre on the same line on
-    every page, whatever their own heights) and the shared gap between its controls."""
-    layout.addStrut(ROW_H)
-    layout.setSpacing(ROW_SPACING)
+    every page, whatever their own heights) and the shared gap between its controls. Takes a
+    QHBoxLayout or a wrapping FlowLayout (each of its lines then gets the row height)."""
+    from .widgets import FlowLayout
+    if isinstance(layout, FlowLayout):
+        layout.min_line_height = ROW_H
+        layout._spacing = ROW_SPACING
+    else:
+        layout.addStrut(ROW_H)
+        layout.setSpacing(ROW_SPACING)
     return layout
 
 

@@ -166,6 +166,9 @@ class MapViewer(QWidget):
         top.addWidget(pair(muted("View"), self.view_mode))
         self.compare_label = muted("")
         top.addWidget(self.compare_label)
+        if theme.is_mac():  # the main area's row 1 (mac_shell rule 2)
+            from .mac_shell import first_row
+            first_row(top)
         layout.addLayout(top)
         self.banner = Banner()
         layout.addWidget(self.banner)
@@ -795,8 +798,8 @@ class MapsPage(QWidget):
         top = QHBoxLayout()
         top.setContentsMargins(16, 16, 16, 0)
         top.setSpacing(8)
-        from .analyze_tools import icon_button
-        self.sidebar_button = icon_button("tune", "Show or hide the map setup", checkable=True)
+        from .toolbar import ToolIcon
+        self.sidebar_button = ToolIcon("tune", "Show or hide the map setup", checkable=True)
         outer.addLayout(top)
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setHandleWidth(6)

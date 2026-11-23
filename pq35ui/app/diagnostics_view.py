@@ -299,7 +299,7 @@ class AutoScanView(QWidget):
 
     def _build_mac_sidebar(self):
         from PySide6.QtWidgets import QFrame
-        from .analyze_tools import icon_button
+        from .toolbar import ToolIcon
         side = QFrame()
         side.setObjectName("macPanel")
         side.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -318,7 +318,7 @@ class AutoScanView(QWidget):
         self.summary.setWordWrap(True)
         col.addWidget(self.summary)
         head.addLayout(col, 1)
-        self.reread_button = icon_button("refresh", "Re-read every module's fault codes (read-only)")
+        self.reread_button = ToolIcon("refresh", "Re-read every module's fault codes (read-only)")
         self.reread_button.clicked.connect(self.health.start)
         head.addWidget(self.reread_button, 0, Qt.AlignmentFlag.AlignTop)
         lay.addLayout(head)
@@ -411,7 +411,8 @@ class AutoScanView(QWidget):
         return item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
 
     def _log_buttons(self):
-        from .analyze_tools import MenuIconButton, icon_button, menu_action
+        from .analyze_tools import menu_action
+        from .toolbar import ToolIcon
 
         def fill_more(menu):
             has = bool(self.text)
@@ -420,11 +421,11 @@ class AutoScanView(QWidget):
             menu_action(menu, "Export scan log…", "ios_share", self.save_as, enabled=has,
                         tip="Copy this scan log somewhere else (every scan is saved to Documents/PQ35 Flasher/Scans "
                             "on its own)")
-        self.more_button = MenuIconButton("more_vert", "More: copy or export the scan log", fill_more)
-        self.history_button = MenuIconButton("history", "History: earlier scans of this car",
-                                             self._fill_history, dropdown=True)
+        self.more_button = ToolIcon("more_vert", "More: copy or export the scan log", menu=fill_more)
+        self.history_button = ToolIcon("history", "History: earlier scans of this car",
+                                       menu=self._fill_history, dropdown=True)
         self.history_menu = self.history_button.menu_
-        self.freeze = icon_button("frame_inspect", "", checkable=True)
+        self.freeze = ToolIcon("frame_inspect", "", checkable=True)
         self.freeze.setChecked(bool(self.state.settings.get("scan_freeze_frames", True)))
 
         def freeze_toggled(on):
@@ -451,7 +452,8 @@ class AutoScanView(QWidget):
         self.info.setMinimumWidth(0)
         head.addWidget(self.info, 1)
         # Icon buttons like Analyze's toolbar.
-        from .analyze_tools import MenuIconButton, icon_button, menu_action
+        from .analyze_tools import menu_action
+        from .toolbar import ToolIcon
 
         def fill_more(menu):
             has = bool(self.text)
@@ -460,12 +462,12 @@ class AutoScanView(QWidget):
             menu_action(menu, "Export scan log…", "ios_share", self.save_as, enabled=has,
                         tip="Copy this scan log somewhere else (every scan is saved to Documents/PQ35 Flasher/Scans "
                             "on its own)")
-        self.more_button = MenuIconButton("more_vert", "More: copy or export the scan log", fill_more)
-        self.history_button = MenuIconButton("history", "History: earlier scans of this car",
-                                             self._fill_history, dropdown=True)
+        self.more_button = ToolIcon("more_vert", "More: copy or export the scan log", menu=fill_more)
+        self.history_button = ToolIcon("history", "History: earlier scans of this car",
+                                       menu=self._fill_history, dropdown=True)
         self.history_menu = self.history_button.menu_
         # Freeze frames: a toggle icon (frame_inspect: a captured frame, looked at closely; accent = on).
-        self.freeze = icon_button("frame_inspect", "", checkable=True)
+        self.freeze = ToolIcon("frame_inspect", "", checkable=True)
         self.freeze.setChecked(bool(self.state.settings.get("scan_freeze_frames", True)))
 
         def freeze_toggled(on):

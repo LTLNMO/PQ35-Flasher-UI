@@ -661,6 +661,7 @@ class FlowLayout(QLayout):
         super().__init__(parent)
         self._items = []
         self._spacing = spacing
+        self.min_line_height = 0  # mac_shell.first_row: every line as tall as row 1, controls centred
         self.setContentsMargins(0, 0, 0, 0)
 
     def addItem(self, item):
@@ -698,6 +699,7 @@ class FlowLayout(QLayout):
         size = QSize()
         for item in self._visible():
             size = size.expandedTo(item.minimumSize())
+        size = size.expandedTo(QSize(0, self.min_line_height))
         m = self.contentsMargins()
         return size + QSize(m.left() + m.right(), m.top() + m.bottom())
 
@@ -735,7 +737,7 @@ class FlowLayout(QLayout):
             lines.append(line)
         y = area.y()
         for line in lines:
-            line_h = max(h for _i, _w, h in line)
+            line_h = max(self.min_line_height, *(h for _i, _w, h in line))
             x = area.x()
             for item, width, height in line:
                 if apply:

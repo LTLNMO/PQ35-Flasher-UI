@@ -15,6 +15,7 @@ from . import analyze_tools as T
 from . import theme
 from .channel_list import ChannelTree
 from .widgets import collapsible_sidebar, scrollable
+from .toolbar import ToolIcon
 
 COLUMN_WIDTH = 76
 SIDEBAR_WIDTH = 370  # room for Channel + Now / Min / Max
@@ -68,18 +69,18 @@ class ChannelSidebar(QWidget):
         self.pick_row.setSpacing(8)
         if select_button is not None:
             self.pick_row.addWidget(select_button, 1)
-        self.columns_button = T.icon_button("avg_pace", columns_tip or "Choose which values the "
+        self.columns_button = ToolIcon("avg_pace", columns_tip or "Choose which values the "
                                             "list shows")
         self.columns_button.clicked.connect(lambda: T.popup_menu(self.columns_menu(), self.columns_button))
         self.pick_row.addWidget(self.columns_button)
-        self.bars_button = T.icon_button("notes", bars_tip or "Show or hide the bars under each "
+        self.bars_button = ToolIcon("notes", bars_tip or "Show or hide the bars under each "
                                          "channel", checkable=True)
         self.bars_button.setChecked(bool(state.settings.get(f"{prefix}:range_bars", True)))
         self.tree.set_show_bars(self.bars_button.isChecked())
         self.bars_button.toggled.connect(self._bars_toggled)
         self.pick_row.addWidget(self.bars_button)
         # × closes the sidebar (the toolbar's sidebar button brings it back)
-        self.close_button = T.icon_button("close", "Hide the channels sidebar")
+        self.close_button = ToolIcon("close", "Hide the channels sidebar")
         self.pick_row.addWidget(self.close_button)
         self.count_label = self.cursor_label = self.pane_title = self.search = None
         if theme.is_mac():  # Mockups/Swift native: "Channels · 3 of 27 shown", a search box, the cursor below

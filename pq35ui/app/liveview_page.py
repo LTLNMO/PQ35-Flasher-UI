@@ -23,6 +23,7 @@ from .channel_list import (CATEGORY_ROLE, FIXED_ROLE, RAW_CATEGORY, RAW_GROUP_RO
                            ChannelDropdown, ChannelTree, ask_raw_group, groups_summary)
 from . import analyze_tools as T
 from .widgets import Banner, discard, muted, scrollable
+from .toolbar import ToolIcon
 
 WINDOW_SECONDS = (("30 s", 30), ("1 min", 60), ("2 min", 120), ("5 min", 300))
 MAX_POINTS = 6000
@@ -154,52 +155,43 @@ class LayoutButton(QPushButton):
         return QRectF((self.width() - self.ICON_W) / 2, (self.height() - self.ICON_H) / 2,
                       self.ICON_W, self.ICON_H)
 
-    def _symbol(self, box):
-        """Mac: this layout's SF Symbol as a QIcon in a *box* px square (None: draw it ourselves)."""
-        from . import theme
-        if not theme.is_mac():
-            return None
-        index = next((i for i, (_n, rows, cols) in enumerate(GRIDS)
-                      if rows == self.grid_rows and cols == self.columns), None)
-        if index is None:
-            return None
-        from . import sf_symbols
-        return sf_symbols.icon(SF_LAYOUTS[index], box, self._icon_color().name())
-
     def paintEvent(self, event):
         super().paintEvent(event)
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = self._icon_rect()
-        box = round(rect.height() / 0.8)  # sf_symbols draws at 0.8 x the box: as tall as ICON_H
-        icon = self._symbol(box)
-        if icon is not None:
-            c = rect.center()
-            p.drawPixmap(round(c.x() - box / 2), round(c.y() - box / 2), icon.pixmap(QSize(box, box)))
-        else:
-            _paint_grid(p, rect, self.grid_rows, self.columns, self._icon_color())
+        _paint_layout(p, self._icon_rect(), self.grid_rows, self.columns, self._icon_color())
         p.end()
 
 
-class LayoutPicker(LayoutButton):
-    """One button showing the current panel layout; click it for a menu of all
-    layouts. Saves the row space a full strip of layout buttons takes up. Sized like
-    Analyze's dropdown icon buttons (Presets): 50 x 34, a 22 px icon, then a small ▾."""
+def _paint_layout(p, rect, grid_rows, columns, color):
+    """A panel arrangement's icon in `rect`: Mac its SF Symbol (as tall as the rect), Classic a
+    drawn grid."""
+    from . import theme
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    index = next((i for i, (_n, rows, cols) in enumerate(GRIDS)
+                  if rows == grid_rows and cols == columns), None) if theme.is_mac() else None
+    if index is not None:
+        from . import sf_symbols
+        box = round(rect.height() / 0.8)  # sf_symbols draws at 0.8 x the box: as tall as the rect
+        icon = sf_symbols.icon(SF_LAYOUTS[index], box, color.name())
+        c = rect.center()
+        p.drawPixmap(round(c.x() - box / 2), round(c.y() - box / 2), icon.pixmap(QSize(box, box)))
+    else:
+        _paint_grid(p, rect, grid_rows, columns, color)
 
-    W, H = 50, 34
-    ICON_W, ICON_H = 21, 15  # the grid, about as big as the 22 px icons beside it
+
+class LayoutPicker(ToolIcon):
+    """One toolbar icon showing the current panel layout, with a ▾; click it for a menu of all
+    layouts. Saves the row space a full strip of layout buttons takes up."""
 
     def __init__(self, on_pick, parent=None):
-        super().__init__(GRIDS[0][1], GRIDS[0][2], parent)
+        super().__init__(None, dropdown=True, parent=parent)
         from . import theme
-        if theme.is_mac():  # a plain toolbar glyph + chevron, like the icons beside it
-            from .analyze_tools import tool_metrics
-            self.W, self.H = tool_metrics(dropdown=True)[:2]
-            g = tool_metrics()[3]  # the toolbar's SF Symbol box: same size as the icons beside it
-            self.ICON_W = self.ICON_H = g * 0.8
-            self.setFixedSize(self.W, self.H)
-            self.setObjectName("iconTool")
-        self.setCheckable(False)
+        from .analyze_tools import tool_metrics
+        if theme.is_mac():  # the toolbar's SF Symbol box: same size as the icons beside it
+            self.ICON_W = self.ICON_H = tool_metrics()[3] * 0.8
+        else:  # the grid, about as big as the 22 px icons beside it
+            self.ICON_W, self.ICON_H = 21, 15
+        self.grid_rows, self.columns = GRIDS[0][1], GRIDS[0][2]
         self._on_pick = on_pick
         self.current = 0
         self.menu_ = QMenu(self)
@@ -235,28 +227,17 @@ class LayoutPicker(LayoutButton):
             btn.setChecked(idx == index)
         self.update()
 
-    def _icon_color(self):
-        from . import theme
-        c = theme.colors()
-        return QColor(c["tab_text"] if theme.is_mac() else c["accent"])
-
-    def _icon_rect(self):
-        # same spot as the glyph in Analyze's dropdown buttons: the icon+caret strip centred
-        from .analyze_tools import tool_metrics
-        _w, _h, strip, g = tool_metrics(dropdown=True)
-        left = (self.width() - strip) / 2
-        return QRectF(left + (g - self.ICON_W) / 2, (self.height() - self.ICON_H) / 2,
-                      self.ICON_W, self.ICON_H)
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
+    def paint_glyph(self, p):
         from . import analyze_tools, theme
-        p = QPainter(self)
+        c = theme.colors()
         _w, _h, strip, g = analyze_tools.tool_metrics(dropdown=True)
-        # the ▾ exactly as Analyze draws it: its dropdown icon with a blank glyph
-        full = analyze_tools.toolbar_icon("\u0020", theme.colors()["tab_text"], dropdown=True)
-        p.drawPixmap(int((self.width() - strip) / 2), int((self.height() - g) / 2), full.pixmap(QSize(strip, g)))
-        p.end()
+        left = (self.width() - strip) / 2  # the icon+▾ strip centred, as on every dropdown icon
+        # the ▾ exactly as the other dropdown icons draw it: a dropdown icon with a blank glyph
+        caret = analyze_tools.toolbar_icon("\u0020", c["tab_text"], dropdown=True)
+        p.drawPixmap(int(left), int((self.height() - g) / 2), caret.pixmap(QSize(strip, g)))
+        rect = QRectF(left + (g - self.ICON_W) / 2, (self.height() - self.ICON_H) / 2, self.ICON_W, self.ICON_H)
+        color = QColor(c["tab_text"] if theme.is_mac() else c["accent"])
+        _paint_layout(p, rect, self.grid_rows, self.columns, color)
 
 
 class ValueCard(QFrame):
@@ -797,7 +778,7 @@ class LiveViewPage(QWidget):
         self.start_button.clicked.connect(self.toggle)
         ctrl.addWidget(self.start_button)
 
-        self.clear_button = T.icon_button("clear_all", "Clear: empty the graphs and readings "
+        self.clear_button = ToolIcon("clear_all", "Clear: empty the graphs and readings "
                                           "(keeps the channels)")
         self.clear_button.clicked.connect(self._clear_data)
         ctrl.addWidget(self.clear_button)
@@ -818,12 +799,12 @@ class LiveViewPage(QWidget):
         self.scale_combo = graphscale.combo(state.settings, self._scale_changed)
         self.scale_combo.setParent(self)
         self.scale_combo.hide()
-        self.options = T.MenuIconButton("instant_mix", "Live View settings: time shown, scale",
-                                      self._fill_options)
+        self.options = ToolIcon("instant_mix", "Live View settings: time shown, scale",
+                                menu=self._fill_options)
         # Right side: how the panels look (layout, saved dashboards) next to ⚙.
         ctrl.addStretch(1)
         # Math channels, then Presets (both as on Analyze), then layout, dashboards, ⚙
-        self.math_button = T.icon_button("function", "Math channels: make channels from formulas, "
+        self.math_button = ToolIcon("function", "Math channels: make channels from formulas, "
                                          "e.g. boost in psi or AFR")
         self.math_button.clicked.connect(self._edit_math)
         ctrl.addWidget(self.math_button)

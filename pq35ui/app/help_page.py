@@ -641,8 +641,8 @@ class HelpPage(QWidget):
         top = QHBoxLayout()
         top.setContentsMargins(16, 16, 16, 0)
         top.setSpacing(8)
-        from .analyze_tools import icon_button
-        self.sidebar_button = icon_button("toc", "Show or hide the topics", checkable=True)
+        from .toolbar import ToolIcon
+        self.sidebar_button = ToolIcon("toc", "Show or hide the topics", checkable=True)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search help (alarm, trigger, map…)")
         self.search.setMaximumWidth(360)
@@ -696,7 +696,7 @@ class HelpPage(QWidget):
         """Sidebar (search + topics) running up under the traffic lights; on the right a title row
         "PQ35 Flasher Help" with back / forward, a hairline, then the text: plain, no box."""
         from PySide6.QtWidgets import QFrame
-        from .analyze_tools import icon_button
+        from .toolbar import ToolIcon
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -749,8 +749,8 @@ class HelpPage(QWidget):
         title.setObjectName("h1")
         row.addWidget(title)
         row.addSpacing(10)
-        self.back_button = icon_button("chevron_left", "Back")
-        self.forward_button = icon_button("chevron_right", "Forward")
+        self.back_button = ToolIcon("chevron_left", "Back")
+        self.forward_button = ToolIcon("chevron_right", "Forward")
         self.back_button.clicked.connect(lambda: self._step(-1))
         self.forward_button.clicked.connect(lambda: self._step(1))
         row.addWidget(self.back_button)

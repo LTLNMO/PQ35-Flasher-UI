@@ -21,6 +21,7 @@ from .dyno_recorder import DynoRecorder
 from .dyno_view import DynoView, imperial
 from . import units as unitconv
 from .widgets import Banner, collapsible_sidebar, muted
+from .toolbar import ToolIcon
 
 PATH_ROLE = Qt.ItemDataRole.UserRole
 
@@ -51,7 +52,7 @@ class DynoPage(QWidget):
         # ── Top: Record + readout | the car and the load (of the session shown, or the next one) ──
         top = QHBoxLayout()
         top.setSpacing(8)
-        self.sidebar_button = T.icon_button("list_alt", "Show or hide the sessions sidebar", checkable=True)
+        self.sidebar_button = ToolIcon("list_alt", "Show or hide the sessions sidebar", checkable=True)
         top.addWidget(self.sidebar_button)
         self.record_button = T.RunButton("fiber_manual_record", "err")
         self.record_button.clicked.connect(self.toggle)
@@ -60,11 +61,11 @@ class DynoPage(QWidget):
         self.status.setObjectName("muted")
         top.addWidget(self.status, 1)
         # The car and what was in it, behind one car icon (the sheet's details line shows both)
-        self.load_button = T.icon_button("directions_car", "", dropdown=True)
+        self.load_button = ToolIcon("directions_car", "", dropdown=True)
         self.load_button.clicked.connect(self._open_load)
         top.addWidget(self.load_button)
-        self.more_button = T.MenuIconButton("more_vert", "More: export the graph, its numbers or the log",
-                                            self._fill_more)
+        self.more_button = ToolIcon("more_vert", "More: export the graph, its numbers or the log",
+                                    menu=self._fill_more)
         top.addWidget(self.more_button)
         theme.on_apply(self._show_meta)
         from .mac_shell import CONTENT_MARGINS, adopt_bar
@@ -88,7 +89,7 @@ class DynoPage(QWidget):
         title = QLabel("SESSIONS")
         title.setObjectName("cardName")
         head.addWidget(title, 1)
-        self.open_button = T.icon_button("file_open", "Open any log (a Datazap / Standard or Integrated "
+        self.open_button = ToolIcon("file_open", "Open any log (a Datazap / Standard or Integrated "
                                          "Engineering CSV) and find its full-throttle pulls")
         self.open_button.clicked.connect(self._open_file)
         head.addWidget(self.open_button)
@@ -249,9 +250,7 @@ class DynoPage(QWidget):
         cargo = f" + {m['cargo_kg'] * self.kg:.0f} {'lb' if imp else 'kg'}" if m["cargo_kg"] else ""
         total = f"{mass * dyno.KG_LB:,.0f} lb" if imp else f"{mass:,.0f} kg"
         name = cars.title(car) if car else "No saved car: typical figures"
-        colors = theme.colors()
-        self.load_button.setIcon(T.toolbar_icon("directions_car", colors["text"] if car else colors["warn"],
-                                                dropdown=True))
+        self.load_button.set_color("text" if car else "warn")
         self.load_button.setToolTip(f"Car and load for {whose}:\n{name}\n{who}{cargo} · {fuel} · {total}\n\n"
                                     "Click to change the people, cargo or fuel, or the car if it's wrong "
                                     "(weight matters most: 5% off is 5% off).")

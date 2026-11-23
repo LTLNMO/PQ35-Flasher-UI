@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 from .needs_car import gate
 from .storage import images_dir, patched_dir, timestamp
 from .widgets import Badge, Banner, Card, DropZone, ProgressPanel, discard, kib, muted, restyle
+from .toolbar import ToolIcon
 
 HALDEX, EPS, BCM = "haldex-gen4", "pq-eps", "pq-bcm"
 # Modules whose full firmware can be read back over OBD and diffed, so the Flash
@@ -312,8 +313,7 @@ class MacModuleCard(ModuleCard):
         title = QLabel(family["label"])
         title.setObjectName("macModName")
         head.addWidget(title, 1, Qt.AlignmentFlag.AlignBaseline)
-        from . import analyze_tools as T
-        self.info_button = T.icon_button("info", "Show this module's details", checkable=True)
+        self.info_button = ToolIcon("info", "Show this module's details", checkable=True)
         self.info_button.toggled.connect(self._toggle_info)
         head.addWidget(self.info_button, 0, Qt.AlignmentFlag.AlignVCenter)
         self.add(head)

@@ -8,7 +8,7 @@ import numpy as np
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PySide6.QtCore import QObject, QRectF
 from PySide6.QtGui import QFont, QColor, QFontDatabase, QFontMetrics, QPainter
-from PySide6.QtWidgets import QHeaderView, QMenu, QPushButton, QStyle, QStyleOptionHeader, QToolButton
+from PySide6.QtWidgets import QHeaderView, QMenu, QPushButton, QStyle, QStyleOptionHeader
 
 from . import log_export
 
@@ -455,64 +455,6 @@ def manage_presets(parent, get, rename, delete, empty_text, tip=None):
 
 
 SIDEBAR_GLYPH = "\U000ffe94"  # speed_4_progress, by codepoint (its name ligature draws junk)
-
-
-def icon_button(glyph, tip, checkable=False, dropdown=False):
-    """A toolbar icon button like Analyze's (36 x 34, or 50 x 34 with a ▾): grey icon, accent
-    while a checkable one is on; follows the theme."""
-    from PySide6.QtWidgets import QPushButton
-    from . import theme
-    b = QPushButton()
-    b.setObjectName("iconTool")
-    b.setToolTip(tip)
-    b.setCheckable(checkable)
-    w, h, strip, g = tool_metrics(dropdown)
-    b.setFixedSize(w, h)
-    b.setIconSize(icon_size(glyph, dropdown))
-
-    def tint(*_):
-        try:
-            b.setIcon(toolbar_icon(glyph, tool_color(b.isCheckable() and b.isChecked()), dropdown))
-        except RuntimeError:  # deleted
-            pass
-    tint()
-    b.toggled.connect(tint)
-    theme.on_apply(tint)
-    return b
-
-
-class MenuIconButton(QToolButton):
-    """Grey icon button (like ⚙ and the dashboards button) that opens a menu, refilled by
-    fill(menu) each time it opens."""
-
-    def __init__(self, glyph, tip, fill, parent=None, dropdown=False):
-        super().__init__(parent)
-        self.glyph, self._fill, self.dropdown = glyph, fill, dropdown
-        self.setToolTip(tip)
-        from PySide6.QtCore import QSize
-        self.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        # same as icon_button, so ⚙ matches the icons beside it (50 wide with a ▾)
-        w, h, strip, g = tool_metrics(dropdown)
-        self.setFixedSize(w, h)
-        self.setIconSize(QSize(strip, g))
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.setStyleSheet("QToolButton { padding: 0; } QToolButton::menu-indicator { image: none; width: 0; }")
-        self.menu_ = QMenu(self)
-        self.menu_.setToolTipsVisible(True)
-        self.menu_.aboutToShow.connect(lambda: (self.menu_.clear(), self._fill(self.menu_)))
-        self.setMenu(self.menu_)
-        anchor_menu(self.menu_, self)
-        from . import theme
-        self._restyle()
-        theme.on_apply(self._restyle)
-
-    def _restyle(self):
-        from . import theme
-        if self.dropdown:
-            self.setIcon(toolbar_icon(self.glyph, theme.colors()["tab_text"], dropdown=True))
-            return
-        self.setIcon(toolbar_icon(self.glyph, theme.colors()["tab_text"]))
 
 
 class RunButton(QPushButton):

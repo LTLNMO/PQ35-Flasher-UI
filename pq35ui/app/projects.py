@@ -27,6 +27,7 @@ from . import cars, recent_logs, theme
 from .storage import EcuRecord, datalogs_dir, modules_dir, user_dir
 from .widgets import Banner, h1, muted, scrollable
 from .popups import InputDialog, MessageBox
+from .toolbar import ToolIcon
 
 
 def projects_dir() -> Path:
@@ -342,7 +343,7 @@ class ProjectsPage(QWidget):
         head = QHBoxLayout()
         head.setContentsMargins(20, 6, 12, 0)  # the + glyph's left edge 24 px in (mac_shell rule 5)
         head.setSpacing(4)
-        add = T.icon_button("add", "New project…")
+        add = ToolIcon("add", "New project…")
         add.clicked.connect(self._new)
         head.addWidget(add)
 
@@ -354,7 +355,7 @@ class ProjectsPage(QWidget):
             T.menu_action(menu, "Open projects folder", "folder_open", lambda: (
                 _pdir().mkdir(parents=True, exist_ok=True),
                 QDesktopServices.openUrl(QUrl.fromLocalFile(str(_pdir())))))
-        head.addWidget(T.MenuIconButton("more_horiz", "Rename, delete, open the projects folder", fill_more))
+        head.addWidget(ToolIcon("more_horiz", "Rename, delete, open the projects folder", menu=fill_more))
         sb.removeWidget(self.list)
         lay.addWidget(self.list, 1)
         line = QFrame()

@@ -683,7 +683,7 @@ QTreeWidget::item:selected, QListWidget::item:selected, QTableWidget::item:selec
    the page under it has no box of its own (the tables/cards inside have theirs). */
 QTabBar {{ background: {segments}; border-radius: 7px; font-size: {small_plus}pt; }}
 QTabBar::tab {{ background: transparent; border-radius: 5px; font-weight: 500;
-    padding: 2px 12px; margin: 2px 0; color: {text}; }}
+    padding: 0 12px; margin: 2px 0; color: {text}; }}  /* 26 tall: the segmented control's metric */
 QTabBar::tab:first {{ margin-left: 2px; }}
 QTabBar::tab:last {{ margin-right: 2px; }}
 QTabBar::tab:hover {{ background: {btn}; color: {text}; }}
