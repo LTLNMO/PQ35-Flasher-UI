@@ -22,11 +22,10 @@ from .presets import PresetButton
 from .channel_list import (CATEGORY_ROLE, FIXED_ROLE, RAW_CATEGORY, RAW_GROUP_ROLE, ROLE, VALUE_ROLE,
                            ChannelDropdown, ChannelTree, ask_raw_group, groups_summary)
 from . import analyze_tools as T
-from .widgets import Banner, muted, scrollable
+from .widgets import Banner, discard, muted, scrollable
 
 WINDOW_SECONDS = (("30 s", 30), ("1 min", 60), ("2 min", 120), ("5 min", 300))
 MAX_POINTS = 6000
-GRAPH_SLOTS = 4  # max channel dropdowns per graph
 
 # Grid arrangements: (name, groups, columns). Normally each group is a row
 # with N slots; with columns=True each group is a column with N slots stacked.
@@ -44,14 +43,31 @@ GRIDS = (
 )
 # Order the layouts appear in the picker (indexes into GRIDS): 2 × 2 last.
 GRID_ORDER = (0, 1, 2, 3, 4, 6, 7, 5)
+# Mac: macOS's own tiling icons (Window ▸ Move & Resize), one SF Symbol per layout in GRIDS
+SF_LAYOUTS = (
+    "inset.filled.rectangle",
+    "inset.filled.tophalf.bottomhalf.rectangle",
+    "inset.filled.lefthalf.righthalf.rectangle",
+    "inset.filled.tophalf.bottomleft.bottomright.rectangle",
+    "inset.filled.topleft.topright.bottomhalf.rectangle",
+    "inset.filled.topleft.topright.bottomleft.bottomright.rectangle",
+    "inset.filled.topleft.bottomleft.righthalf.rectangle",
+    "inset.filled.lefthalf.topright.bottomright.rectangle",
+)
 DEFAULT_GRID = 3   # "2 + 1" — gauges top, two graphs below
 DEFAULT_TYPES = ["gauges", "graph", "graph"]
 
 
 def _paint_grid(p, rect, groups, columns, color, gap=2):
-    """Draw a panel-arrangement icon (rounded cells) into rect."""
-    p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(color)
+    """Draw a panel-arrangement icon into rect. Classic: rounded cells. Mac: macOS's window-tiling
+    look (Window ▸ Move & Resize): one rounded outline, the panels as filled blocks inside it."""
+    from . import theme
+    if theme.is_mac():
+        rect, gap = _paint_mac_frame(p, rect, color)
+    else:
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color)
+    radius = 1.0 if theme.is_mac() else 2.0
     x0, y0, w, h = rect.x(), rect.y(), rect.width(), rect.height()
     n_groups = len(groups)
     if columns:  # groups are columns: split the width, stack within each
@@ -61,7 +77,7 @@ def _paint_grid(p, rect, groups, columns, color, gap=2):
             cell_h = (h - gap * (len(col) - 1)) / len(col)
             y = y0
             for _ in col:
-                p.drawRoundedRect(int(x), int(y), int(group_w), int(cell_h), 2, 2)
+                p.drawRoundedRect(QRectF(x, y, group_w, cell_h), radius, radius)
                 y += cell_h + gap
             x += group_w + gap
     else:        # groups are rows: split the height, side by side within each
@@ -71,9 +87,28 @@ def _paint_grid(p, rect, groups, columns, color, gap=2):
             col_w = (w - gap * (len(row) - 1)) / len(row)
             x = x0
             for _ in row:
-                p.drawRoundedRect(int(x), int(y), int(col_w), int(row_h), 2, 2)
+                p.drawRoundedRect(QRectF(x, y, col_w, row_h), radius, radius)
                 x += col_w + gap
             y += row_h + gap
+
+
+def _paint_mac_frame(p, rect, color):
+    """The outline of a macOS tiling icon; returns the area for the panels and the gap between
+    them (both scale with the icon, so the toolbar glyph and the menu's big ones match)."""
+    from PySide6.QtGui import QPen
+    # macOS's tiles are 1.28 : 1 (measured, 50 x 39 px): fit that shape, centred, never stretched
+    w = min(rect.width(), rect.height() * 1.28)
+    h = w / 1.28
+    rect = QRectF(rect.center().x() - w / 2, rect.center().y() - h / 2, w, h)
+    line = max(1.2, rect.height() * 0.09)
+    p.setPen(QPen(color, line))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    outer = rect.adjusted(line / 2, line / 2, -line / 2, -line / 2)
+    p.drawRoundedRect(outer, rect.height() * 0.22, rect.height() * 0.22)
+    pad = line + max(1.0, rect.height() * 0.06)  # outline + a clear gap before the panels
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(color)
+    return rect.adjusted(pad, pad, -pad, -pad), max(1.0, rect.height() * 0.06)
 
 
 class LayoutButton(QPushButton):
@@ -98,6 +133,9 @@ class LayoutButton(QPushButton):
         self.setFixedSize(self.W, self.H)
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        from . import theme
+        if flat and theme.is_mac():  # the menu's choices: the size macOS's Window menu shows them
+            self.ICON_W = self.ICON_H = 25
 
     # The stylesheet's button padding inflates the default hint; report the real
     # size so the control row centres these icons with everything else.
@@ -116,11 +154,30 @@ class LayoutButton(QPushButton):
         return QRectF((self.width() - self.ICON_W) / 2, (self.height() - self.ICON_H) / 2,
                       self.ICON_W, self.ICON_H)
 
+    def _symbol(self, box):
+        """Mac: this layout's SF Symbol as a QIcon in a *box* px square (None: draw it ourselves)."""
+        from . import theme
+        if not theme.is_mac():
+            return None
+        index = next((i for i, (_n, rows, cols) in enumerate(GRIDS)
+                      if rows == self.grid_rows and cols == self.columns), None)
+        if index is None:
+            return None
+        from . import sf_symbols
+        return sf_symbols.icon(SF_LAYOUTS[index], box, self._icon_color().name())
+
     def paintEvent(self, event):
         super().paintEvent(event)
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        _paint_grid(p, self._icon_rect(), self.grid_rows, self.columns, self._icon_color())
+        rect = self._icon_rect()
+        box = round(rect.height() / 0.8)  # sf_symbols draws at 0.8 x the box: as tall as ICON_H
+        icon = self._symbol(box)
+        if icon is not None:
+            c = rect.center()
+            p.drawPixmap(round(c.x() - box / 2), round(c.y() - box / 2), icon.pixmap(QSize(box, box)))
+        else:
+            _paint_grid(p, rect, self.grid_rows, self.columns, self._icon_color())
         p.end()
 
 
@@ -134,6 +191,14 @@ class LayoutPicker(LayoutButton):
 
     def __init__(self, on_pick, parent=None):
         super().__init__(GRIDS[0][1], GRIDS[0][2], parent)
+        from . import theme
+        if theme.is_mac():  # a plain toolbar glyph + chevron, like the icons beside it
+            from .analyze_tools import tool_metrics
+            self.W, self.H = tool_metrics(dropdown=True)[:2]
+            g = tool_metrics()[3]  # the toolbar's SF Symbol box: same size as the icons beside it
+            self.ICON_W = self.ICON_H = g * 0.8
+            self.setFixedSize(self.W, self.H)
+            self.setObjectName("iconTool")
         self.setCheckable(False)
         self._on_pick = on_pick
         self.current = 0
@@ -172,22 +237,25 @@ class LayoutPicker(LayoutButton):
 
     def _icon_color(self):
         from . import theme
-        return QColor(theme.colors()["accent"])
+        c = theme.colors()
+        return QColor(c["tab_text"] if theme.is_mac() else c["accent"])
 
     def _icon_rect(self):
-        # same spot as the glyph in Analyze's dropdown buttons: a 36 px icon+caret strip centred
-        left = (self.width() - 36) / 2
-        return QRectF(left + (22 - self.ICON_W) / 2, (self.height() - self.ICON_H) / 2,
+        # same spot as the glyph in Analyze's dropdown buttons: the icon+caret strip centred
+        from .analyze_tools import tool_metrics
+        _w, _h, strip, g = tool_metrics(dropdown=True)
+        left = (self.width() - strip) / 2
+        return QRectF(left + (g - self.ICON_W) / 2, (self.height() - self.ICON_H) / 2,
                       self.ICON_W, self.ICON_H)
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        from . import theme
-        from .main_window import _material_icon
+        from . import analyze_tools, theme
         p = QPainter(self)
-        caret = _material_icon("arrow_drop_down", 16, theme.colors()["tab_text"])
-        p.drawPixmap(int((self.width() - 36) / 2 + 20), int((self.height() - 22) / 2 + 3),
-                     caret.pixmap(QSize(16, 16)))  # the ▾ exactly as Analyze draws it
+        _w, _h, strip, g = analyze_tools.tool_metrics(dropdown=True)
+        # the ▾ exactly as Analyze draws it: its dropdown icon with a blank glyph
+        full = analyze_tools.toolbar_icon("\u0020", theme.colors()["tab_text"], dropdown=True)
+        p.drawPixmap(int((self.width() - strip) / 2), int((self.height() - g) / 2), full.pixmap(QSize(strip, g)))
         p.end()
 
 
@@ -238,7 +306,30 @@ class ValueCard(QFrame):
             self.setStyleSheet(self._alarm_style(state))
 
 
-class GaugesPanel(QFrame):
+class PanelChannels:
+    """Which of the read channels a panel shows: chosen in Select channels (its panel segment).
+    shown = None: all of them (the default)."""
+    shown = None
+    on_shown_changed = None  # set by the page: remembers the choice
+
+    def _all_keys(self):
+        return [ch[0] for ch in self.all_channels]
+
+    def _shown_keys(self):
+        keys = self._all_keys()
+        return keys if self.shown is None else [k for k in keys if k in self.shown]
+
+    def set_shown(self, keys, notify=True):
+        """None (or every read channel): all of them; otherwise just these keys."""
+        if keys is not None and set(keys) >= set(self._all_keys()) and self._all_keys():
+            keys = None
+        self.shown = None if keys is None else set(keys)
+        self._shown_changed()
+        if notify and self.on_shown_changed is not None:
+            self.on_shown_changed()
+
+
+class GaugesPanel(PanelChannels, QFrame):
     """Responsive grid of ValueCards. Cards always fill width (no horizontal
     scroll). Scrolls vertically only when rows overflow."""
 
@@ -250,6 +341,7 @@ class GaugesPanel(QFrame):
         super().__init__(parent)
         self.value_cards = {}
         self._prev_cols = 0
+        self.all_channels = []  # every channel being read: [(key, name, unit)]
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -259,25 +351,38 @@ class GaugesPanel(QFrame):
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.inner = QWidget()
         self.grid = QGridLayout(self.inner)
-        self.grid.setContentsMargins(4, 4, 4, 4)
+        # Mac: cards flush with the page's left / right edges and top, like the toolbar and graph
+        # panels (a top margin put the tiles lower than the graph card beside them).
+        self.grid.setContentsMargins(*((0, 0, 0, 4) if theme.is_mac() else (4, 4, 4, 4)))
         self.grid.setSpacing(6)
         self.scroll.setWidget(self.inner)
         layout.addWidget(self.scroll)
 
     def set_channels(self, channels, channel_data):
+        self.all_channels = list(channels)
+        self._build_cards()
+
+    def _shown_changed(self):
+        self._build_cards()
+
+    def _build_cards(self):
         self._clear_grid()
-        for key, name, unit in channels:
-            self.value_cards[key] = self.CARD_CLASS(name, unit, key)
+        shown = set(self._shown_keys())
+        for i, (key, name, unit) in enumerate(self.all_channels):
+            if key not in shown:
+                continue
+            self.value_cards[key] = card = self.CARD_CLASS(name, unit, key)
+            card.color = graphstyle.color(i)  # the Mac arc gauge draws its arc in the channel's colour
         self._prev_cols = 0
         # Defer reflow so viewport has its final size
         QTimer.singleShot(0, self._reflow)
 
     def _clear_grid(self):
         while self.grid.count():
-            item = self.grid.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
+            self.grid.takeAt(0)
+        # every old card, also ones not placed yet (the reflow is deferred); hidden at once
+        for w in self.value_cards.values():
+            discard(w)
         self.value_cards = {}
         self._reset_stretches()
 
@@ -292,7 +397,9 @@ class GaugesPanel(QFrame):
         if n == 0:
             return
         avail = self.scroll.viewport().width() - 8
-        cols = max(1, min(n, self.MAX_COLS, avail // max(self.PREFERRED_CARD_W, 1)))
+        # never narrower than a tile's minimum width, gaps included (else the last one is clipped)
+        tile = max(self.PREFERRED_CARD_W, getattr(self.CARD_CLASS, "MIN_W", 0), 1) + self.grid.spacing()
+        cols = max(1, min(n, self.MAX_COLS, (avail + self.grid.spacing()) // tile))
         if cols == self._prev_cols:
             return  # nothing changed
         self._prev_cols = cols
@@ -329,13 +436,55 @@ class GaugesPanel(QFrame):
 
 
 class DialsPanel(GaugesPanel):
-    """Round dial gauges."""
-    PREFERRED_CARD_W = 190
-    MAX_COLS = 4
+    """Round dial gauges (Mac interface: the mockup's arc gauges, up to six in a row)."""
     CARD_CLASS = DialGauge
+
+    @property
+    def PREFERRED_CARD_W(self):
+        return 150 if theme.is_mac() else 190
+
+    @property
+    def MAX_COLS(self):
+        return 6 if theme.is_mac() else 4
 
     def _reflow(self):
         super()._reflow()
+        if theme.is_mac():  # tiles keep their size; spare height goes to the graphs
+            tile = 200
+            for card in self.value_cards.values():
+                card.setFixedHeight(tile)
+            cols = max(self._prev_cols, 1)
+            rows = max(1, -(-len(self.value_cards) // cols))
+            m = self.grid.contentsMargins()
+            cap = (rows * tile + (rows - 1) * self.grid.spacing() + m.top() + m.bottom() + 4
+                   if self.value_cards else 16777215)
+            section = self.parentWidget()
+            while section is not None and not isinstance(section, SectionWrapper):
+                section = section.parentWidget()
+            stacked = section is not None and isinstance(section.parentWidget(), QSplitter) \
+                and section.parentWidget().orientation() == Qt.Orientation.Vertical
+            if not stacked:
+                # Beside other panels: a capped height would be centred next to the full-height
+                # panel beside it (sitting lower). Keep the full height; the tiles stay at the top.
+                self.setMaximumHeight(16777215)
+                if section is not None:
+                    section.setMaximumHeight(16777215)
+                return
+            self.setMaximumHeight(cap)
+            if section is not None:  # the splitter gives the rest of the height to the graphs
+                m = section.layout().contentsMargins() if section.layout() else None
+                extra = (m.top() + m.bottom()) if m is not None else 8
+                section.setMaximumHeight(cap + extra if self.value_cards else 16777215)
+                split = section.parentWidget()
+                if isinstance(split, QSplitter) and split.orientation() == Qt.Orientation.Vertical \
+                        and self.value_cards:
+                    sizes = split.sizes()
+                    i = split.indexOf(section)
+                    total = sum(sizes)
+                    if 0 <= i < len(sizes) and len(sizes) > 1 and sizes[i] > cap + extra:
+                        rest = (total - cap - extra) / (len(sizes) - 1)
+                        split.setSizes([cap + extra if j == i else int(rest) for j in range(len(sizes))])
+            return
         # Dials fill the panel: let rows stretch instead of pinning to the top.
         for r in range(self.grid.rowCount()):
             self.grid.setRowStretch(r, 1 if r < (len(self.value_cards) + max(self._prev_cols, 1) - 1)
@@ -349,34 +498,24 @@ class BarsPanel(GaugesPanel):
     CARD_CLASS = BarGauge
 
 
-class GraphPanel(QFrame):
-    """One graph with up to GRAPH_SLOTS channel dropdowns above it."""
+class GraphPanel(PanelChannels, QFrame):
+    """One graph: a line per channel it shows (all the read ones, or those picked for this panel
+    in Select channels)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setObjectName("card")
+        from . import theme
+        mac = theme.is_mac()
+        # Mac: no box around the graph: the graph itself is the card, as on Analyze (graphstyle
+        # rounds it, pads it and draws its numbers inside). Classic: the card it always had.
+        self.setObjectName("liveGraph" if mac else "card")
         self.setMinimumWidth(100)
-        self.all_channels = []
+        self.all_channels = []  # [(key, label)]
         self.colors = {}
         self.curves = {}
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setContentsMargins(*((0, 0, 0, 0) if mac else (12, 12, 12, 12)))
         layout.setSpacing(8)
-
-        self.selectors = []
-        sel_row = QHBoxLayout()
-        sel_row.setSpacing(6)
-        for i in range(GRAPH_SLOTS):
-            combo = QComboBox()
-            combo.setMinimumWidth(60)
-            combo.setToolTip(f"Channel for line {i + 1} on this graph (— for none).")
-            combo.currentIndexChanged.connect(lambda _, idx=i: self._channel_changed(idx))
-            sel_row.addWidget(combo)
-        sel_row.addStretch(1)
-        self.selectors = [sel_row.itemAt(i).widget() for i in range(GRAPH_SLOTS)]
-        layout.addLayout(sel_row)
-
-        from . import theme
         c = theme.colors()
         self.plot = pg.PlotWidget()
         self.plot.setBackground(c["surface"])
@@ -394,66 +533,97 @@ class GraphPanel(QFrame):
         # range or style changes, not on every frame as the lines scroll: ~40% less drawing.
         for side in ("left", "bottom"):
             self.plot.getAxis(side).setCacheMode(QGraphicsItem.CacheMode.DeviceCoordinateCache)
-        bg = QColor(c["surface"])
-        self.legend = self.plot.addLegend(offset=(6, 6), labelTextSize="8pt",
-                                          brush=pg.mkBrush(bg.red(), bg.green(), bg.blue(), 200))
-        graphstyle.apply(self.plot, legend=self.legend)
+        graphstyle.inside_labels(self.plot.getPlotItem())  # Mac: numbers inside, as on Analyze
+        graphstyle.apply(self.plot)
         graphstyle.notifier.changed.connect(self._restyle)
         layout.addWidget(self.plot, 1)
+        # The lines and their live values in a rounded box at the top left: Analyze's readout box
+        # (dot, name, value) instead of pyqtgraph's legend.
+        self.readout = graphstyle.readout_box(self.plot)
+        self.readout.hide()
+        self._readout_html = None
+        self._readout_at = 0.0
+        self._style_readout()
+        theme.on_apply(self._style_readout)
         self.scale_mode = "auto"  # set by the Live View page (Scale dropdown)
-        self.ranges = {}  # slot -> (lo, hi) seen since the line was added; only grows
+        self.ranges = {}  # line -> (lo, hi) seen since the line was added; only grows
         self._fitted = None
+        self._labels = {}
+        self._names = {}
 
     def set_channels(self, channels, colors=None):
-        """Update dropdown options. channels = [(key, label)]; colors = {key: colour} (the
-        channel list's, so a line has the same colour as its dot)."""
-        self.all_channels = channels
+        """channels = [(key, label)] (every read channel); colors = {key: colour} (the channel
+        list's, so a line has the same colour as its dot)."""
+        self.all_channels = list(channels)
         self.colors = colors or {}
-        for combo in self.selectors:
-            combo.blockSignals(True)
-            current = combo.currentData()
-            combo.clear()
-            combo.addItem("—", None)
-            for key, label in channels:
-                combo.addItem(label, key)
-            if current:
-                for i in range(combo.count()):
-                    if combo.itemData(i) == current:
-                        combo.setCurrentIndex(i)
-                        break
-            combo.blockSignals(False)
         self._rebuild_curves()
 
-    def _channel_changed(self, slot_idx):
+    def _shown_changed(self):
         self._rebuild_curves()
+
+    def _style_readout(self):
+        from . import theme
+        try:
+            c = theme.colors()
+            bg = QColor(c["surface"])
+            bg.setAlpha(225)
+            self.readout.set_colors(bg, c["text"], c.get("border", "#555555"))
+        except RuntimeError:  # deleted (layout switched)
+            pass
+
+    def _show_readout(self, data=None, force=False):
+        """The box's rows: one per line, its colour dot, name (with the fitted range) and value.
+        Rewritten at most 8 times a second: values change every frame, reading them doesn't."""
+        now = time.monotonic()
+        if not force and now - self._readout_at < 0.125:
+            return
+        self._readout_at = now
+        if not self.curves:
+            self.readout.hide()
+            return
+        pt = graphstyle.label_pt()
+        rows = []
+        for i, (key, _curve) in self.curves.items():
+            color = self.colors.get(key) or graphstyle.color(i)
+            d = (data or {}).get(key) or {}
+            value = d.get("last_text", "–")
+            name = self._labels.get(i) or self._names.get(i, key)
+            rows.append((color, name, value))
+        html = graphstyle.readout_html(rows, pt)  # the same box as Analyze's
+        if html != self._readout_html:
+            self._readout_html = html
+            self.readout.setText(html)  # sizes itself to the text
+        inset = graphstyle.INSET if self.objectName() == "liveGraph" else 0
+        self.readout.move(inset + 8, inset + 8)
+        self.readout.show()
+        self.readout.raise_()
 
     def _rebuild_curves(self):
         self.plot.clear()
-        self.legend.clear()
         self.curves = {}
         self.ranges = {}
         self._fitted = None
         self._labels = {}
-        for i, combo in enumerate(self.selectors):
-            key = combo.currentData()
-            if key and key not in [k for k, _ in self.curves.values()]:
-                color = self.colors.get(key) or graphstyle.color(i)
-                pen = pg.mkPen(color=color, width=graphstyle.width())
-                curve = self.plot.plot([], [], pen=pen, name=combo.currentText())
-                self.curves[i] = (key, curve)
+        labels = dict(self.all_channels)
+        self._names = {}
+        for i, key in enumerate(self._shown_keys()):
+            color = self.colors.get(key) or graphstyle.color(i)
+            pen = pg.mkPen(color=color, width=graphstyle.width())
+            curve = self.plot.plot([], [], pen=pen)
+            self.curves[i] = (key, curve)
+            self._names[i] = labels.get(key, key)
+        self._show_readout(force=True)
 
     def _restyle(self):
         try:
-            graphstyle.apply(self.plot, legend=self.legend)
+            graphstyle.apply(self.plot)
         except RuntimeError:  # panel already deleted (layout switched)
             return
         width = graphstyle.width()
         for i, (key, curve) in self.curves.items():
             curve.setPen(pg.mkPen(color=self.colors.get(key) or graphstyle.color(i), width=width))
-        for i, (_key, curve) in self.curves.items():  # legend swatches/text pick up the new style
-            label = self.legend.getLabel(curve)
-            if label is not None:
-                label.setText(label.text, size=f"{graphstyle.label_pt()}pt")
+        self._readout_html = None  # the box's text size follows the graph text size
+        self._show_readout(getattr(self, "_last_data", None), force=True)
 
     def set_scale_mode(self, mode):
         self.scale_mode = mode
@@ -488,13 +658,10 @@ class GraphPanel(QFrame):
             if i in visible:
                 xs, ys = visible[i]
                 curve.setData(np.asarray(xs, dtype=float) - now, graphscale.scale(ys, rng))
-            text = graphscale.label(self.selectors[i].currentText(), rng)
-            if self._labels.get(i) != text:
-                label = self.legend.getLabel(curve)
-                if label is not None:
-                    label.setText(text)
-                self._labels[i] = text
+            self._labels[i] = graphscale.label(self._names.get(i, key), rng)
         self.plot.setXRange(-window, 0, padding=0)
+        self._last_data = data
+        self._show_readout(data)
 
 
 class SectionWrapper(QFrame):
@@ -553,8 +720,7 @@ class SectionWrapper(QFrame):
     def _replace_panel(self, ptype):
         if self.panel is not None:
             self.panel_holder.removeWidget(self.panel)
-            self.panel.setParent(None)
-            self.panel.deleteLater()
+            discard(self.panel)
         if ptype == "gauges":
             self.panel = GaugesPanel()
         elif ptype == "dials":
@@ -577,6 +743,7 @@ class LiveViewPage(QWidget):
         self.setObjectName("page")
         self.catalog = []
         self.catalog_module = None
+        self.catalog_ecu = None  # whose channel list is loaded (state.ecu_key)
         self.channel_data = {}
         self.started = 0.0
         self.running = False
@@ -604,6 +771,7 @@ class LiveViewPage(QWidget):
         self.channels = ChannelDropdown(self.tree, self._channels_changed, self, footer=self.summary,
                                         describe=self._describe)
         self.selector = self.channels.selector
+        self.selector.scope_source = self  # All · 1 Dials · 2 Graph …: each panel's own channels
         self.selector.menu_requested.connect(self._channel_menu)
         # Raw groups: any measuring group by number, its fields unnamed ("Group 115 · field 3").
         # {group: [{"field": n, "unit": u}, …]}, or [] until the group has been read once.
@@ -668,7 +836,11 @@ class LiveViewPage(QWidget):
         ctrl.addWidget(self.dashboard_button)
         ctrl.addWidget(self.options)
 
-        self.right_layout.addLayout(ctrl)
+        from . import theme
+        if theme.is_mac():
+            self._mac_rows(ctrl)
+        else:
+            self.right_layout.addLayout(ctrl)
 
         self.banner = Banner()
         self.right_layout.addWidget(self.banner)
@@ -706,8 +878,10 @@ class LiveViewPage(QWidget):
         while len(self.section_types) < n_slots:
             self.section_types.append("graph")
         self.section_types = self.section_types[:n_slots]
+        before = self.dashboard_state()  # each panel keeps its channels in the new layout
         self._build_layout()
         self._populate_panels()
+        self._apply_panel_channels(before)
         self._remember_layout()
 
     def _section_type_changed(self, slot_index, ptype):
@@ -718,19 +892,18 @@ class LiveViewPage(QWidget):
     # --- dashboards ---
 
     def dashboard_state(self):
-        graphs = {}
-        for index, section in enumerate(self.sections):
-            if isinstance(section.panel, GraphPanel):
-                graphs[str(index)] = [combo.currentData() for combo in section.panel.selectors]
+        panels = {str(index): sorted(section.panel.shown) for index, section in enumerate(self.sections)
+                  if isinstance(section.panel, PanelChannels) and section.panel.shown is not None}
         return {
             "grid": self.current_grid,
             "types": list(self.section_types),
             "channels": sorted(v["id"] for v in self._checked_values()),
-            "graphs": graphs,
+            "panels": panels,  # the channels each panel shows (missing: all the read ones)
             "window": self.window_combo.currentData(),
         }
 
-    def apply_dashboard(self, dash, channels=True):
+    def apply_dashboard(self, dash, channels=True, relayout=True):
+        """relayout=False: keep the panels that are there (only their channels change)."""
         if self.running:
             self.banner.show_message("Stop Live View before switching dashboards.", "warning")
             return
@@ -742,17 +915,13 @@ class LiveViewPage(QWidget):
             types = [t for t in dash.get("types", []) if t in ("gauges", "dials", "bars", "graph")]
             if types:
                 self.section_types = types
-            self._build_layout()
+            if relayout:
+                self._build_layout()
             if channels and dash.get("channels") is not None:
                 self._build_tree(set(dash["channels"]))  # also fills the panels
             else:
                 self._populate_panels()
-            for index, keys in (dash.get("graphs") or {}).items():
-                index = int(index)
-                if index < len(self.sections) and isinstance(self.sections[index].panel, GraphPanel):
-                    for combo, key in zip(self.sections[index].panel.selectors, keys):
-                        found = combo.findData(key) if key else 0
-                        combo.setCurrentIndex(max(found, 0))
+            self._apply_panel_channels(dash)
             window = self.window_combo.findData(dash.get("window"))
             if window >= 0:
                 self.window_combo.setCurrentIndex(window)
@@ -760,11 +929,91 @@ class LiveViewPage(QWidget):
             self._applying = False
         self._remember_layout()
 
+    def _apply_panel_channels(self, dash):
+        """Each panel's own channels from a saved layout. Older layouts kept a graph's lines as its
+        four dropdowns ("graphs": {slot: [key or None, …]}): those become the graph's channels."""
+        panels = {str(k): v for k, v in (dash.get("panels") or {}).items()}
+        for index, keys in (dash.get("graphs") or {}).items():
+            picked = [k for k in keys or () if k]
+            if picked and str(index) not in panels:
+                panels[str(index)] = picked
+        for index, keys in panels.items():
+            index = int(index)
+            if index < len(self.sections) and isinstance(self.sections[index].panel, PanelChannels):
+                self.sections[index].panel.set_shown(keys, notify=False)
+
     def _remember_layout(self):
         """The last layout per module comes back next time."""
         if getattr(self, "_applying", False) or not self.state.setup_family or not self.catalog:
             return
         self.state.settings.set(f"liveview_layout:{self.state.setup_family['name']}", self.dashboard_state())
+
+    # --- each panel's channels (Select channels' panel segments) ---
+
+    TYPE_NAMES = {"gauges": "Numbers", "dials": "Dials", "bars": "Bars", "graph": "Graph"}
+
+    def scopes(self):
+        """[(scope, label, tooltip)]: All, then each panel in reading order."""
+        out = [(None, "All", "The channels read from the module. Pick a panel to choose which of "
+                             "them it shows.")]
+        for i, section in enumerate(self.sections):
+            name = self.TYPE_NAMES.get(section.ptype, "Panel")
+            out.append((i, f"Panel {i + 1}", f"Panel {i + 1} ({name}, panels count left to right, "
+                                             "top to bottom): switch on the channels it shows"))
+        return out
+
+    # All = what the panels show together: a channel is read while at least one panel shows it.
+    # A panel switching one on reads it; the last panel switching it off stops reading it; All
+    # switching one on/off adds it to / takes it from every panel (_sync_panels_to_read).
+
+    def _read_keys(self):
+        return {it.data(0, ROLE) for it in self.tree.checked_items() if not it.data(0, FIXED_ROLE)}
+
+    def _panels(self):
+        return [s.panel for s in self.sections if isinstance(s.panel, PanelChannels)]
+
+    def is_on(self, scope, key):
+        panel = self.sections[scope].panel if scope < len(self.sections) else None
+        if not isinstance(panel, PanelChannels):
+            return False
+        return key in self._read_keys() if panel.shown is None else key in panel.shown
+
+    def set_on(self, scope, keys):
+        if scope >= len(self.sections) or not isinstance(self.sections[scope].panel, PanelChannels):
+            return
+        read = self._read_keys()
+        for panel in self._panels():  # "all of them" means what's read now, not what's added next
+            if panel.shown is None:
+                panel.shown = set(read)
+        self.sections[scope].panel.shown = set(keys)
+        wanted = set().union(*(p.shown for p in self._panels()))
+        self.tree.blockSignals(True)
+        for item in self.tree.items():
+            if item.data(0, FIXED_ROLE):
+                continue
+            on = item.data(0, ROLE) in wanted
+            if (item.checkState(0) == Qt.CheckState.Checked) != on:
+                item.setCheckState(0, Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+        self.tree.blockSignals(False)
+        self._read_before = wanted  # not an All change: don't spread it to the other panels
+        for panel in self._panels():  # every read channel shown: back to "all" (tidy saved layouts)
+            if panel.shown >= wanted:
+                panel.shown = None
+        self._channels_changed()
+        self.channels.update_count()
+
+    def _sync_panels_to_read(self):
+        """After All (or a preset) changed what's read: new channels join every panel, dropped ones
+        leave every panel."""
+        read = self._read_keys()
+        before = getattr(self, "_read_before", None)
+        self._read_before = read
+        if before is None:
+            return
+        added, removed = read - before, before - read
+        for panel in self._panels():
+            if panel.shown is not None and (added or removed):
+                panel.shown = (panel.shown | added) - removed
 
     def _build_layout(self):
         """Tear down and rebuild the panel area based on the selected grid."""
@@ -775,10 +1024,7 @@ class LiveViewPage(QWidget):
         # Remove old content
         while self.panel_container_layout.count():
             item = self.panel_container_layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.setParent(None)
-                w.deleteLater()
+            discard(item.widget())
 
         _, rows, columns = GRIDS[self.current_grid]
         n_slots = sum(len(r) for r in rows)
@@ -846,16 +1092,42 @@ class LiveViewPage(QWidget):
 
     # --- catalog / tree ---
 
+    def _mac_rows(self, ctrl):
+        """Mac: the same split as every page (see playback_page._mac_toolbar). Title bar: [▶ Start]
+        Clear, the reading rate … Presets, settings. Row 2: Select channels ▾ … how the panels
+        look (Math, layout, dashboards)."""
+        from .mac_shell import CONTENT_MARGINS, page_bar
+        while ctrl.count():
+            ctrl.takeAt(0)
+        self.right_layout.setContentsMargins(*CONTENT_MARGINS)
+        self.mac_bar, bar = page_bar()
+        bar.addWidget(self.start_button)
+        bar.addWidget(self.clear_button)
+        bar.addSpacing(4)
+        bar.addWidget(self.rate_label)
+        bar.addStretch(1)
+        from .mac_shell import first_row
+        row2 = first_row(QHBoxLayout())  # everything but Start / Clear belongs to the panels: row 2's right end
+        row2.addWidget(self.channels)
+        row2.addStretch(1)
+        from .mac_shell import row_icons  # rule 7: the one right-hand order
+        row_icons(row2, tools=(self.math_button, self.layout_picker, self.dashboard_button),
+                  presets=self.presets, settings=self.options)
+        self.right_layout.insertLayout(0, row2)
+
     def refresh(self):
         family = self.state.setup_family
         module = family["module"] if family and family.get("can_log") else None
-        if module != self.catalog_module and not self.running and not self.mirroring:
-            self.catalog_module = module
+        ecu = self.state.catalog_params(module).get("ecu") if module is not None else None
+        if (module, ecu) != (self.catalog_module, self.catalog_ecu) and not self.running \
+                and not self.mirroring:
+            self.catalog_module, self.catalog_ecu = module, ecu
+            self._read_before = None  # another module's channels: nothing to spread to the panels
             self.catalog = []
             self.raw_groups = {}
             self._build_tree()
             if module is not None:
-                self.state.offline("catalog", {"module": module}, self._catalog_loaded,
+                self.state.offline("catalog", self.state.catalog_params(module), self._catalog_loaded,
                                    lambda e: self.banner.show_message(self.error_text(e), "error"))
         from .needs_car import gate
         if self.running:
@@ -891,7 +1163,9 @@ class LiveViewPage(QWidget):
             self.apply_dashboard(layout, channels=False)
         self._build_tree(set(saved))
         if layout:
-            self.apply_dashboard({"graphs": layout.get("graphs")}, channels=False)
+            # each panel's channels, now the list exists; the panels built above stay
+            self.apply_dashboard({"graphs": layout.get("graphs"), "panels": layout.get("panels")},
+                                 channels=False, relayout=False)
         if not self.catalog:
             self.summary.setText("No named values available for this module.")
 
@@ -907,6 +1181,8 @@ class LiveViewPage(QWidget):
         if getattr(self, "_units_built", None) not in (None, units.system(self.state.settings)) \
                 and not self.running and self.catalog:
             self._build_tree({v["id"] for v in self._checked_values()})
+        if self.running or self.mirroring:
+            self._paint()  # drawing pauses while the page is hidden: catch up straight away
 
     def _build_tree(self, checked=()):
         """Every channel (catalog + math) as a row, known by its key; the ticked ones show,
@@ -916,41 +1192,42 @@ class LiveViewPage(QWidget):
         self.tree.blockSignals(True)
         self.tree.clear()
         order = []
-        for value in self.catalog + self._math_values():
-            key = self._vkey(value)
-            name = ("\u0192 " if value.get("formula") else "") + value["name"]
-            item = self.tree.new_item(name, key)
-            item.setData(0, VALUE_ROLE, value)
-            item.setData(0, CATEGORY_ROLE, value.get("category") or "Other")
-            item.setToolTip(0, self._tip(value, limits))
-            if value["id"] in checked:
-                item.setCheckState(0, Qt.CheckState.Checked)
-            order.append(key)
-        named = {self._vkey(v) for v in self.catalog}
-        for group in sorted(self.raw_groups):
-            fields = self.raw_groups[group]
-            if not fields:  # not read yet: one row for the group (read while it's in the list)
-                item = self.tree.new_item(f"Group {group} · fields show once read", f"raw:{group}")
-                item.setData(0, VALUE_ROLE, {"id": f"rawgroup:{group}", "raw_group": group, "group": group})
-                item.setData(0, FIXED_ROLE, True)
-                item.setData(0, RAW_GROUP_ROLE, group)
-                item.setData(0, CATEGORY_ROLE, RAW_CATEGORY)
-                item.setCheckState(0, Qt.CheckState.Checked)
-                continue
-            for f in fields:
-                key = f"{group}.{f['field']}"
-                if key in named:
-                    continue  # already in the list under its name
-                value = {"id": f"raw:{key}", "name": f"Group {group} · field {f['field']}", "group": group,
-                         "field": f["field"], "unit": f.get("unit", ""), "category": RAW_CATEGORY, "raw": True}
-                item = self.tree.new_item(value["name"], key)
+        with self.tree.bulk():
+            for value in self.catalog + self._math_values():
+                key = self._vkey(value)
+                name = ("\u0192 " if value.get("formula") else "") + value["name"]
+                item = self.tree.new_item(name, key)
                 item.setData(0, VALUE_ROLE, value)
-                item.setData(0, CATEGORY_ROLE, RAW_CATEGORY)
-                item.setData(0, RAW_GROUP_ROLE, group)
+                item.setData(0, CATEGORY_ROLE, value.get("category") or "Other")
                 item.setToolTip(0, self._tip(value, limits))
-                if value["id"] in checked or f.get("new"):
+                if value["id"] in checked:
                     item.setCheckState(0, Qt.CheckState.Checked)
                 order.append(key)
+            named = {self._vkey(v) for v in self.catalog}
+            for group in sorted(self.raw_groups):
+                fields = self.raw_groups[group]
+                if not fields:  # not read yet: one row for the group (read while it's in the list)
+                    item = self.tree.new_item(f"Group {group} · fields show once read", f"raw:{group}")
+                    item.setData(0, VALUE_ROLE, {"id": f"rawgroup:{group}", "raw_group": group, "group": group})
+                    item.setData(0, FIXED_ROLE, True)
+                    item.setData(0, RAW_GROUP_ROLE, group)
+                    item.setData(0, CATEGORY_ROLE, RAW_CATEGORY)
+                    item.setCheckState(0, Qt.CheckState.Checked)
+                    continue
+                for f in fields:
+                    key = f"{group}.{f['field']}"
+                    if key in named:
+                        continue  # already in the list under its name
+                    value = {"id": f"raw:{key}", "name": f"Group {group} · field {f['field']}", "group": group,
+                             "field": f["field"], "unit": f.get("unit", ""), "category": RAW_CATEGORY, "raw": True}
+                    item = self.tree.new_item(value["name"], key)
+                    item.setData(0, VALUE_ROLE, value)
+                    item.setData(0, CATEGORY_ROLE, RAW_CATEGORY)
+                    item.setData(0, RAW_GROUP_ROLE, group)
+                    item.setToolTip(0, self._tip(value, limits))
+                    if value["id"] in checked or f.get("new"):
+                        item.setCheckState(0, Qt.CheckState.Checked)
+                    order.append(key)
         self.tree.log_order = order  # the selector lists them in catalog order, by category
         self.tree.blockSignals(False)
         self._channels_changed()
@@ -968,6 +1245,7 @@ class LiveViewPage(QWidget):
     def _channels_changed(self):
         """After switching channels on or off, or a preset: colours, then the panels."""
         self.colors = self.tree.sync_rows(self.state.settings)
+        self._sync_panels_to_read()
         self._selection_changed()
 
     # --- math channels ---
@@ -1270,8 +1548,10 @@ class LiveViewPage(QWidget):
             channels_labels.append((key, label))
 
         for gp in self.gauge_panels:
+            gp.on_shown_changed = self._remember_layout
             gp.set_channels(channels_tuples, self.channel_data)
         for gp in self.graph_panels:
+            gp.on_shown_changed = self._remember_layout
             gp.set_channels(channels_labels, getattr(self, "colors", {}))
 
     def _scale_changed(self):
@@ -1365,6 +1645,8 @@ class LiveViewPage(QWidget):
 
     def _paint(self):
         states = self._check_alarms() if (self.running or self.mirroring) else {}
+        if not self.isVisible():
+            return  # another tab is showing (e.g. the Logger recording): alarms only, no drawing
         limits = {k: units.limit_to_display(l, self.channel_data[k]["conv"])
                   for k, l in self._limits().items() if k in self.channel_data}
         for gp in self.gauge_panels:

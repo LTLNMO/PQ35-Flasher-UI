@@ -72,8 +72,10 @@ class PresetButton(QPushButton):
         self.state, self.get_ids, self.apply_ids, self.on_loaded = state, get_ids, apply_ids, on_loaded
         self.setObjectName("iconTool")
         self.setToolTip("Presets: load a ready-made or saved set of channels, or save the ticked ones")
-        self.setFixedSize(50, 34)
-        self.setIconSize(QSize(36, 22))
+        from .analyze_tools import tool_metrics
+        w, h, strip, g = tool_metrics(dropdown=True)
+        self.setFixedSize(w, h)
+        self.setIconSize(QSize(strip, g))
         from .analyze_tools import popup_menu
         self.clicked.connect(lambda: popup_menu(self.menu(), self))
         self._tint()

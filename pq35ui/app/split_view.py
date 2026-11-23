@@ -129,9 +129,8 @@ class _ChannelLabel(_Draggable, QGraphicsTextItem):
         c = theme.colors()
         # table cells so the small dot sits centred on the name, not on its baseline
         self.setHtml(
-            f"<table cellspacing='0' cellpadding='0'><tr>"
-            f"<td valign='middle' style='color:{color}; "
-            f"font-size:{self.font().pointSizeF() * 0.6:.1f}pt; padding-right:5px'>&#9679;</td>"
+            "<table cellspacing='0' cellpadding='0'><tr>"
+            + graphstyle.dot_cell(color, self.font().pointSizeF()) +
             f"<td valign='middle' style='color:{c['text']}'>{self.names[0]}&nbsp;&nbsp;</td>"
             f"</tr></table>")
         bold = QFont(self.font())
@@ -274,8 +273,27 @@ class SplitView(QWidget):
         self.graphs.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.scroll.setWidget(self.graphs)
         layout.addWidget(self.scroll, 1)
+        if theme.is_mac():  # one rounded card around all the rows, like the Single graph
+            from .graphstyle import INSET
+            layout.setContentsMargins(INSET, INSET, INSET, INSET)
+            self.scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget { background: transparent; }")
         self._paint()
         theme.on_apply(self._paint)
+
+    def paintEvent(self, event):
+        from . import theme
+        if not theme.is_mac():
+            return super().paintEvent(event)
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QPainter, QPen
+        from .graphstyle import RADIUS
+        c = theme.colors()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(c.get("card_border", c["border"])), 1))
+        p.setBrush(QColor(c["surface"]))
+        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), RADIUS, RADIUS)
+        p.end()
 
     # --- rows ---
 
@@ -453,6 +471,7 @@ class SplitView(QWidget):
                 axes.append(blank)
             graphscale.add_axes(plot, axes)
             graphstyle.cache_axes(plot)  # axes + grid only redraw on zoom, not per cursor move
+            graphstyle.inside_labels(plot)  # Mac: numbers inside, axes at the edges (as Single)
             vb = plot.getViewBox()
 
             def reset_values(vb=vb, fitted=fitted):

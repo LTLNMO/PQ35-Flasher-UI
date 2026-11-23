@@ -295,6 +295,8 @@ class DialGauge(_GaugeBase):
         return pix
 
     def paintEvent(self, event):
+        if theme.is_mac():
+            return self._paint_arc(event)
         super().paintEvent(event)
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -326,6 +328,56 @@ class DialGauge(_GaugeBase):
         p.setFont(big)
         p.setPen(_danger() if self.alarm else text)
         p.drawText(QRectF(cx - r * 0.6, cy + r * 0.30, r * 1.2, r * 0.34), Qt.AlignmentFlag.AlignCenter, _fmt(self.value))
+        p.end()
+
+
+    # ── Mac interface: the mockup's arc gauge ──
+    ARC_START, ARC_SWEEP = 225.0, 270.0  # open at the bottom
+
+    def _paint_arc(self, event):
+        """A thick round-capped arc in the channel's colour over a grey track, the value big in
+        the middle with its unit under it, the name below (Mockups/Swift native, Live View)."""
+        QFrame.paintEvent(self, event)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self._paint_frame(p)
+        c = theme.colors()
+        text, muted = QColor(c["text"]), QColor(c["muted"])
+        color = _danger() if self.alarm else QColor(getattr(self, "color", None) or c["accent"])
+        w, h = self.width(), self.height()
+        name_h = 26
+        size = max(40.0, min(w - 28, h - name_h - 22))
+        band = max(7.0, size * 0.085)
+        cx, cy = w / 2, 12 + size / 2
+        rect = QRectF(cx - size / 2 + band / 2, cy - size / 2 + band / 2, size - band, size - band)
+        p.setPen(QPen(QColor("#3a3a3c") if theme.mode() != "light" else QColor("#d8d8dc"), band,
+                      Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.drawArc(rect, int(self.ARC_START * 16), int(-self.ARC_SWEEP * 16))
+        lo, hi = self.scale.range(self.limit)
+        if self.shown is not None and hi > lo:
+            frac = min(max((self.shown - lo) / (hi - lo), 0.0), 1.0)
+            if frac > 0.002:
+                p.setPen(QPen(color, band, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                p.drawArc(rect, int(self.ARC_START * 16), int(-self.ARC_SWEEP * frac * 16))
+        big = QFont(self.font())
+        big.setPixelSize(max(14, int(size * 0.22)))
+        big.setWeight(QFont.Weight.Bold)
+        p.setFont(big)
+        p.setPen(_danger() if self.alarm else text)
+        p.drawText(QRectF(cx - size / 2, cy - size * 0.2, size, size * 0.26), Qt.AlignmentFlag.AlignCenter,
+                   _fmt(self.value))
+        small = QFont(self.font())
+        small.setPixelSize(max(10, int(size * 0.09)))
+        p.setFont(small)
+        p.setPen(muted)
+        p.drawText(QRectF(cx - size / 2, cy + size * 0.07, size, size * 0.14), Qt.AlignmentFlag.AlignCenter,
+                   self.unit)
+        label = QFont(self.font())
+        label.setWeight(QFont.Weight.DemiBold)
+        p.setFont(label)
+        p.setPen(text)
+        p.drawText(QRectF(6, h - name_h - 4, w - 12, name_h), Qt.AlignmentFlag.AlignCenter,
+                   p.fontMetrics().elidedText(self.name, Qt.TextElideMode.ElideRight, w - 12))
         p.end()
 
 

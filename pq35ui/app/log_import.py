@@ -141,7 +141,8 @@ def _parse_time_cell(text, comma_decimal=False):
 # --- Integrated Engineering: their headers back to the ECU's names ---------------------------
 
 _IE_UNIT = {"Deg": "°", "C": "°C"}
-_UNITLESS = {"Transmission status (engine ECU)", "Basic setting requirements"}
+_UNITLESS = {"Transmission torque intervention", "Transmission status (engine ECU)",
+             "Basic setting requirements"}
 
 
 def _ie_back():

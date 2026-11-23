@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import ai, graphscale, graphstyle, log_export, log_import, mathchannels, recent_logs, units
-from . import analyze_tools, legend_strip, smart_presets
+from . import analyze_tools, legend_strip, smart_presets, theme
 from .heatmap import HeatmapView
 from .split_view import SplitView
 from .channel_list import COLOR_ROLE, FRAC_ROLE, HIDDEN_ROLE, ChannelPicker
@@ -56,6 +56,7 @@ def _parse_csv(path: Path):
         headers = next(csv.reader([f.readline()]), None)  # readline, not iteration: keeps f.tell() usable
         if not headers or not log_export.is_log_header(headers[0]):
             raise ValueError("Not a datalog this app can read (the first column must be the time).")
+        headers = headers[:1] + [log_export.current_header(h) for h in headers[1:]]  # older names
         width = len(headers)
         # Fast path (numpy's C reader, ~3.5x quicker on long logs): every cell a plain number,
         # every row as wide as the header. Anything else (blank cells, MM:SS times, a units
@@ -68,7 +69,8 @@ def _parse_csv(path: Path):
         except ValueError:
             data = None
         if data is not None and data.shape[0] and data.shape[1] == width:
-            return headers[1:], data[:, 0], {name: data[:, i] for i, name in enumerate(headers[1:], 1)}
+            columns = {name: data[:, i] for i, name in enumerate(headers[1:], 1)}
+            return headers[1:], data[:, 0], _aligned(path, headers[1:], data[:, 0], columns)
         f.seek(start)
         reader = csv.reader(f)
         rows = []
@@ -87,7 +89,14 @@ def _parse_csv(path: Path):
     columns = {}
     for i, name in enumerate(headers[1:], 1):
         columns[name] = data[:, i] if i < data.shape[1] else np.zeros(len(times))
-    return headers[1:], times, columns
+    return headers[1:], times, _aligned(path, headers[1:], times, columns)
+
+
+def _aligned(path, names, times, columns):
+    """Each channel at its real read times when the recording has a log_info companion."""
+    from . import log_info
+    columns, _n = log_info.align(names, times, columns, log_info.load(path), log_export.current_header)
+    return columns
 
 
 class _TitleLabel(ElidedLabel):
@@ -137,12 +146,8 @@ class PlaybackPage(QWidget):
         # ── Left sidebar: the channels list (channel_sidebar, shared with the Logger) ──
         self.select_button = QPushButton("Select channels")
         self.select_button.setToolTip("Choose which channels are on the graph")
-        # Dropdown arrow on the right of the text: right-to-left puts the icon after the text.
-        self.select_button.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self.select_button.setIconSize(QSize(20, 20))
-        self._tint_select_chevron()
-        from . import theme as _theme
-        _theme.on_apply(self._tint_select_chevron)
+        from .widgets import pulldown
+        pulldown(self.select_button)  # text + chevron, as every Select channels
         self.sidebar = ChannelSidebar(
             state, "playback", SIDEBAR_COLUMNS, self.select_button,
             empty_text="No channels on the graph.\nUse Select channels above to add some.",
@@ -181,8 +186,8 @@ class PlaybackPage(QWidget):
                                                 "sidebar", checkable=True)
         self._right_layout = rl  # its left margin follows the sidebar (ChannelSidebar._shown)
         ctrl.addWidget(self.sidebar_button)
-        # Hidden sidebar: Select channels moves to the front of this toolbar (and back when shown),
-        # in step with the sidebar's slide (ChannelSidebar._shown).
+        # It and Select channels are a pair at the top left (ChannelSidebar.install): the column's
+        # first row while it shows, the front of this row while it's hidden.
         self.compare_button = self._icon_button("compare", "Compare logs: overlay a second log on the "
                                                 "graph, or compare several logs with AI", dropdown=True)
         self.compare_button.clicked.connect(
@@ -210,7 +215,7 @@ class PlaybackPage(QWidget):
         self.presets_button.clicked.connect(lambda: analyze_tools.popup_menu(self._presets_menu(), self.presets_button))
         self.smart_button = self._icon_button("auto_awesome", "Smart presets: show or hide the row of "
                                               "ready-made layouts above the graph", checkable=True)
-        self.smart_button.setChecked(bool(state.settings.get(smart_presets.BAR_KEY, True)))
+        self.smart_button.setChecked(smart_presets.bar_on(state.settings))
         self.smart_button.toggled.connect(self._smart_bar_toggled)
         ctrl.addWidget(self.smart_button)
         ctrl.addWidget(self.presets_button)
@@ -294,6 +299,7 @@ class PlaybackPage(QWidget):
         from .split_view import AXIS_W
         self.plot.getPlotItem().getAxis("left").setWidth(AXIS_W)
         graphstyle.cache_axes(self.plot.getPlotItem())  # axes + grid only redraw on zoom
+        graphstyle.inside_labels(self.plot.getPlotItem())  # Mac: numbers inside, axes at the edges
         # ⚙ in the graph's top-right corner: the same menu as right-click, so it can be found.
         # Faint until the mouse is over the graph, so it doesn't sit on top of the lines.
         from PySide6.QtWidgets import QGraphicsOpacityEffect
@@ -342,7 +348,7 @@ class PlaybackPage(QWidget):
         self._views = (
             ("single", self.time_page, "Single", "show_chart"),
             ("split", self._build_split(), "Split", "view_agenda"),
-            ("heatmap", self.heatmap, "Heatmap", "grid_on"),
+            ("heatmap", self._scroll_sideways(self.heatmap), "Heatmap", "grid_on"),
             ("scatter", self._build_scatter(c), "Scatter", "scatter_plot"),
             ("raw", self._build_raw(), "Raw", "description"),
         )
@@ -356,14 +362,9 @@ class PlaybackPage(QWidget):
         view_row.setContentsMargins(0, 0, 0, 0)
         view_row.setSpacing(2)
         self.view_buttons = []
+        from .widgets import segment_button
         for i, (_key, _w, label, _glyph) in enumerate(self._views):
-            b = QPushButton(label)
-            b.setObjectName("viewTab")
-            b.setFixedHeight(34)  # same height as every toolbar button
-            b.setProperty("active", "false")  # no tooltip: like the top bar's tabs
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            b.setIconSize(QSize(20, 20))
+            b = segment_button(label)  # no tooltip: like the top bar's tabs
             b.clicked.connect(lambda _=False, i=i: self.tabs.setCurrentIndex(i))
             view_row.addWidget(b)
             self.view_buttons.append(b)
@@ -394,6 +395,8 @@ class PlaybackPage(QWidget):
         self.smart_bar.hide()
         rl.addWidget(self.smart_bar)
         rl.addWidget(self.tabs, 1)
+        if theme.is_mac():
+            self._mac_toolbar(rl, ctrl, view_row)
 
         # Overview timeline: the whole log in miniature. Drag the band to zoom the graph,
         # drag its edges or scroll to zoom, click to move the cursor, double-click for all.
@@ -433,7 +436,7 @@ class PlaybackPage(QWidget):
         self.legend.setVisible(self.legend_button.isChecked())
         self.bottom_band = QWidget()
         bl = QVBoxLayout(self.bottom_band)
-        bl.setContentsMargins(0, 2, 0, 0)
+        bl.setContentsMargins(0, 8 if theme.is_mac() else 2, 0, 0)  # Mac: two cards, a clear gap
         bl.setSpacing(8)
         self.ov_box = QWidget()  # its side margins line the timeline up with the plot area
         ob = QHBoxLayout(self.ov_box)
@@ -447,6 +450,9 @@ class PlaybackPage(QWidget):
         self.cursor_idx = 0
 
         self.sidebar.install(self.splitter, right, self._right_layout, self.ctrl_row, self.sidebar_button)
+        if theme.is_mac():  # mac_shell rule 6: the view segments go icon-only when row 1 doesn't fit
+            from .mac_shell import fit_row
+            self._row_fit = fit_row(self.splitter.widget(1), self.ctrl_row, self.view_buttons)
 
         # Cursor line on graph
         self.cursor_line = pg.InfiniteLine(angle=90, movable=True, pen=pg.mkPen(c["text"], width=1.5))
@@ -476,6 +482,7 @@ class PlaybackPage(QWidget):
         self.ov_sel = pg.LinearRegionItem(movable=False, brush=pg.mkBrush(sel.red(), sel.green(), sel.blue(), 70),
                                           pen=pg.mkPen(sel, width=1))
         self.ov_sel.setZValue(5)
+        self.overview.setProperty("mac_inset", "manual")  # Mac: padding set by _align_overview
         graphstyle.theme_plot(self.overview)
         self._retheme_overlays()
         theme.on_apply(self._retheme_overlays)
@@ -536,10 +543,7 @@ class PlaybackPage(QWidget):
             compare = self.compare["path"] if self.compare else None
             checked = {log_export.split_header(n)[0] for n in self._checked_channels()}
             self.load_csv(self.csv_path)
-            for i in range(self.tree.topLevelItemCount()):
-                item = self.tree.topLevelItem(i)
-                on = log_export.split_header(item.data(0, ROLE))[0] in checked
-                item.setCheckState(0, Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+            self._restore_checked(lambda name: log_export.split_header(name)[0] in checked)
             if compare:
                 self.load_compare(compare)
         self._units_loaded = system
@@ -556,7 +560,8 @@ class PlaybackPage(QWidget):
         for family in self.state.families or ():
             if family.get("can_log") and family.get("module"):
                 try:
-                    self.state.offline("catalog", {"module": family["module"]}, got, lambda _e: None)
+                    self.state.offline("catalog", {"module": family["module"], "all": True}, got,
+                                       lambda _e: None)  # every channel: logs from any car
                 except Exception:
                     pass
 
@@ -637,11 +642,12 @@ class PlaybackPage(QWidget):
         self.tree.clear()
         self.tree.log_order = list(self.headers)
         self._ranges = {}
-        for name in self.headers:
-            self.tree.new_item(name)
-            col = self.columns[name]
-            valid = col[~np.isnan(col)]
-            self._ranges[name] = (float(valid.min()), float(valid.max())) if len(valid) else None
+        with self.tree.bulk():
+            for name in self.headers:
+                self.tree.new_item(name)
+                col = self.columns[name]
+                valid = col[~np.isnan(col)]
+                self._ranges[name] = (float(valid.min()), float(valid.max())) if len(valid) else None
         self.tree.blockSignals(False)
         self._update_stats()
         self._fill_analysis_combos()
@@ -742,8 +748,26 @@ class PlaybackPage(QWidget):
         if rows is not None:
             self._live_append(rows)
         if live["ended"]:
+            self._live_align()
             self._stop_follow()
             self.banner.show_message("Recording finished: this is the whole log.", "info")
+
+    def _live_align(self):
+        """The recording just stopped and its log_info companion exists: put each channel at its
+        real read times, as opening the log would, without moving the view."""
+        live = self._live
+        cols = _aligned(live["path"], live["headers"], live["times"], live["cols"])
+        if all(cols[n] is live["cols"][n] for n in live["headers"]):
+            return
+        self.headers, self.times, self.columns = list(live["headers"]), live["times"], dict(cols)
+        self._add_math_columns()
+        self.headers, self.columns = self._to_display_units(self.headers, self.columns)
+        for name in self.headers:
+            col = self.columns[name]
+            valid = col[~np.isnan(col)]
+            self._ranges[name] = (float(valid.min()), float(valid.max())) if len(valid) else None
+        if not self._refresh_curves_in_place():
+            self._rebuild_curves()
 
     def _live_read(self):
         """The whole rows added since the last read, as an array (None: nothing new)."""
@@ -810,13 +834,21 @@ class PlaybackPage(QWidget):
 
     def _sync_smart_bar(self):
         """The chip row shows on Single / Split with a log open, unless switched off."""
-        on = bool(self.state.settings.get(smart_presets.BAR_KEY, True))
+        on = smart_presets.bar_on(self.state.settings)
         if self.smart_button.isChecked() != on:  # changed in Settings
             self.smart_button.blockSignals(True)
             self.smart_button.setChecked(on)
             self.smart_button.blockSignals(False)
             self._tint_icons()
         self.smart_bar.setVisible(on and self.times is not None and self._view() in ("single", "split"))
+        # Nothing to show or hide without a log: greyed out, so a click never seems to do nothing
+        has_log = self.times is not None
+        self.smart_button.setEnabled(has_log)
+        self.smart_button.setToolTip(
+            "Smart presets: show or hide the row of ready-made layouts above the graph" if has_log
+            else "Smart presets: open a log to get ready-made layouts for its channels")
+        if hasattr(self, "smart_label"):
+            self.smart_label.setVisible(self.smart_bar.isVisible())
 
     def _apply_smart(self, layout):
         """A smart preset: its channels on the graph, one Split row per chart (Single for one)."""
@@ -865,10 +897,7 @@ class PlaybackPage(QWidget):
         if dialog.exec() and self.csv_path is not None:
             checked = set(self._checked_channels())
             self.load_csv(self.csv_path)
-            for i in range(self.tree.topLevelItemCount()):
-                item = self.tree.topLevelItem(i)
-                item.setCheckState(0, Qt.CheckState.Checked if item.data(0, ROLE) in checked
-                                   else Qt.CheckState.Unchecked)
+            self._restore_checked(lambda name: name in checked)
 
     def _export(self):
         if self.csv_path is None:
@@ -878,11 +907,6 @@ class PlaybackPage(QWidget):
 
     # --- toolbar ---
 
-    def _tint_select_chevron(self):
-        from . import theme
-        from .main_window import _material_icon
-        self.select_button.setIcon(_material_icon("arrow_drop_down", 20, theme.colors()["text"]))
-
     def _icon_button(self, glyph, tip, checkable=False, dropdown=False):
         """Toolbar icon button. dropdown: a small ▾ beside the icon, for buttons that open a menu."""
         from . import theme
@@ -890,14 +914,14 @@ class PlaybackPage(QWidget):
         b.setObjectName("iconTool")
         b.setToolTip(tip)
         b.setCheckable(checkable)
-        b.setFixedSize(50 if dropdown else 36, 34)
-        b.setIconSize(QSize(36, 22) if dropdown else QSize(22, 22))
+        w, h, strip, g = analyze_tools.tool_metrics(dropdown)
+        b.setFixedSize(w, h)
+        b.setIconSize(analyze_tools.icon_size(glyph, dropdown))
         b.setProperty("dropdown", dropdown)
         if not self._icon_buttons:
             def tint():
-                c = theme.colors()
                 for button, g in self._icon_buttons:
-                    color = c["accent"] if button.isCheckable() and button.isChecked() else c["tab_text"]
+                    color = analyze_tools.tool_color(button.isCheckable() and button.isChecked())
                     button.setIcon(self._toolbar_icon(g, color, bool(button.property("dropdown"))))
             self._tint_icons = tint
             theme.on_apply(tint)
@@ -931,8 +955,101 @@ class PlaybackPage(QWidget):
         self._update_axis_button()
         self._rebuild_curves()
 
+    @staticmethod
+    def _scroll_sideways(widget):
+        """A view whose controls need more width than the window has scrolls sideways on its own,
+        instead of making every other view (and the whole page) that wide. (The Heatmap's control
+        row needs ~970 px: it used to cut off Analyze's toolbar below ~1450 px windows.)"""
+        from PySide6.QtWidgets import QFrame, QScrollArea
+        holder = QScrollArea()
+        holder.setFrameShape(QFrame.Shape.NoFrame)
+        holder.setWidgetResizable(True)
+        holder.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        holder.setWidget(widget)
+        return holder
+
     def _update_axis_button(self):
+        if theme.is_mac():  # "Axis" is its own label; a pop-up button's ⌃⌄ (mockup .pop)
+            from . import sf_symbols
+            c = theme.colors()
+            self.axis_button.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+            self.axis_button.setIconSize(QSize(12, 12))
+            sym = sf_symbols.icon("chevron.up.chevron.down", 12, c.get("sub", c["muted"]), "semibold", point=8.5)
+            if sym is not None:
+                self.axis_button.setIcon(sym)
+            self.axis_button.setText(f"{self._axis().capitalize()} ")
+            return
         self.axis_button.setText(f"Axis: {self._axis().capitalize()}  \u25be")
+
+    def _mac_toolbar(self, rl, ctrl, view_row):
+        """Mac interface (Mockups/Swift native, Analyze): one top bar with the log's name as a
+        button, the views as a segmented control and the icons on the right; under it Axis and the
+        smart presets. Same buttons as Classic, only placed differently."""
+        from PySide6.QtWidgets import QFrame
+        for lay in (ctrl, view_row):
+            while lay.count():
+                lay.takeAt(0)
+            rl.removeItem(lay)
+        rl.removeWidget(self.smart_bar)
+        self.file_label.hide()
+        old_open = self.open_button
+        old_open.hide()
+        pill = QPushButton(analyze_tools.menu_icon("description"), "Open a log…")
+        pill.setObjectName("macFilePill")
+        pill.setToolTip(old_open.toolTip())
+        pill.setCursor(Qt.CursorShape.PointingHandCursor)
+        pill.clicked.connect(self._open_menu)
+        self.open_button = pill
+        from .widgets import segment_track
+        seg = QFrame()
+        segment_track(seg, QHBoxLayout(seg), self.view_buttons)  # the macOS segmented control
+        # Every page: the title bar = what you're working on + page actions; the row under it =
+        # the content's own controls. Analyze's "what" is the log, so the file sits where the
+        # Logger's Record / Live View's Start sit.
+        # Title bar: Analyze [📄 log ▾] (nothing at the right: no button there is page-wide)
+        # Channels column: Channels · n of N [cols][bars] / Select channels ▾ / search / list
+        # Content: [◧][Single|Split|Heatmap|Scatter|Raw] … Axis [Independent ▾] [Compare] [ƒ] [Presets ▾] [⋯];
+        # then smart presets.
+        self.sidebar.mac_header_buttons()  # list buttons into the column's heading row
+        old_toggle = self.sidebar_button
+        old_toggle.setParent(self)
+        old_toggle.hide()
+        self.sidebar_button = analyze_tools.icon_button(
+            "left_panel_close", "Show or hide the channels column", checkable=True)
+        self.sidebar_button.setProperty("plain", True)  # a sidebar toggle: no grey square when on
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        top.addWidget(pill)
+        top.addStretch(1)  # only the log up here: Compare, ƒ, Presets, ⋯ are the graph's (row 2's end)
+        # Row 2 starts with the column's toggle; Select channels ▾ parks after it while the column
+        # is hidden, so it's in row 2 on every page (never in the title bar).
+        from .mac_shell import first_row
+        views = first_row(QHBoxLayout())
+        views.addWidget(self.sidebar_button)
+        views.addWidget(seg)
+        views.addStretch(1)
+        views.addWidget(muted("Axis"))
+        views.addWidget(self.axis_button)
+        views.addSpacing(6)
+        from .mac_shell import row_icons  # rule 7: the one right-hand order
+        row_icons(views, tools=(self.compare_button, self.math_button, self.smart_button),
+                  presets=self.presets_button, more=self.more_button)
+        for w in (self.legend_button, self.timeline_button):  # switched from ⋮ instead
+            w.setParent(self)
+            w.hide()
+        row2 = QHBoxLayout()
+        row2.setSpacing(10)
+        self.smart_label = muted("Smart presets")
+        row2.addWidget(self.smart_label)
+        row2.addWidget(self.smart_bar, 1)
+        from PySide6.QtWidgets import QSizePolicy
+        self.axis_button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        from .mac_shell import adopt_bar
+        adopt_bar(self, top)  # the title bar, beside "Analyze"
+        rl.insertLayout(0, views)
+        rl.insertLayout(2, row2)  # after the compare row
+        self.ctrl_row = views  # Select channels parks here (after the toggle) while the column is hidden
+        self._update_axis_button()
 
     def _axis_menu(self, menu=None):
         menu = menu if menu is not None else QMenu(self)
@@ -1032,7 +1149,7 @@ class PlaybackPage(QWidget):
                               tip="Ask your AI again for this log's channels" if ai.enabled(self.state.settings)
                               else "Choose an AI in Settings → AI first")
         T.menu_toggle(sm, "Show smart preset chips", "view_carousel",
-                      bool(self.state.settings.get(smart_presets.BAR_KEY, True)), self.smart_button.setChecked)
+                      smart_presets.bar_on(self.state.settings), self.smart_button.setChecked)
         T.menu_toggle(sm, "Generate with AI automatically", "auto_awesome",
                       bool(self.state.settings.get(smart_presets.AI_KEY, True)),
                       lambda on: self.state.settings.set(smart_presets.AI_KEY, bool(on)),
@@ -1119,6 +1236,11 @@ class PlaybackPage(QWidget):
         T.menu_action(menu, "Export…", "ios_share", self._export, loaded)
         T.menu_header(menu, "View")
         T.menu_action(menu, "Reset view", "fit_screen", self._reset_view, loaded)
+        if theme.is_mac():  # their toolbar buttons are off the Mac top bar (four icons, as in the mockup)
+            T.menu_toggle(menu, "Legend", "list", self.legend_button.isChecked(), self.legend_button.setChecked,
+                          tip="The channel chips under the graph")
+            T.menu_toggle(menu, "Timeline", "acute", self.timeline_button.isChecked(),
+                          self.timeline_button.setChecked, tip="The whole log in miniature under the graph")
         self._more_menu_width = menu.sizeHint().width()
         return menu
 
@@ -1204,6 +1326,11 @@ class PlaybackPage(QWidget):
         lay = QVBoxLayout(w)
         lay.setContentsMargins(1, 1, 1, 1)  # flush inside the view's frame, like the graph
         lay.setSpacing(0)
+        if theme.is_mac():  # the Logger table's rounded card (theme #macPanel[table="true"])
+            w.setObjectName("macPanel")
+            w.setProperty("table", True)
+            w.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            lay.setContentsMargins(1, 1, 1, 8)  # the zebra rows stay clear of the rounded corners
         self.raw_model = analyze_tools.RawModel(self)
         self.raw_view = QTableView()
         self.raw_view.setObjectName("rawTable")
@@ -1266,6 +1393,19 @@ class PlaybackPage(QWidget):
     def _style_raw(self):
         from . import theme
         c = theme.colors()
+        if theme.is_mac():  # the Logger table: transparent on its card, zebra rows, no column lines
+            self.raw_view.setStyleSheet(f"""
+QTableView#rawTable {{ background: transparent; alternate-background-color: {c.get('zebra', c['bg'])};
+    border: none; outline: none; color: {c['text']};
+    selection-background-color: {c['accent_bg']}; selection-color: {c['text']}; }}
+QTableView#rawTable::item {{ border: none; padding: 0 12px; }}
+QTableView#rawTable::item:selected {{ background: {c['accent_bg']}; color: {c['text']}; }}
+QTableView#rawTable QHeaderView {{ background: transparent; border: none; }}
+QTableView#rawTable QHeaderView::section {{ background: transparent; border: none;
+    border-bottom: 1px solid {c.get('th_line', c['border'])}; padding: 7px 12px; }}
+QTableView#rawTable QTableCornerButton::section {{ background: transparent; border: none; }}
+""")
+            return
         self.raw_view.setStyleSheet(f"""
 QTableView#rawTable {{ background: {c['surface']}; alternate-background-color: {c['bg']};
     border: none; outline: none; color: {c['text']};
@@ -1302,6 +1442,8 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
         total = len(self.tree.items())
         self.select_button.setText(f"Select channels ({len(colors)}/{total})" if total
                                    else "Select channels")
+        if theme.is_mac():  # the count also shows under the column's heading
+            self.sidebar.set_count(len(colors), total)
         self.sidebar.fit_width()
         return colors
 
@@ -1339,6 +1481,17 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
         T.menu_action(menu, "Select channels…", "checklist", lambda: self.picker.open_for(self.select_button))
         T.menu_action(menu, "Remove all", "clear_all", lambda: self._set_all_checked(False))
         menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _restore_checked(self, wanted):
+        """Tick the channels wanted(name) says, then draw once (ticking each with signals on
+        rebuilt every line per tick: seconds with many channels on a long log)."""
+        self.tree.blockSignals(True)
+        for i in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(i)
+            item.setCheckState(0, Qt.CheckState.Checked if wanted(item.data(0, ROLE))
+                               else Qt.CheckState.Unchecked)
+        self.tree.blockSignals(False)
+        self._rebuild_curves()
 
     def _set_all_checked(self, on):
         state = Qt.CheckState.Checked if on else Qt.CheckState.Unchecked
@@ -1509,6 +1662,12 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
         band_x = self.bottom_band.mapToGlobal(QPoint(0, 0)).x()
         left = widget.mapToGlobal(rect.topLeft()).x() - band_x
         right = band_x + self.bottom_band.width() - widget.mapToGlobal(rect.topRight()).x()
+        if theme.is_mac():
+            # Its card runs the full width like the graph's; the band is padded inside it to
+            # line up with the plot area (1 px top/bottom clears the card's border).
+            self.ov_box.layout().setContentsMargins(0, 0, 0, 0)
+            self.overview.getPlotItem().setContentsMargins(max(left, 1), 1, max(right, 1), 1)
+            return
         self.ov_box.layout().setContentsMargins(max(left, 0), 0, max(right, 0), 0)
 
     def _show_all(self):
@@ -1737,6 +1896,8 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
         self._update_now_values()
         self._update_readout()
         self._split_if_shown("set_cursor")
+        if theme.is_mac():
+            self.sidebar.set_cursor(float(self.times[idx]))
 
     def _move_cursor_to(self, t):
         """Put the cursor on the sample nearest t; the timeline and sidebar follow."""
@@ -1839,7 +2000,6 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
         xs, ys, brushes = [], [], []
         pt = graphstyle.label_pt(self.state.settings)
         rows = []  # no time line: the cursor's place on the x axis and timeline shows it
-        dot_pt = pt * 0.6
         for name, (scaled, color) in self.curve_data.items():
             val = self.columns[name][idx]
             if np.isfinite(scaled[idx]):
@@ -1850,14 +2010,9 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
             cmp = self._compare_value(name, t)
             if cmp is not None:
                 text += f"  (compared {cmp:.6g})"
-            # one table row: small round dot (sidebar size), centred on the name; value on the right
-            rows.append(f"<tr><td valign='middle' style='color:{color}; font-size:{dot_pt:.1f}pt; "
-                        f"padding-right:5px'>&#9679;</td>"
-                        f"<td valign='middle'>{name}</td>"
-                        f"<td valign='middle' align='right' style='padding-left:14px'><b>{text}</b></td></tr>")
+            rows.append((color, name, text))
         self.cursor_dots.setData(xs, ys, brush=brushes, pen=pg.mkPen("#00000080", width=1))
-        self.readout.setHtml(f"<table cellspacing='0' cellpadding='1' style='font-size:{pt}pt'>"
-                             + "".join(rows) + "</table>")
+        self.readout.setHtml(graphstyle.readout_html(rows, pt))
         self.readout.show()
         self._place_readout()
         from PySide6.QtCore import QTimer
@@ -2064,6 +2219,8 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
         view = self._view()
         graph = view in ("single", "split")
         for b in (self.legend_button, self.timeline_button, self.axis_button, self.smart_button):
+            if theme.is_mac() and b in (self.legend_button, self.timeline_button):
+                continue  # Mac: these two are ⋯ menu items, never shown as buttons (no row holds them)
             b.setVisible(graph)  # graph-only
         if hasattr(self, "smart_bar"):
             self._sync_smart_bar()
@@ -2091,7 +2248,10 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
                 b.setProperty("active", "true" if active else "false")
                 b.style().unpolish(b)
                 b.style().polish(b)
-            b.setIcon(_material_icon(glyph, 20, c["on_accent"] if active else c["tab_text"]))
+            if theme.is_mac():  # grey "on" segment: icon in the text colour, segment-sized
+                b.setIcon(_material_icon(glyph, theme.icon_px("control"), c["text"]))
+            else:
+                b.setIcon(_material_icon(glyph, 20, c["on_accent"] if active else c["tab_text"]))
 
     def _draw_scatter(self, mask):
         plot = self.scatter_plot
@@ -2183,6 +2343,12 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
             return
         shown = self.source_path or path
         self.file_label.setText(shown.name)
+        if theme.is_mac():  # the file button, with long names shortened in the middle
+            fm = self.open_button.fontMetrics()
+            # Mac: the mockup shows the whole name (engine_2026-11-14_121055 ≈ 190 px); only very long ones shorten
+            self.open_button.setText(fm.elidedText(shown.stem, Qt.TextElideMode.ElideMiddle,
+                                                   260 if theme.is_mac() else 170))
+            self.open_button.setToolTip(f"{shown.name}\nClick: open another log")
         self.file_label.setToolTip("")  # details on click, so nothing pops over the graph by accident
         self._fit_title()
 

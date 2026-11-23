@@ -142,6 +142,23 @@ class AppState(QObject):
         """The last car read, even if it isn't connected now (e.g. which scans to list offline)."""
         return (self.vehicle or {}).get("vin", "")
 
+    def ecu_key(self) -> str:
+        """"part/software version" of the module connected now (from its scan), or "". The
+        worker's channel list uses it to show only that module's channels (channel_support)."""
+        if not self.identity:
+            return ""
+        part = (self.identity.get("software_part_number") or self.identity.get("part_number") or "").strip()
+        version = str(self.identity.get("sw_version") or "").strip()
+        return f"{part}/{version}" if part else ""
+
+    def catalog_params(self, module) -> dict:
+        """Params for the worker's "catalog" call: the module, plus the connected module's
+        identity when it's that module (so another car's channel list never applies)."""
+        params = {"module": module}
+        if self.family is not None and self.family.get("module") == module and self.ecu_key():
+            params["ecu"] = self.ecu_key()
+        return params
+
     def part(self) -> str:
         if not self.identity:
             return ""

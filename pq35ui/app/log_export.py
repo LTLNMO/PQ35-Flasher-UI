@@ -58,7 +58,8 @@ IE_COLUMNS = (
     ("Engine torque specified by transmission", "Specified Moment Trans (Nm)", "num"),
     ("Engine torque (actual, group 122)", "Engine Moment (Nm)", "num"),
     ("Engine torque (actual)", "Engine Moment (Nm)", "num"),  # if logged from group 120 instead
-    ("Transmission status (engine ECU)", "Intervention (Bar)", "num"),
+    ("Transmission torque intervention", "Intervention (Bar)", "num"),
+    ("Transmission status (engine ECU)", "Intervention (Bar)", "num"),  # its name before 2026-11-22
     ("Lambda control bank 1", "Lambda Control Value Bank 1 (%)", "int"),
     ("Basic setting requirements", "Lambda Control Value Bank 2 ()", "bits"),
 )
@@ -133,6 +134,25 @@ def is_log_header(first_cell):
     return first_cell.strip().lower().startswith("time")
 
 
+# Column names our logs used before a label was corrected -> today's name, applied whenever a
+# log is opened (Analyze, Dashboard, Dyno, AI tools) or exported. The files stay as recorded.
+LEGACY_HEADERS = {
+    # formula 31 is lambda (a ratio), not a temperature: "°C" made Imperial show 1.0 as 33.8 °F
+    "Lambda control bank 1 (actual) (°C)": "Lambda control bank 1 (actual)",
+    "Lambda control bank 1 (specified) (°C)": "Lambda control bank 1 (specified)",
+    # group 122 field 4 is an intervention status code (formula 37), not seconds
+    "Transmission status (engine ECU) (s)": "Transmission torque intervention",
+    "Transmission status (engine ECU)": "Transmission torque intervention",
+    # formula 81 is an angle (crank degrees); it used to be logged with no unit
+    "Camshaft phase position intake bank 1": "Camshaft phase position intake bank 1 (°)",
+}
+
+
+def current_header(header):
+    """Today's name for a column of an older log of ours (LEGACY_HEADERS), else unchanged."""
+    return LEGACY_HEADERS.get(header, header)
+
+
 def split_header(header):
     """'Boost pressure (mbar)' -> ('Boost pressure', 'mbar')."""
     match = _UNIT.match(header)
@@ -144,7 +164,7 @@ def _read(path: Path):
         rows = list(csv.reader(f))
     if not rows or not rows[0] or not is_log_header(rows[0][0]):
         raise ValueError("Not a datalog this app can read (the first column must be the time).")
-    headers, body = rows[0], []
+    headers, body = [current_header(h) for h in rows[0]], []
     headers[0] = "Time"
     for row in rows[1:]:
         try:  # Integrated Engineering logs use MM:SS.mmm; store seconds so every format converts the same way

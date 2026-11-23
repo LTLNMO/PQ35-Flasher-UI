@@ -132,9 +132,12 @@ class LegendStrip(QScrollArea):
         self.setWidgetResizable(True)
         self.setFrameShape(QScrollArea.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # grows instead
         self.body = QWidget()
         self.flow = FlowLayout(self.body, spacing=2)
-        self.flow.setContentsMargins(4, 4, 4, 2)
+        self.flow.setContentsMargins(4, 6, 4, 6)  # one row = as tall as the timeline (fit_height)
+        self._band_h = BAND_H
+        self._fit_w = None
         self.setWidget(self.body)
         self.add_button = _AddChip()
         self.add_button.clicked.connect(lambda: page.picker.open_for(self.add_button))
@@ -144,17 +147,32 @@ class LegendStrip(QScrollArea):
         self.fit_to_font()
 
     def fit_to_font(self):
-        """Two rows of chips, sized from the text; the timeline above it is sized from the text too."""
+        """Chips sized from the text; the timeline above is one chip row tall (also from the text),
+        and the legend is at least that tall, growing a row at a time as channels are added."""
         chip = self.fontMetrics().height() + 6
         self.add_button.setFixedSize(chip + 4, chip)
-        h = 2 * chip + 2 + 6
-        self.setFixedHeight(h)
+        self._band_h = chip + 14
         ov = getattr(self.page, "overview", None)
         if ov is not None:
-            ov.setFixedHeight(chip + 14)  # slim: it sits right under the graph's time axis
+            ov.setFixedHeight(self._band_h)  # slim: it sits right under the graph's time axis
         for c in self.chips.values():
             c.updateGeometry()
         self.body.updateGeometry()
+        self.fit_height()
+
+    def fit_height(self):
+        """As tall as all the chip rows need (never scrolls), and never shorter than the timeline."""
+        width = self.viewport().width()
+        if width <= 0:
+            return
+        frame = self.height() - self.viewport().height()
+        self.setFixedHeight(max(self._band_h, self.flow.heightForWidth(width) + frame))
+        self._fit_w = width
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self.viewport().width() != self._fit_w:  # wider / narrower: the chips re-flow
+            self.fit_height()
 
     def changeEvent(self, e):
         from PySide6.QtCore import QEvent
@@ -165,7 +183,15 @@ class LegendStrip(QScrollArea):
     def _paint(self):
         c = theme.colors()
         self.add_button.update()
-        self.setStyleSheet(f"QScrollArea, QScrollArea > QWidget > QWidget {{ background: {c['surface']}; }}")
+        if theme.is_mac():  # a rounded card like the graph above it
+            self.setObjectName("legendStrip")
+            border = c.get("card_border", c["border"])
+            self.setStyleSheet(
+                f"QScrollArea#legendStrip {{ background: {c['surface']}; border: 1px solid {border};"
+                f" border-radius: 10px; }}"
+                f" #legendStrip > QWidget, #legendStrip > QWidget > QWidget {{ background: transparent; }}")
+        else:
+            self.setStyleSheet(f"QScrollArea, QScrollArea > QWidget > QWidget {{ background: {c['surface']}; }}")
         for chip in self.chips.values():
             chip.update()
 
@@ -194,6 +220,8 @@ class LegendStrip(QScrollArea):
         self.flow.addWidget(self.add_button)
         self.add_button.show()
         self.body.updateGeometry()
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self.fit_height)  # once the new chips have their sizes
 
     def _tip(self, name):
         page = self.page

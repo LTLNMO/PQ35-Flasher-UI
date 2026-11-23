@@ -57,8 +57,6 @@ VALUES = (
         ((106, 1),)),
     ('engine.fuel_pump_duty', 'Fuel pump duty', '%', 'number', 0x01,
         ((106, 3),)),
-    ('engine.throttle_angle', 'Throttle valve angle', 'deg', 'number', 0x01,
-        ((3, 3), (10, 3), (54, 4), (61, 3), (110, 4), (113, 3))),
     ('engine.throttle_position', 'Throttle valve position', '%', 'number', 0x01,
         ((3, 3), (10, 3), (54, 4), (61, 3), (110, 4), (113, 3))),
     ('engine.pedal_position', 'Accelerator pedal position (G79)', '%', 'number', 0x01,
@@ -329,7 +327,8 @@ VALUES = (
         ((122, 3),)),
     ('engine.traction_control.status', 'Traction control status', '', 'status', 0x01,
         ((120, 4),)),
-    ('engine.transmission.status', 'Transmission status (engine ECU)', '', 'status', 0x01,
+    # Ross-Tech's standard group 122 field 4: "Status: engine intervention / no intervention".
+    ('engine.transmission.status', 'Transmission torque intervention', '', 'status', 0x01,
         ((122, 4),)),
     ('engine.module_communication.transmission', 'Transmission electronics (J217) communication', '', 'status', 0x01,
         ((125, 1),)),

@@ -159,7 +159,7 @@ class DecodeTests(unittest.TestCase):
                          [(e["value"], e["unit"], e["type"]) for e in expected])
 
     def test_field_shape_and_full_response_acceptance(self):
-        body = bytes([1, 200, 50, 5, 10, 120, 99, 0x12, 0x34])
+        body = bytes([1, 200, 50, 5, 10, 120, 200, 0x12, 0x34])  # 200: no formula
         fields = decode_group(body)
         self.assertEqual(decode_group(b"\x61\x07" + body), fields)
         rpm, temp, unknown = fields
@@ -168,7 +168,7 @@ class DecodeTests(unittest.TestCase):
         self.assertEqual((temp["value"], temp["unit"], temp["text"]), (20.0, "°C", "20"))
         self.assertEqual(unknown["index"], 3)
         self.assertFalse(unknown["numeric"])
-        self.assertEqual((unknown["text"], unknown["unit"]), ("0x1234", "Type_99"))
+        self.assertEqual((unknown["text"], unknown["unit"]), ("0x1234", "Type_200"))
 
     def test_text_values_and_trailing_bytes(self):
         fields = decode_group(bytes([16, 0xF0, 0xA5, 10, 0, 0, 44, 3, 7, 6, 1]))

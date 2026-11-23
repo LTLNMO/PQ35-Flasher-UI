@@ -6,10 +6,13 @@ opens a searchable checklist of every channel.
 The rows stay QTreeWidgetItems (check state = on the graph, ROLE = channel name), so the page's
 code that walks the tree keeps working. Unticked rows are just hidden."""
 
+from contextlib import contextmanager
+
 from PySide6.QtCore import QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (QColor, QFont, QFontDatabase, QFontMetrics, QIcon, QLinearGradient, QPainter,
                            QPainterPath, QPen)
 from PySide6.QtWidgets import (
+
     QAbstractItemView, QFrame, QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem, QPushButton,
     QStyle, QStyledItemDelegate, QTreeWidget, QVBoxLayout, QWidget,
 )
@@ -138,10 +141,31 @@ class ChannelTree(QTreeWidget):
                 return col
         return -1
 
+    @contextmanager
+    def bulk(self):
+        """Build many rows at once: new_item() makes them detached (setting their data then
+        costs nothing) and they join the list together at the end. Attached one by one, every
+        setData repainted through dataChanged: ~0.6 ms a row. sync_rows() afterwards shows the
+        ticked ones (rows join hidden)."""
+        self._pending = []
+        try:
+            yield
+        finally:
+            pending, self._pending = self._pending, None
+            self.addTopLevelItems(pending)
+            for item in pending:
+                item.setHidden(True)  # a detached row can't be hidden: do it now it's in the list
+
     def new_item(self, name, key=None):
         """A row for a channel: shown as `name`, known by `key` (ROLE; the name when not given)."""
         from PySide6.QtWidgets import QTreeWidgetItem
-        item = QTreeWidgetItem(self, [name] + [""] * (self.columnCount() - 1))
+        pending = getattr(self, "_pending", None)
+        texts = [name] + [""] * (self.columnCount() - 1)
+        if pending is not None:
+            item = QTreeWidgetItem(texts)
+            pending.append(item)
+        else:
+            item = QTreeWidgetItem(self, texts)
         # Draggable, never a drop target (a flat list: no channel inside another). Not
         # user-checkable: ticking happens in the Select channels list.
         item.setFlags((item.flags() | Qt.ItemFlag.ItemIsDragEnabled)
@@ -285,6 +309,8 @@ class _SwitchRowDelegate(QStyledItemDelegate):
 
     @classmethod
     def row(cls, heading=False):
+        if theme.is_mac():  # Mac lists: compact rows, as in a popover or Finder sidebar
+            return round((28 if heading else 26) * _ui_scale())
         return round((cls.HEADING if heading else cls.ROW) * _ui_scale())
 
     def sizeHint(self, option, index):
@@ -293,7 +319,8 @@ class _SwitchRowDelegate(QStyledItemDelegate):
     @classmethod
     def switch_rect(cls, row_rect):
         k = _ui_scale()
-        w, h = cls.SWITCH[0] * k, cls.SWITCH[1] * k
+        size = (26.0, 15.0) if theme.is_mac() else cls.SWITCH  # Mac: System Settings' switch (mini, measured)
+        w, h = size[0] * k, size[1] * k
         r = QRectF(row_rect).adjusted(2, 1, -2, -1)
         return QRectF(r.right() - 12 - w, r.center().y() - h / 2, w, h)
 
@@ -326,24 +353,34 @@ class _SwitchRowDelegate(QStyledItemDelegate):
     def draw_switch(painter, sw, state, c):
         """macOS-style switch; state "on", "off" or "some" (part of a category on: dimmer
         track, knob in the middle)."""
-        h, inset = sw.height(), 2.0
+        mac = theme.is_mac()
+        h = sw.height()
+        inset = h / 15.0 if mac else 2.0  # Mac: the knob is 13 of 15 pt (measured from System Settings)
         cy = sw.center().y()
         painter.setPen(Qt.PenStyle.NoPen)
         if state == "off":  # a light grey wash, like the system switch when off
             track = QColor(c["text"])
-            track.setAlpha(45)
+            track.setAlpha(28 if mac else 45)
         else:
             track = QColor(c["accent"])
             if state == "some":
                 track.setAlpha(120)
         painter.setBrush(track)
-        painter.drawRoundedRect(sw, h / 2, h / 2)
+        if mac and state == "off":  # the system switch's hairline edge
+            edge = QColor(c["text"])
+            edge.setAlpha(40)
+            painter.setPen(QPen(edge, 0.5))
+            painter.drawRoundedRect(sw.adjusted(0.25, 0.25, -0.25, -0.25), h / 2, h / 2)
+            painter.setPen(Qt.PenStyle.NoPen)
+        else:
+            painter.drawRoundedRect(sw, h / 2, h / 2)
         knob = h - 2 * inset
         kx = {"on": sw.right() - inset - knob, "off": sw.left() + inset}.get(
             state, sw.center().x() - knob / 2)
         painter.setBrush(QColor(0, 0, 0, 70))  # soft shadow under the knob
         painter.drawEllipse(QRectF(kx - 0.3, cy - knob / 2 + 0.8, knob + 0.6, knob + 0.6))
-        painter.setBrush(QColor("#ffffff"))
+        dark = QColor(c["bg"]).lightness() < 128
+        painter.setBrush(QColor("#cdcdcd" if mac and dark else "#ffffff"))  # dark mode's knob is light grey
         painter.drawEllipse(QRectF(kx, cy - knob / 2, knob, knob))
 
     def _paint_heading(self, painter, option, index, c):
@@ -473,10 +510,22 @@ class ChannelSelector(QWidget):
         self.hide_all_button.setToolTip("Hide all: switch off every channel the search finds")
         self.hide_all_button.clicked.connect(lambda: self._set_shown(False))
         for b in (self.select_all_button, self.hide_all_button):
+            if theme.is_mac():
+                b.setObjectName("iconTool")  # plain glyphs, like the Mac toolbars
             b.setFixedSize(36, 34)
             b.setIconSize(QSize(20, 20))
             top.addWidget(b)
         lay.addLayout(top)
+        # Optional (Live View): All · 1 Dials · 2 Graph … — the switches then say what that panel
+        # shows instead of what's read. `scope_source` (set by the page) provides the panels.
+        self.scope_source = None
+        self.scope = None
+        self.scope_bar = QWidget()
+        self.scope_row = QHBoxLayout(self.scope_bar)
+        self.scope_row.setContentsMargins(0, 0, 0, 0)
+        self.scope_row.setSpacing(2)
+        self.scope_bar.hide()
+        lay.addWidget(self.scope_bar)
         if not embedded:
             rule = QFrame()
             rule.setObjectName("optionsRule")
@@ -526,11 +575,45 @@ class ChannelSelector(QWidget):
         item = self._by_name.get(name)
         return item.data(0, COLOR_ROLE) if item is not None else None
 
+    def _fill_scopes(self):
+        """The All · panel segments (only with a scope_source and two or more panels)."""
+        scopes = self.scope_source.scopes() if self.scope_source is not None else []
+        if len(scopes) < 3:  # All + one panel: the panel shows what's read, nothing to choose
+            self.scope = None
+            self.scope_bar.hide()
+            return
+        if self.scope not in [sid for sid, _l, _t in scopes]:
+            self.scope = None
+        if scopes == getattr(self, "_scopes", None):  # same panels: just move the highlight
+            from .widgets import set_segment_active
+            set_segment_active(self._scope_buttons, [sid for sid, _l, _t in scopes].index(self.scope))
+            self.scope_bar.show()
+            return
+        from .widgets import discard, segment_button, segment_track, set_segment_active
+        for b in getattr(self, "_scope_buttons", ()):
+            discard(b)
+        self._scopes, self._scope_buttons = scopes, []
+        for sid, label, tip in scopes:
+            b = segment_button(label, tip)
+            b.clicked.connect(lambda _=False, sid=sid: self.set_scope(sid))
+            self._scope_buttons.append(b)
+        segment_track(self.scope_bar, self.scope_row, self._scope_buttons, equal=True)
+        set_segment_active(self._scope_buttons, [sid for sid, _l, _t in scopes].index(self.scope))
+        self.scope_bar.show()
+
+    def set_scope(self, scope):
+        """All (None) or one panel: the switches follow it."""
+        self.scope = scope
+        self.fill()
+
     def fill(self):
         """(Re)build the rows from the tree, keeping what's typed in the search box."""
+        self._fill_scopes()
         self._filling = True
         self.list.clear()
         items = self.tree.items()
+        if self.scope is not None:  # a panel: every channel, on = it shows it (and so it's read)
+            items = [it for it in items if not it.data(0, FIXED_ROLE)]
         self._by_name = {it.data(0, ROLE): it for it in items}
         heading = None
 
@@ -567,13 +650,17 @@ class ChannelSelector(QWidget):
             li.setData(_FIXED_ROLE, bool(item.data(0, FIXED_ROLE)))
             li.setData(CATEGORY_ROLE, category or "")
             li.setFlags((li.flags() | Qt.ItemFlag.ItemIsEnabled) & ~Qt.ItemFlag.ItemIsUserCheckable)
-            li.setCheckState(item.checkState(0))
+            if self.scope is None:
+                li.setCheckState(item.checkState(0))
+            else:
+                shown = self.scope_source.is_on(self.scope, item.data(0, ROLE))
+                li.setCheckState(Qt.CheckState.Checked if shown else Qt.CheckState.Unchecked)
             li.setToolTip(item.toolTip(0) or item.text(0))
             group = item.data(0, RAW_GROUP_ROLE)
             if group is not None:
                 li.setData(_RAW_ROLE, int(group))
             self.list.addItem(li)
-        if self.raw_groups_enabled:  # ＋ Add group… closes the list (under its own heading if none yet)
+        if self.raw_groups_enabled and self.scope is None:  # ＋ Add group… closes the list (under its own heading if none yet)
             if heading != RAW_CATEGORY:
                 heading = RAW_CATEGORY
                 add_heading(RAW_CATEGORY, True)
@@ -753,6 +840,12 @@ class ChannelSelector(QWidget):
         wanted = {self.list.item(i).data(_KEY_ROLE) for i in range(self.list.count())
                   if not self.list.item(i).data(_HEADING_ROLE) and not self.list.item(i).data(_ADD_ROLE)
                   and self.list.item(i).checkState() == Qt.CheckState.Checked}
+        if self.scope is not None:  # a panel's channels: the page stores them, nothing is read anew
+            self.scope_source.set_on(self.scope, wanted)
+            self._count_headings()
+            self._update_all_button()
+            self.list.viewport().update()
+            return
         self.tree.blockSignals(True)
         for item in self.tree.items():
             if item.data(0, FIXED_ROLE):
@@ -839,8 +932,17 @@ class ChannelPicker(PopupCard):
         bottom = min(window.mapToGlobal(window.rect().bottomLeft()).y(),
                      screen.availableGeometry().bottom()) - 16
         top = below.y() + 6
-        self.setFixedHeight(max(bottom - top, self.minimumSizeHint().height()))
+        # Opened from low down (the legend's ＋ under Analyze's graph): open upwards instead,
+        # reaching the top of the window, so it's as roomy as from a Select channels button.
+        above = anchor.mapToGlobal(anchor.rect().topLeft()).y() - 6
+        ceiling = max(window.mapToGlobal(window.rect().topLeft()).y(),
+                      screen.availableGeometry().top()) + 16
+        upwards = above - ceiling > 2 * (bottom - top)
+        room = above - ceiling if upwards else bottom - top
+        self.setFixedHeight(max(room, self.minimumSizeHint().height()))
         self.open_at(anchor, align="left")
+        if upwards:
+            self.move(self.x(), above - self.height())
         self.search.setFocus()
 
 
@@ -856,15 +958,8 @@ class ChannelDropdown(QPushButton):
         self.selector = self.picker.selector
         self.setToolTip("Choose which channels to read")
         self.clicked.connect(lambda: self.picker.open_for(self))
-        # Dropdown arrow on the right of the text: right-to-left puts the icon after the text.
-        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self.setIconSize(QSize(20, 20))
-        self._tint()
-        theme.on_apply(self._tint)
-
-    def _tint(self):
-        from .main_window import _material_icon
-        self.setIcon(_material_icon("arrow_drop_down", 20, theme.colors()["text"]))
+        from .widgets import pulldown
+        pulldown(self)  # text + chevron (the same on every tab)
 
     def _changed(self):
         self._on_change()

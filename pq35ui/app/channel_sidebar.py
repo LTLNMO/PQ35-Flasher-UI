@@ -12,6 +12,7 @@ from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QHeaderView, QMenu, QVBoxLayout, QWidget
 
 from . import analyze_tools as T
+from . import theme
 from .channel_list import ChannelTree
 from .widgets import collapsible_sidebar, scrollable
 
@@ -23,8 +24,9 @@ COLUMN_GLYPHS = {"group": "tag", "now": "my_location", "cmp": "compare", "delta"
 
 class ChannelSidebar(QWidget):
     """columns: ((key, header, tooltip), ...) value columns after the channel name.
-    select_button: the page's Select channels ▾ button (sits at the top of the sidebar, and
-    first in the toolbar while the sidebar is hidden); or set_select_button() later. extra_menu(menu): adds page-only items
+    select_button: the page's Select channels ▾ button. With install(), it and the sidebar's
+    toggle are a pair at the top left: the sidebar's first row while it shows, the front of the
+    page's toolbar while it's hidden (the same spot as Logger's and Live View's either way); or set_select_button() later. extra_menu(menu): adds page-only items
     at the end of the value-columns menu."""
 
     columns_changed = Signal()
@@ -36,10 +38,12 @@ class ChannelSidebar(QWidget):
         self.default, self.extra_menu = tuple(default), extra_menu
         self.col = {key: i + 1 for i, (key, _h, _t) in enumerate(self.columns)}
         self.select_button = select_button
-        self.setObjectName("page")
+        # Mac interface: a full-height column of its own (theme.MAC_STYLE #macPanel), as in the mockup.
+        self.setObjectName("macPanel" if theme.is_mac() else "page")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)  # paint the panel colour
         self.setMinimumWidth(240)
         sb = QVBoxLayout(self)
-        sb.setContentsMargins(16, 16, 8, 16)
+        sb.setContentsMargins(16, 16, 16 if theme.is_mac() else 8, 16)
         sb.setSpacing(10)
 
         self.tree = ChannelTree()
@@ -53,7 +57,7 @@ class ChannelSidebar(QWidget):
             header.setSectionResizeMode(self.col[key], QHeaderView.ResizeMode.Fixed)
             header.resizeSection(self.col[key], COLUMN_WIDTH)
             self.tree.headerItem().setToolTip(self.col[key], tip)
-            self.tree.headerItem().setTextAlignment(self.col[key], Qt.AlignmentFlag.AlignRight)
+            self.tree.headerItem().setTextAlignment(self.col[key], Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         header.customContextMenuRequested.connect(
             lambda pos: self.columns_menu().exec(header.mapToGlobal(pos)))
@@ -77,9 +81,72 @@ class ChannelSidebar(QWidget):
         # × closes the sidebar (the toolbar's sidebar button brings it back)
         self.close_button = T.icon_button("close", "Hide the channels sidebar")
         self.pick_row.addWidget(self.close_button)
+        self.count_label = self.cursor_label = self.pane_title = self.search = None
+        if theme.is_mac():  # Mockups/Swift native: "Channels · 3 of 27 shown", a search box, the cursor below
+            from PySide6.QtWidgets import QLabel, QLineEdit
+            from .widgets import muted
+            self.mac_head = QHBoxLayout()
+            self.mac_head.setSpacing(2)
+            head = QVBoxLayout()
+            head.setSpacing(0)
+            title = self.pane_title = QLabel("Channels")
+            title.setObjectName("macPaneTitle")
+            head.addWidget(title)
+            self.count_label = muted("")
+            head.addWidget(self.count_label)
+            self.mac_head.addLayout(head, 1)
+            sb.addLayout(self.mac_head)
+            self.search = QLineEdit()
+            self.search.setPlaceholderText("Search channels")
+            self.search.setClearButtonEnabled(True)
+            self.search.textChanged.connect(self._filter)
+            sb.addWidget(self.search)
         sb.addLayout(self.pick_row)
         sb.addWidget(self.tree, 1)
+        if theme.is_mac():
+            from .widgets import muted
+            self.cursor_label = muted("")
+            sb.addWidget(self.cursor_label)
         self.splitter = self.toolbar = self.content_layout = None
+
+    # --- Mac interface extras ---
+
+    def mac_header_buttons(self):
+        """Mac (Analyze), mac_shell's layout rule 5: the list is a full-height column. Its first row
+        (ROW_H, at row 1's y, 24 px in) is Select channels ▾ + the toggle (install / _shown), then
+        the list's buttons (columns, bars) at the right; the search, the list. Select channels
+        (3/20) says how many are shown, so no "Channels · n of N" heading."""
+        from .mac_shell import column, first_row
+        for w in (self.columns_button, self.bars_button, self.close_button):
+            self.pick_row.removeWidget(w)
+        self.close_button.hide()
+        self.pane_title.hide()
+        self.count_label.hide()
+        self.count_label = None
+        if self.select_button is not None:
+            self.pick_row.removeWidget(self.select_button)
+        self.layout().removeItem(self.pick_row)
+        self.mac_head.setSpacing(8)
+        first_row(self.mac_head)
+        for w in (self.columns_button, self.bars_button):
+            self.mac_head.addWidget(w, 0, Qt.AlignmentFlag.AlignVCenter)
+        column(self)
+        self._home = self.mac_head
+
+    def set_count(self, shown, total):
+        if self.count_label is not None:
+            self.count_label.setText(f"{shown} of {total} shown" if total else "No log open")
+
+    def set_cursor(self, seconds):
+        if self.cursor_label is not None:
+            self.cursor_label.setText(f"Cursor {seconds:.1f} s")
+
+    def _filter(self, text):
+        """Search box: show only the rows whose name contains the text."""
+        needle = text.strip().lower()
+        for i in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(i)
+            item.setHidden(bool(needle) and needle not in item.text(0).lower())
 
     # --- placing it in the page ---
 
@@ -98,36 +165,58 @@ class ChannelSidebar(QWidget):
         self.close_button.hide()
         self.layout().removeItem(self.pick_row)
         self.setMinimumWidth(0)
+        # Mac: the page header names the page; the list is the whole page (the mockup's Logger).
+        for w in (self.pane_title, self.count_label, self.search, self.cursor_label):
+            if w is not None:
+                w.hide()
 
     def install(self, splitter, content, content_layout, toolbar, sidebar_button):
         """Put the sidebar and the page's content in `splitter` and wire up showing / hiding:
-        `sidebar_button` (checkable, in `toolbar`) and × toggle it; while it's hidden Select
-        channels moves to the front of `toolbar` and the content gets the full 16 px gutter."""
+        `sidebar_button` (checkable) toggles it. Select channels ▾ and the toggle go together, top
+        left: the sidebar's first row while it shows, the front of `toolbar` while it's hidden
+        (user 2026-11-23: Select channels in one spot on every page, its toggle beside it)."""
         self.splitter, self.toolbar, self.content_layout = splitter, toolbar, content_layout
+        self.toggle_button = sidebar_button
+        if not hasattr(self, "_home"):  # Classic: the row above the list
+            self._home = self.pick_row
+            self.close_button.hide()  # the toggle is right there beside Select channels
         splitter.addWidget(scrollable(self))
         splitter.addWidget(scrollable(content))
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([SIDEBAR_WIDTH, 930])
+        if theme.is_mac():
+            from .mac_shell import column_split
+            column_split(splitter)
+        else:
+            splitter.setSizes([SIDEBAR_WIDTH, 930])
         splitter.setCollapsible(1, False)
         self.close_button.clicked.connect(lambda: sidebar_button.setChecked(False))
-        collapsible_sidebar(splitter, self.state.settings, self.prefix, "Channels", button=sidebar_button)
+        # The Mac interface keeps its own width (its column is narrower, as in the mockup).
+        key = self.prefix + (":mac" if theme.is_mac() else "")
+        collapsible_sidebar(splitter, self.state.settings, key, "Channels", button=sidebar_button)
         splitter.sidebar_toggle.shown_changed.connect(self._shown)
         self._shown(not splitter.sidebar_toggle.collapsed())
 
     def _shown(self, shown):
         """The sidebar has just appeared (start of its slide in) or gone (end of its slide out).
         The content's left edge needs the full 16px gutter while it's hidden; that happens at the
-        same moment the 8px divider comes or goes, so nothing jumps."""
-        self.content_layout.setContentsMargins(8 if shown else 16, 16, 16, 16)
-        b = self.select_button
-        if shown:
-            self.toolbar.removeWidget(b)
-            self.pick_row.insertWidget(0, b, 1)
+        same moment the 8px divider comes or goes, so nothing jumps. Select channels stays put."""
+        if theme.is_mac():
+            from .mac_shell import main_layout
+            main_layout(self.content_layout)  # the main area beside the column (mac_shell rules)
         else:
-            self.pick_row.removeWidget(b)
-            self.toolbar.insertWidget(0, b)
-        b.show()
+            self.content_layout.setContentsMargins(8 if shown else 16, 16, 16, 16)
+        pair = [w for w in (self.select_button, self.toggle_button) if w is not None]
+        for w in pair:
+            self._home.removeWidget(w)
+            self.toolbar.removeWidget(w)
+        for i, w in enumerate(pair):
+            if shown:
+                stretch = 1 if w is self.select_button and self._home is self.pick_row else 0
+                self._home.insertWidget(i, w, stretch)
+            else:
+                self.toolbar.insertWidget(i, w)
+            w.show()
 
     def fit_width(self):
         """Never narrower than the top row (Select channels + its buttons), so that row isn't

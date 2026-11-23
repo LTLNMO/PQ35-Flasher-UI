@@ -118,7 +118,9 @@ _FORMULAS = {
     11: (lambda a, b: 0.0001 * a * (b - 128.0) + 1.0, ""),
     12: (lambda a, b: 0.001 * a * b, "ohm"),
     13: (lambda a, b: (b - 127) * 0.001 * a, "mm"),
-    14: (lambda a, b: 0.01 * a * (b - 100), "bar"),
+    # 0.005*A*B (kw1281test, KWP1281 formula list). The old 0.01*A*(B-100) read -24.8 bar for
+    # group 10.7 on an 8P0907115AS where this gives 7.6 bar.
+    14: (lambda a, b: 0.005 * a * b, "bar"),
     15: (lambda a, b: 0.01 * a * b, "ms"),
     16: (_bitvalue, "bitval"),
     17: (lambda a, b: f"{chr(a)}{chr(b)}", ""),
@@ -131,17 +133,21 @@ _FORMULAS = {
     24: (lambda a, b: 0.001 * a * b, "A"),
     25: (lambda a, b: (a / 182.0) + (1.421 * b), "g/s"),
     26: (lambda a, b: b - a, "°C"),
-    27: (lambda a, b: abs(b - 128) * 0.01 * a, "°"),
+    # Signed: before TDC positive, after TDC negative. VCDS/kw1281test show abs() plus an
+    # "ATDC"/"BTDC" word (b < 128 = ATDC); a bare abs() would log retarded timing as advance.
+    27: (lambda a, b: (b - 128) * 0.01 * a, "°"),
     28: (lambda a, b: b - a, "°C"),
     30: (lambda a, b: (b / 12.0) * a, "°"),
-    31: (lambda a, b: (b / 2560.0) * a, "°C"),
+    31: (lambda a, b: (b / 2560.0) * a, ""),  # MED9 group 31 lambda (ratio); old tables say °C
     # 100*B/A (A=0: 100*B). Upstream had 0.01*A*B, which read load, throttle, N75 and
     # HPFP duty A^2/10000 too high (6.5x at A=255); IE POWERlink logs of the same car agree.
     33: (lambda a, b: 100.0 * b / a if a else 100.0 * b, "%"),
     34: (lambda a, b: (b - 128) * 0.01 * a, "°"),  # VAG "°KW" = crank degrees, not kilowatts
     35: (lambda a, b: 0.01 * a * b, "L/h"),
-    36: (lambda a, b: a * 256 + b, "°"),
-    37: (lambda a, b: a * 256 + b, "s"),
+    # Odometer: A*2560 + B*10 km (kw1281test, KWP1281 list). The engine ECU sends it in groups
+    # 74 and 85; the old A*256+B "°" read a tenth of the distance with a degrees unit.
+    36: (lambda a, b: a * 2560 + b * 10, "km"),
+    37: (lambda a, b: a * 256 + b, ""),  # a status/code word (kw1281test, VAG Blocks): no unit
     38: (lambda a, b: (b - 128) * 0.001 * a, "°"),
     39: (lambda a, b: (b / 256.0) * a, "mg/h"),
     40: (lambda a, b: 0.001 * a * b, "A"),
@@ -176,9 +182,18 @@ _FORMULAS = {
     70: (lambda a, b: (256.0 * a + b) * 0.192, "m/s2"),
     71: (lambda a, b: 0.1 * a * b, "%"),
     72: (lambda a, b: 0.1 * a * b, "L"),
-    81: (lambda a, b: _signed16(a, b) * 0.04375, ""),
+    81: (lambda a, b: _signed16(a, b) * 0.04375, "°"),  # angle (kw1281test); camshaft phase 93.3
+    80: (lambda a, b: ((a << 8) | b) / 100.0, "kOhm"),
     83: (lambda a, b: (a * 256 + b) * 0.01, "bar"),
+    # From kw1281test (Blocks/SensorValue.cs); all seen in an 8P0907115AS (MED17) group read.
+    90: (lambda a, b: 0.1 * a * b, "kg"),
+    91: (lambda a, b: 0.1 * a * (b - 128), "°"),
+    92: (lambda a, b: a * b, "km"),
     94: (lambda a, b: 0.1 * a * (b - 128), "Nm"),
+    96: (lambda a, b: 0.1 * a * b, "mbar"),
+    97: (lambda a, b: (b - a) * 5, "°C"),
+    99: (lambda a, b: _signed16(a, b), ""),
+    102: (lambda a, b: 0.1 * a * b, "mm"),
 }
 
 KNOWN_FORMULAS = frozenset(_FORMULAS) | {4}
@@ -192,7 +207,8 @@ def decode_value(formula: int, a: int, b: int):
     if formula == 4:
         if a == 1:
             return 0.75 * b - 48.0, "°C"
-        return abs(b - 127) * 0.01 * a, "°"
+        # Signed like 27: b > 127 is ATDC (negative), else BTDC (positive).
+        return (127 - b) * 0.01 * a, "°"
     entry = _FORMULAS.get(formula)
     if entry is None:
         return f"0x{a:02X}{b:02X}", f"Type_{formula}"

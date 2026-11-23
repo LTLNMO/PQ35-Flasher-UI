@@ -22,6 +22,90 @@ def restyle(widget):
     widget.style().polish(widget)
 
 
+def discard(widget):
+    """Take a widget off screen now and delete it soon. deleteLater alone leaves it painted until
+    the event loop gets to it (old cards / buttons showing under the new ones meanwhile)."""
+    if widget is None:
+        return
+    widget.hide()
+    widget.setParent(None)
+    widget.deleteLater()
+
+
+# ── shared controls: one look on every tab ──
+
+def segment_button(label, tip="", parent=None):
+    """One choice of a segmented control (Analyze's Single | Split…, Logger's modes, Settings'
+    sections, Select channels' All | Panel 1…): QPushButton#viewTab, styled in theme.py. Set
+    "active" with set_segment_active. Put the buttons in a segment_track on Mac."""
+    return style_segment(QPushButton(label, parent), tip)
+
+
+def style_segment(b, tip=""):
+    """segment_button's setup, for a QPushButton subclass made elsewhere (the Logger's mode buttons)."""
+    b.setObjectName("viewTab")
+    b.setFixedHeight(34)  # Classic: as tall as every toolbar button (segment_track makes it 22 on Mac)
+    if tip:
+        b.setToolTip(tip)
+    b.setProperty("active", "false")
+    b.setCursor(Qt.CursorShape.PointingHandCursor)
+    b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    b.setIconSize(QSize(20, 20))
+    return b
+
+
+def set_segment_active(buttons, index):
+    for i, b in enumerate(buttons):
+        on = "true" if i == index else "false"
+        if b.property("active") != on:
+            b.setProperty("active", on)
+            restyle(b)
+
+
+def segment_track(widget, layout, buttons, equal=False):
+    """Mac: *widget* becomes the macOS segmented control's track (theme #macSegments: a 2 px inset,
+    26 px tall, 22 px segments with control-sized icons). Classic: a plain row, 2 px apart.
+    equal: every segment the same width (else each as wide as its label)."""
+    mac = theme.is_mac()
+    if mac:
+        widget.setObjectName("macSegments")
+        widget.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(0)
+        widget.setFixedHeight(26)
+    else:
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+    for b in buttons:
+        if mac:
+            b.setFixedHeight(22)
+            px = theme.icon_px("control")
+            b.setIconSize(QSize(px, px))
+        if equal:
+            b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            b.setStyleSheet("QPushButton#viewTab { text-align: center; }")  # the base style is left
+        layout.addWidget(b, 1 if equal else 0)
+
+
+def pulldown(button):
+    """A pull-down button: its text, then the menu chevron on the right (Select channels ▾, Choose a
+    module ▾). Mac: AppKit's small grey chevron; Classic: the bigger ▾ in the text colour."""
+    button.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+
+    def tint():
+        from .main_window import _material_icon
+        try:
+            c = theme.colors()
+            size, color = (12, c.get("sub", c["muted"])) if theme.is_mac() else (20, c["text"])
+            button.setIconSize(QSize(size, size))
+            button.setIcon(_material_icon("arrow_drop_down", size, color))
+        except RuntimeError:  # deleted
+            pass
+    tint()
+    theme.on_apply(tint)
+    return button
+
+
 class Card(QFrame):
     def __init__(self, title: str = None, parent=None):
         super().__init__(parent)
@@ -31,8 +115,10 @@ class Card(QFrame):
         self.body.setSpacing(8)
         self.title_label = None
         if title:
-            label = QLabel(title)
-            label.setStyleSheet("font-weight: 600;")
+            from . import theme
+            # Mac interface: small grey capitals, like the mockup's (and Finder's) section titles.
+            label = QLabel(title.upper() if theme.is_mac() else title)
+            label.setObjectName("cardTitle")
             self.body.addWidget(label)
             self.title_label = label
 
@@ -814,9 +900,10 @@ class PopupCard(QFrame):
 
     def _restyle(self):
         c = theme.colors()
+        radius = 10 if theme.is_mac() else self.RADIUS
         self.setStyleSheet(
-            f"QFrame#popupCard {{ background: {c['surface']}; border: 1px solid {c['border']}; "
-            f"border-radius: {self.RADIUS}px; }}"
+            f"QFrame#popupCard {{ background: {c['surface']}; border: 1px solid {c.get('card_border', c['border'])}; "
+            f"border-radius: {radius}px; }}"
             f"QLabel#optionsHeading {{ color: {c['muted']}; font-size: 11px; font-weight: 700; "
             f"letter-spacing: 1px; }}"
             f"QFrame#optionsRule {{ background: {c['border']}; border: none; }}")

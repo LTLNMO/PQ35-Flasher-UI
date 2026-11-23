@@ -27,8 +27,10 @@ class DashboardButton(QPushButton):
         self.page = page
         self.setObjectName("iconTool")
         self.setToolTip("Saved dashboards: load, save, delete, export or import Live View layouts")
-        self.setFixedSize(50, 34)  # as Presets: icon + ▾
-        self.setIconSize(QSize(36, 22))
+        from .analyze_tools import tool_metrics
+        w, h, strip, g = tool_metrics(dropdown=True)  # as Presets: icon + ▾
+        self.setFixedSize(w, h)
+        self.setIconSize(QSize(strip, g))
         self.current = None  # name of the dashboard last loaded or saved (ticked in the menu)
         self.menu_ = QMenu(self)
         self.menu_.aboutToShow.connect(self._fill)

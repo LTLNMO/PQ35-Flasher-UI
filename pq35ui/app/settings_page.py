@@ -133,6 +133,14 @@ class SettingsPage(Page):
         # ── Appearance ──
         self._section("Appearance")
         rows = self._rows(self.add(Card("Colours")))
+        mac = _theme.is_mac()
+        if _theme.native_available():
+            self.interface_group = QButtonGroup(self)
+            self._row(rows, "Interface", self._choices(self.interface_group, ["Classic", "Mac"]),
+                      "Classic: this app's own look, with the tab bar. Mac: a sidebar and the Mac's own "
+                      "colours and fonts. Same pages and features either way; the app restarts to switch.")
+            self.interface_group.button(1 if mac else 0).setChecked(True)
+            self.interface_group.idClicked.connect(self._interface_changed)
         self.theme_group = QButtonGroup(self)
         self._row(rows, "Theme", self._choices(self.theme_group, [label for label, _ in THEMES]),
                   "Dark, light, or pure black backgrounds. System follows your computer.")
@@ -158,6 +166,7 @@ class SettingsPage(Page):
         self.custom_color_button.clicked.connect(self._pick_custom_accent)
         swatches.addWidget(self.custom_color_button)
         swatches.addStretch(1)
+        accent_row = rows.rowCount()
         self._row(rows, "Accent", swatches, "The color of buttons, tabs and highlights.")
 
         tint = QHBoxLayout()
@@ -177,6 +186,9 @@ class SettingsPage(Page):
         self._row(rows, "Tint", tint, "Pulls the backgrounds toward the accent color.")
         self.tint_slider.valueChanged.connect(self._tint_moved)
         self.tint_slider.sliderReleased.connect(self._tint_committed)
+        if mac:  # the Mac interface uses the Mac's own blue and greys
+            rows.setRowVisible(accent_row, False)
+            rows.setRowVisible(accent_row + 1, False)
 
         rows = self._rows(self.add(Card("Layout")))
         self.font_combo = QComboBox()
@@ -190,6 +202,7 @@ class SettingsPage(Page):
         self.font_combo.currentIndexChanged.connect(self._font_changed)
         self._row(rows, "Font size", self._left(self.font_combo))
 
+        tab_style_row = rows.rowCount()
         self.tab_group = QButtonGroup(self)
         self._row(rows, "Tab style", self._choices(self.tab_group, ["Icons", "Text"]),
                   "Icons (the name slides out on hover) or the tab names.")
@@ -220,6 +233,8 @@ class SettingsPage(Page):
         self._row(rows, "Tabs", tabs_box, "Drag tabs (and the │ dividers) into the order you like. Untick "
                                           "tabs you don't use and they disappear from the tab bar; nothing "
                                           "is deleted. Dashboard and Connect always stay.", center=False)
+        if mac:  # no tab bar in the Mac interface (unticked tabs still hide their sidebar item)
+            rows.setRowVisible(tab_style_row, False)
 
         # ── General ──
         self._section("General")
@@ -283,7 +298,8 @@ class SettingsPage(Page):
         self.smart_ai.setChecked(bool(state.settings.get("smart_presets:ai", True)))
         self.smart_ai.toggled.connect(lambda on: state.settings.set("smart_presets:ai", bool(on)))
         self.smart_bar = QCheckBox("Show the smart preset chips above the Analyze graph")
-        self.smart_bar.setChecked(bool(state.settings.get("playback:smart_bar", True)))
+        from . import smart_presets
+        self.smart_bar.setChecked(smart_presets.bar_on(state.settings))
         self.smart_bar.toggled.connect(lambda on: state.settings.set("playback:smart_bar", bool(on)))
         smart.addWidget(self.smart_ai)
         smart.addWidget(self.smart_bar)
@@ -356,13 +372,25 @@ class SettingsPage(Page):
         self.layout_.addLayout(holder)
         self.layout_.addStretch(1)
 
+        from . import theme as _theme
+        mac = _theme.is_mac()
+        if mac:
+            self.setObjectName("settingsPage")  # Mac: plain rows, no card frames (theme.MAC_STYLE)
+            self.layout_.setContentsMargins(60, 24, 60, 24)  # the mockup's form padding
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(2)
+        if mac:
+            row.addStretch(1)  # section buttons centred, like a Mac Settings window's toolbar
         self.sections = QStackedWidget()
         self.section_buttons, self._section_titles, self._section_desc = [], [], []
         self._index = []  # search: one entry per setting
-        for i, (title, icon, desc) in enumerate(s for s in self.SECTIONS if s[0] in self._groups):
+        sections = [s for s in self.SECTIONS if s[0] in self._groups]
+        if mac:  # the mockup's order (Mockups/Swift native/13-settings.png): General first
+            order = ["General", "Appearance", "Data", "Graphs", "AI", "About"]
+            sections.sort(key=lambda s: order.index(s[0]) if s[0] in order else len(order))
+            tabs = self._mac_bar()
+        for i, (title, icon, desc) in enumerate(sections):
             page = QWidget()
             lay = QVBoxLayout(page)
             lay.setContentsMargins(0, 0, 0, 0)
@@ -370,23 +398,38 @@ class SettingsPage(Page):
             for card in self._groups[title]:
                 label = getattr(card, "title_label", None)
                 if label is not None:
-                    if label.text() == title:
+                    if mac:
+                        label.hide()  # Mac: groups are split by a hairline only, as in the mockup
+                    elif label.text().lower() == title.lower():
                         label.hide()  # one card named like its section: the button names it
                     else:
                         label.setObjectName("settingsGroup")
                         label.setStyleSheet("")  # the theme styles it
+                if mac and lay.count() == 0:  # hairlines go between groups, not above the first
+                    card.setStyleSheet("#card { border: none; }")
                 lay.addWidget(card)
                 self._index_card(card, i, title)
             lay.addStretch(1)
             self.sections.addWidget(page)
-            b = QPushButton(title.replace("&", "&&"))  # "&" alone would underline the next letter
-            b.setObjectName("viewTab")
-            b.setFixedHeight(34)
-            b.setProperty("active", "false")
+            if mac:  # icon above its name, like a Mac Settings window's toolbar
+                from PySide6.QtWidgets import QToolButton
+                b = QToolButton()
+                b.setText(title.replace("&", "&&"))
+                b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+                b.setObjectName("settingsTab")
+                b.setProperty("active", "false")
+                b.setProperty("glyph", {"General": "settings", "Data": "database"}.get(title, icon))
+                b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+                b.setIconSize(QSize(22, 22))
+                b.clicked.connect(lambda _=False, i=i: self.show_section(i))
+                tabs.addWidget(b)
+                self.section_buttons.append(b)
+                self._section_titles.append(title)
+                self._section_desc.append(desc)
+                continue
+            from .widgets import segment_button
+            b = segment_button(title.replace("&", "&&"))  # "&" alone would underline the next letter
             b.setProperty("glyph", icon)
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            b.setIconSize(QSize(20, 20))
             b.clicked.connect(lambda _=False, i=i: self.show_section(i))
             row.addWidget(b)
             self.section_buttons.append(b)
@@ -400,11 +443,17 @@ class SettingsPage(Page):
         self.search.setToolTip("Find a setting by name or what it does, e.g. “dark”, “mph”, “password”")
         self.search.textChanged.connect(self._search_changed)
         self.search.returnPressed.connect(lambda: self._open_result(self.results.item(0)))
-        row.addWidget(self.search)
-        col.addLayout(row)
+        if mac:
+            tabs.addStretch(1)
+            self._bar_search.addWidget(self.search)
+            self.search.setFixedWidth(170)
+        else:
+            row.addWidget(self.search)
+            col.addLayout(row)
         self.section_note = muted("")
         self.section_note.setWordWrap(True)
         col.addWidget(self.section_note)
+        self.section_note.setVisible(not mac)  # Mac: the toolbar names the section; no blurb
         col.addWidget(self.sections)
         self.results = QListWidget()
         self.results.setObjectName("settingsResults")
@@ -417,17 +466,51 @@ class SettingsPage(Page):
         start = self._section_titles.index(saved) if saved in self._section_titles else 0
         self.show_section(start, remember=False)
 
+    def _mac_bar(self):
+        """Mac: the Settings window's toolbar (self.side_bar, placed above the page by
+        mac_shell.SideWindow): the section's name up in the title bar (search at its right), then
+        the section tabs, centred. Returns the tabs row."""
+        from PySide6.QtWidgets import QFrame
+        bar = QFrame()
+        bar.setObjectName("settingsBar")
+        v = QVBoxLayout(bar)
+        v.setContentsMargins(12, 0, 12, 8)
+        v.setSpacing(2)
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.addSpacing(170)  # as wide as the search on the right, so the name is centred
+        top.addStretch(1)
+        self.bar_title = QLabel("")
+        self.bar_title.setObjectName("settingsBarTitle")
+        top.addWidget(self.bar_title)
+        top.addStretch(1)
+        self._bar_search = top
+        holder = QWidget()
+        holder.setFixedHeight(32)  # the title bar's height: level with the traffic lights
+        holder.setLayout(top)
+        v.addWidget(holder)
+        tabs = QHBoxLayout()
+        tabs.setContentsMargins(0, 0, 0, 0)
+        tabs.setSpacing(4)
+        tabs.addStretch(1)
+        v.addLayout(tabs)
+        self.side_bar = bar
+        return tabs
+
     def show_section(self, index, remember=True):
         """Show one section (by position or title, e.g. show_section("AI"))."""
         if isinstance(index, str):
             index = self._section_titles.index(index) if index in self._section_titles else 0
         self.sections.setCurrentIndex(index)
         # Only the shown section counts for the page's height: no empty scroll below a short one.
+        # (and width: a wide section no longer makes every other one scroll sideways)
         for i in range(self.sections.count()):
             p = QSizePolicy.Policy.Preferred if i == index else QSizePolicy.Policy.Ignored
-            self.sections.widget(i).setSizePolicy(QSizePolicy.Policy.Preferred, p)
+            self.sections.widget(i).setSizePolicy(p, p)
         self.sections.adjustSize()
         self.section_note.setText(self._section_desc[index])
+        if getattr(self, "bar_title", None) is not None:
+            self.bar_title.setText(self._section_titles[index])
         if remember:
             self.state.settings.set(self.SECTION_KEY, self._section_titles[index])
         self._style_sections()
@@ -438,11 +521,26 @@ class SettingsPage(Page):
         c = _theme.colors()
         searching = bool(self.search.text().strip()) if hasattr(self, "search") else False
         current = -1 if searching else self.sections.currentIndex()
+        mac = getattr(self, "side_bar", None) is not None
+        if mac:
+            sel = c.get("sidebar_sel", c["surface2"])
+            self.side_bar.setStyleSheet(
+                f"QFrame#settingsBar {{ background: {c.get('sidebar', c['surface'])};"
+                f" border: none; border-bottom: 1px solid {c.get('header_line', c['border'])}; }}"
+                f" QLabel#settingsBarTitle {{ font-weight: 700; }}"
+                f" QToolButton#settingsTab {{ background: transparent; border: none; border-radius: 7px;"
+                f" padding: 4px 10px; color: {c['text']}; font-size: {_theme.font_size() - 2}pt; }}"
+                f" QToolButton#settingsTab:hover {{ background: {c.get('btn', sel)}; }}"
+                f" QToolButton#settingsTab[active=\"true\"] {{ background: {sel}; color: {c['accent']}; }}")
         for i, b in enumerate(self.section_buttons):
             active = i == current
             b.setProperty("active", "true" if active else "false")
             b.style().unpolish(b)
             b.style().polish(b)
+            if mac:
+                b.setIcon(_material_icon(b.property("glyph") or "tune", 22,
+                                         c["accent"] if active else c["tab_text"]))
+                continue
             b.setIcon(_material_icon(b.property("glyph") or "tune", 20,
                                      c["on_accent"] if active else c["tab_text"]))
 
@@ -590,14 +688,16 @@ class SettingsPage(Page):
             field.setContentsMargins(0, 0, 0, 0)
             holder.setLayout(field)
             field = holder
-        name = QLabel(label)
+        from . import theme as _theme
+        mac = _theme.is_mac()
+        name = QLabel(label + ":" if mac else label)  # Mac: "Units:", right-aligned, as in Mac apps
         name.setObjectName("muted")
-        name.setFixedWidth(self.LABEL_W)
+        name.setFixedWidth(self.LABEL_W + (20 if mac else 0))
         # As tall as a one-line control, text centred: lines up with buttons and pills beside it.
         if center:
             name.setMinimumHeight(min(field.sizeHint().height(), 40))
-        name.setAlignment(Qt.AlignmentFlag.AlignLeft | (Qt.AlignmentFlag.AlignVCenter if center
-                                                         else Qt.AlignmentFlag.AlignTop))
+        name.setAlignment((Qt.AlignmentFlag.AlignRight if mac else Qt.AlignmentFlag.AlignLeft)
+                          | (Qt.AlignmentFlag.AlignVCenter if center else Qt.AlignmentFlag.AlignTop))
         if tip:
             name.setToolTip(tip)
             field.setToolTip(field.toolTip() or tip)
@@ -984,6 +1084,21 @@ class SettingsPage(Page):
         window = self.window()
         if hasattr(window, "apply_window_mode"):
             window.apply_window_mode(mode)
+
+    def _interface_changed(self, btn_id):
+        import os
+        from . import theme as _theme
+        from .popups import MessageBox
+        want = "native" if btn_id == 1 else "classic"
+        if (want == "native") == _theme.is_mac():
+            return
+        self.state.settings.set(_theme.INTERFACE_KEY, want)
+        if self.state.busy:
+            MessageBox.information(self, "Interface", "The new interface shows the next time the app starts.")
+            return
+        if MessageBox.question(self, "Interface", "Restart now to switch the interface?") \
+                == MessageBox.StandardButton.Yes:
+            self.state.restart_app.emit(bool(os.environ.get("PQ35_DEMO")))
 
     def _theme_changed(self, btn_id):
         self.state.settings.set("theme", THEMES[btn_id][1])

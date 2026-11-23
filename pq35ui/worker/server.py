@@ -526,7 +526,15 @@ class Server:
                 from flasher.measuring_catalog import values_for_module
             except ImportError:  # older flasher submodule
                 return []
-            return values_for_module(int(params["module"]))
+            values = values_for_module(int(params["module"]))
+            if params.get("all") or os.environ.get("PQ35_DEMO"):
+                return values  # Analyze reads logs from any car; demo has its own pretend car
+            # Only the channels the scanned module has (channel_support): the module connected
+            # now when its identity is known ("ecu"), else the one last scanned.
+            from .channel_support import filter_values, for_module
+            values, _hidden = filter_values(values, for_module(self.data_dir, params["module"],
+                                                               params.get("ecu") or None))
+            return values
         raise WorkerError(f"Unknown method {method!r}")
 
     def hello(self):
@@ -663,9 +671,12 @@ class Server:
             try:
                 for attempt in (1, 2):
                     # The VIN is read every scan: the car may have changed since the last one.
+                    from .group_dump import requested
                     results, gateway = scan(adapter, self.progress, self._open_adapter,
                                             freeze_frames=bool(params.get("freeze_frames")),
-                                            only=params.get("only"))
+                                            only=params.get("only"),
+                                            group_dump_dir=self.data_dir if requested(self.data_dir) else None,
+                                            support_dir=self.data_dir)
                     if not _adapter_failed(results, gateway):
                         break
                     # The adapter, not the car: reopen it (opening resets the USB device, like

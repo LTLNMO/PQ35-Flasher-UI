@@ -1,8 +1,9 @@
 """Graph appearance chosen in Settings > Graphs: line colours, line thickness,
 label size and grid strength. Shared by Analyze and Live View; pages listen
 to `notifier.changed` so edits apply straight away."""
-from PySide6.QtCore import QObject, Signal
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QEvent, QObject, QRectF, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtWidgets import QGraphicsView
 
 DEFAULT_COLORS = [
     "#e8820c", "#3b82f6", "#22c55e", "#ef4444", "#a855f7",
@@ -160,7 +161,10 @@ def _paint(plot):
     from PySide6.QtGui import QColor
     from . import theme
     c = theme.colors()
-    plot.setBackground(c["surface"])
+    if theme.is_mac():
+        _round(plot)  # a card like every other: 10 px corners, hairline border
+    else:
+        plot.setBackground(c["surface"])
     item = plot.getPlotItem()
     for name in ("left", "bottom", "right", "top"):
         axis = item.getAxis(name)
@@ -175,6 +179,72 @@ def _paint(plot):
         legend.setLabelTextColor(c["text"])
         for _sample, label in legend.items:  # existing entries keep the colour they were made with
             label.setText(label.text, color=c["text"])
+
+
+INSET = 8      # Mac: the plot's padding inside its card, so nothing reaches the rounded corners
+RADIUS = 10.0  # Mac: the cards' corner radius (theme.py #card)
+_CARDS = ("card", "macTile", "macPanel")
+
+
+class _CardPainter(QObject):
+    """Mac: paints a graph as one of the app's cards (rounded fill + hairline border) under the
+    plot, and pads the plot INSET px inside it. A graph already inside a card (Live View's panels)
+    stays plain: no second box. Decided once, on first show, when its parents are known."""
+
+    def eventFilter(self, obj, event):
+        t = event.type()
+        if t == QEvent.Type.Show and isinstance(obj, QGraphicsView) and obj.property("card") is None:
+            self._setup(obj)
+        elif t == QEvent.Type.Paint and isinstance(obj.parent(), QGraphicsView):
+            self._paint(obj)
+        return False
+
+    @staticmethod
+    def _setup(view):
+        w, plain = view.parentWidget(), False
+        while w is not None and not plain:
+            plain = w.objectName() in _CARDS
+            w = w.parentWidget()
+        view.setProperty("card", not plain)
+        if not plain and view.property("mac_inset") != "manual":  # "manual": the owner pads it; "h": sideways only (the timeline's band fills its height; 1 px clears the border)
+            v = 1 if view.property("mac_inset") == "h" else INSET
+            view.getPlotItem().setContentsMargins(INSET, v, INSET, v)
+        view.viewport().update()
+
+    @staticmethod
+    def _paint(viewport):
+        from . import theme
+        c = theme.colors()
+        p = QPainter(viewport)
+        if viewport.parent().property("card"):
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setPen(QPen(QColor(c.get("card_border", c["border"])), 1))
+            p.setBrush(QColor(c["surface"]))
+            p.drawRoundedRect(QRectF(viewport.rect()).adjusted(0.5, 0.5, -0.5, -0.5), RADIUS, RADIUS)
+        else:
+            p.fillRect(viewport.rect(), QColor(c["surface"]))
+        p.end()
+
+
+_card_painter = None
+
+
+def _round(plot):
+    """Mac: *plot* drawn as a card (see _CardPainter). Safe to call again on a theme change."""
+    global _card_painter
+    if _card_painter is None:
+        _card_painter = _CardPainter()
+    plot.setBackground(None)  # _CardPainter paints it
+    if not plot.property("card_filter"):
+        plot.setProperty("card_filter", True)
+        plot.setFrameShape(plot.Shape.NoFrame)
+        plot.setStyleSheet("background: transparent; border: none;")
+        plot.viewport().setAutoFillBackground(False)
+        plot.installEventFilter(_card_painter)
+        plot.viewport().installEventFilter(_card_painter)
+        if plot.isVisible():
+            _card_painter._setup(plot)
+    plot.viewport().update()
 
 
 def _retheme_all():
@@ -217,6 +287,87 @@ _hook_theme()
 
 
 
+def dot_cell(color, pt):
+    """A table cell with a channel's small round dot (the sidebar's size), centred on the text
+    beside it: the start of every readout row (Analyze, Split, Live View)."""
+    return (f"<td valign='middle' style='color:{color}; font-size:{pt * 0.6:.1f}pt; "
+            f"padding-right:5px'>&#9679;</td>")
+
+
+def readout_html(rows, pt):
+    """The readout box's text: one row per line, [(colour, name, value)] → dot · name · bold value."""
+    cells = "".join(f"<tr>{dot_cell(color, pt)}<td valign='middle'>{name}</td>"
+                    f"<td valign='middle' align='right' style='padding-left:14px'><b>{value}</b></td></tr>"
+                    for color, name, value in rows)
+    return f"<table cellspacing='0' cellpadding='1' style='font-size:{pt}pt'>{cells}</table>"
+
+
+def readout_box(parent):
+    """The readout box as a plain widget over a graph (Live View): the same rounded box and rows
+    as readout_html, painted from a cached QTextDocument. A rich-text QLabel re-measured its
+    table on every update (adjustSize ~20 ms each); laying the document out once is ~2 ms."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QAbstractTextDocumentLayout, QPalette, QTextDocument
+    from PySide6.QtWidgets import QWidget
+    import math
+
+    class _Box(QWidget):
+        PAD_X, PAD_Y, RADIUS = 7, 5, 9
+
+        def __init__(self, parent):
+            super().__init__(parent)
+            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            self._doc = QTextDocument(self)
+            self._doc.setDocumentMargin(0)
+            self._bg, self._fg, self._border = QColor(0, 0, 0, 225), QColor("white"), QColor("#555555")
+            self._font = None
+            self._pixmap = None  # the drawn box; the graph under it repaints ~30x a second
+
+        def set_colors(self, bg, fg, border):
+            self._bg, self._fg, self._border = QColor(bg), QColor(fg), QColor(border)
+            self._pixmap = None
+            self.update()
+
+        def setText(self, html):
+            font = self.font()
+            if font != self._font:  # costly, and the font rarely changes
+                self._font = font
+                self._doc.setDefaultFont(font)
+            self._doc.setHtml(html)
+            size = self._doc.size()
+            self.resize(math.ceil(size.width()) + 2 * (self.PAD_X + 1),
+                        math.ceil(size.height()) + 2 * (self.PAD_Y + 1))
+            self._pixmap = None
+            self.update()
+
+        def _render(self):
+            from PySide6.QtGui import QPixmap
+            ratio = self.devicePixelRatioF()
+            pm = QPixmap(self.size() * ratio)
+            pm.setDevicePixelRatio(ratio)
+            pm.fill(Qt.GlobalColor.transparent)
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            p.setPen(QPen(self._border, 1))
+            p.setBrush(self._bg)
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), self.RADIUS, self.RADIUS)
+            p.translate(self.PAD_X + 1, self.PAD_Y + 1)
+            ctx = QAbstractTextDocumentLayout.PaintContext()
+            ctx.palette.setColor(QPalette.ColorRole.Text, self._fg)
+            self._doc.documentLayout().draw(p, ctx)
+            p.end()
+            return pm
+
+        def paintEvent(self, _event):
+            if self._pixmap is None or self._pixmap.deviceIndependentSize().toSize() != self.size():
+                self._pixmap = self._render()
+            p = QPainter(self)
+            p.drawPixmap(0, 0, self._pixmap)
+            p.end()
+
+    return _Box(parent)
+
+
 def rounded_text_item(**kw):
     """A pyqtgraph TextItem drawn as a rounded box like the app's dropdown menus (9 px corners,
     surface fill, 1 px border) instead of pyqtgraph's square one."""
@@ -244,3 +395,76 @@ def rounded_text_item(**kw):
     item = RoundedTextItem(**kw)
     item.textItem.document().setDocumentMargin(7)  # room inside the box, like a menu's padding
     return item
+
+
+# Mac: tick numbers drawn just inside the plot area, so the axis lines sit near the card's edges.
+INSIDE_STRIP = 40  # px just inside the value axis (its numbers): scrolling there zooms the values
+
+
+def inside_labels(plot_item):
+    """Mac: draw the left and bottom axes' numbers inside the plot area (left-aligned just right
+    of the value axis, and just above the time axis), and drop the axis titles. Classic: no-op."""
+    from . import theme
+    if not theme.is_mac():
+        return
+    from pyqtgraph import AxisItem
+    from PySide6.QtCore import Qt
+    left, bottom = plot_item.getAxis("left"), plot_item.getAxis("bottom")
+    for axis in (left, bottom):
+        if getattr(axis, "_inside", False):
+            continue
+        axis._inside = True
+        axis.showLabel(False)
+        axis.showLabel = lambda show=True, a=axis: AxisItem.showLabel(a, False)  # titles stay off
+        axis.setStyle(tickTextOffset=-60)  # computed over the view, then placed below
+
+        def bounding(a=axis):  # always reach over the view (with the grid off too), or the
+            rect = a.mapRectFromParent(a.geometry())  # numbers would be clipped away
+            view = a.linkedView()
+            return rect | view.mapRectToItem(a, view.boundingRect()) if view is not None else rect
+        axis.boundingRect = bounding
+
+        default = axis.generateDrawSpecs
+
+        def specs(p, a=axis, default=default):
+            result = default(p)
+            if result is None:
+                return result
+            axis_spec, tick_specs, text_specs = result
+            p1, p2 = axis_spec[1], axis_spec[2]
+            placed = []
+            for rect, _flags, text in text_specs:
+                if a.orientation == "left":
+                    rect.moveLeft(p1.x() + 4)
+                    if rect.bottom() > max(p1.y(), p2.y()) - 2:  # keep the corner for the time
+                        continue
+                    if rect.top() < min(p1.y(), p2.y()) + 20:  # the top-left: readout / row names
+                        continue
+                    flags = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+                else:
+                    rect.moveBottom(p1.y() - 2)
+                    lo, hi = min(p1.x(), p2.x()), max(p1.x(), p2.x())
+                    if rect.left() < lo + 28 or rect.right() > hi - 2:  # clear of the value numbers
+                        continue
+                    flags = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom
+                placed.append((rect, flags | Qt.TextFlag.TextDontClip, text))
+            return axis_spec, tick_specs, placed
+        axis.generateDrawSpecs = specs
+    # No room outside the plot: the card's padding is then the same on all four sides.
+    left.setWidth(0)
+    bottom.setHeight(0)
+    if not getattr(left, "_strip", False):
+        left._strip = True
+        default_wheel = left.wheelEvent
+
+        def wheel(ev, a=left):  # over the numbers = over the value axis (zoom the values only)
+            view = a.linkedView()
+            if view is not None:
+                r = view.sceneBoundingRect()
+                pos = ev.scenePos()
+                if r.contains(pos) and pos.x() - r.left() < INSIDE_STRIP:
+                    view.wheelEvent(ev, axis=1)
+                    ev.accept()
+                    return
+            default_wheel(ev)
+        left.wheelEvent = wheel

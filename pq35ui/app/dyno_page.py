@@ -67,7 +67,11 @@ class DynoPage(QWidget):
                                             self._fill_more)
         top.addWidget(self.more_button)
         theme.on_apply(self._show_meta)
-        outer.addLayout(top)
+        from .mac_shell import CONTENT_MARGINS, adopt_bar
+        if adopt_bar(self, top):
+            outer.setContentsMargins(*CONTENT_MARGINS)
+        else:
+            outer.addLayout(top)
         self._units = unitconv.system(state.settings)
         self.kg = dyno.KG_LB if self._units == "imperial" else 1.0
         self.load_panel = None
@@ -103,9 +107,34 @@ class DynoPage(QWidget):
         split.addWidget(side)
         self.view = DynoView(state.settings, self._car_for, self)
         split.addWidget(self.view)
+        # The column's toggle right after the pull picker (as Analyze's after Select channels)
+        top.removeWidget(self.sidebar_button)
+        self.view.control_row.insertWidget(1, self.sidebar_button)
+        if theme.is_mac():  # mac_shell's layout rules: Sessions a full-height column, the controls row 1 beside it
+            self.sidebar_button.setProperty("plain", True)
+            for b in (self.load_button, self.more_button):
+                top.removeWidget(b)
+            from .mac_shell import row_icons  # rule 7: the one right-hand order
+            row_icons(self.view.control_row, tools=(self.load_button,), more=self.more_button)
+            row = self.view.control_row  # rule 2: controls at their own width, icons at the right
+            for i in range(row.count()):
+                row.setStretch(i, 0)
+            row.insertStretch(row.indexOf(self.load_button), 1)
+            from .mac_shell import column, first_row, main_layout
+            first_row(row)
+            main_layout(self.view.layout())
+            outer.setContentsMargins(0, 0, 0, 0)  # the column runs to the window's edges
+            outer.setSpacing(0)
+            title.setText("Sessions")  # a column heading, as Analyze's and Diagnostics' (no capitals)
+            title.setObjectName("macPaneTitle")
+            first_row(head)
+            column(side)
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)
         split.setSizes([250, 900])
+        if theme.is_mac():
+            from .mac_shell import column_split
+            column_split(split)
         outer.addWidget(split, 1)
         collapsible_sidebar(split, state.settings, "dyno", "Sessions", button=self.sidebar_button)
 

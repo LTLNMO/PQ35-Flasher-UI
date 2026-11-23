@@ -189,7 +189,7 @@ def decode_freeze_frame(raw, code=None):
     extra = r[13:]
     for k in range(0, len(extra) - 2, 3):
         formula, a, c = extra[k], extra[k + 1], extra[k + 2]
-        if formula == 0x24:  # mileage (a*2560 + b*10 km); the flasher's table has it as degrees
+        if formula == 0x24:  # mileage (a*2560 + b*10 km), same as measuring.py formula 36
             value, unit = a * 2560 + c * 10, "km"
         else:
             try:
@@ -236,7 +236,7 @@ def _read_codes(tp, log, freeze_frames=False) -> dict:
     return report
 
 
-def _identify_family(tp, family, log, vehicle):
+def _identify_family(tp, family, log, vehicle, group_dump_dir=None, progress=None, support_dir=None):
     """Who a supported module is, over an open channel: its own identity read where it has
     one, the loader check, and (once per car) the VIN; mileage on the engine.
     Returns (entry fields, vehicle)."""
@@ -287,6 +287,30 @@ def _identify_family(tp, family, log, vehicle):
             km = read_mileage(kwp, log)
             if km is not None:
                 info["mileage_km"] = km
+        dump_reads = None
+        if group_dump_dir is not None and family.name == "engine" and not info["in_bootloader"]:
+            # One-off: every measuring group's raw bytes, for checking labels and scaling.
+            from .group_dump import read_groups, write_report
+            try:
+                dump_kwp = kwp or KWPClient(tp, log_fn=log, profile=SCAN_PROFILE)
+                groups = dump_reads = read_groups(dump_kwp, tp, log, progress)
+                info["group_dump"], summary = write_report(group_dump_dir, groups, info)
+                log(f"Engine groups saved to {info['group_dump']}: {len(summary['groups_ok'])} groups "
+                    f"answered, formulas {summary['formulas_seen']}")
+            except Exception as exc:
+                log(f"Engine group read failed: {type(exc).__name__}: {exc}")
+        if support_dir is not None and not info["in_bootloader"] and family.supports("log"):
+            # Once per module identity: which catalog groups this module has (channel_support).
+            from . import channel_support
+            key = channel_support.identity_key(info)
+            support_kwp = kwp or KWPClient(tp, log_fn=log, profile=SCAN_PROFILE)
+            if channel_support.needs_read(support_dir, family.module, key):
+                channel_support.read_and_save(support_kwp, tp, log, progress, support_dir,
+                                              family.module, key, label=family.name,
+                                              reads=dump_reads)
+            elif key:  # checked before: ask the missing groups again (a bad scan never sticks)
+                channel_support.recheck(support_kwp, tp, log, progress, support_dir,
+                                        family.module, key, label=family.name)
         info.update(connected=True, module=family.module, controller_family=family.name)
         fields["identity"] = info
         if info["in_bootloader"]:
@@ -336,7 +360,8 @@ def read_module(device, tp2: int, log, identity=None, identify=True) -> dict:
     return out
 
 
-def scan(adapter: dict, progress, open_adapter, known_vehicle=None, freeze_frames=False, only=None):
+def scan(adapter: dict, progress, open_adapter, known_vehicle=None, freeze_frames=False, only=None,
+         group_dump_dir=None, support_dir=None):
     """(supported-module results, gateway info with "modules": every listed module read).
 
     only: workshop addresses to read (a quick scan), or None for every module (a full scan).
@@ -357,7 +382,8 @@ def scan(adapter: dict, progress, open_adapter, known_vehicle=None, freeze_frame
         for entry in gateway.get("entries") or ():
             entry["name"] = address_name(entry["address"], entry.get("name", ""))
         results, gateway["modules"], vehicle = _one_pass(device, gateway, progress, log, vehicle,
-                                                         freeze_frames, only)
+                                                         freeze_frames, only, group_dump_dir,
+                                                         support_dir)
         progress("SCAN", 100, "Done")
     finally:
         device.close()
@@ -365,7 +391,8 @@ def scan(adapter: dict, progress, open_adapter, known_vehicle=None, freeze_frame
     return annotate(results, gateway), gateway
 
 
-def _one_pass(device, gateway, progress, log, vehicle, freeze_frames=False, only=None):
+def _one_pass(device, gateway, progress, log, vehicle, freeze_frames=False, only=None,
+              group_dump_dir=None, support_dir=None):
     """Every gateway-listed module, then supported addresses the list doesn't name (e.g. a
     bench with no gateway), each opened once; listed modules that didn't answer get a second,
     slower try at the end. Returns (results, modules, vehicle):
@@ -392,7 +419,8 @@ def _one_pass(device, gateway, progress, log, vehicle, freeze_frames=False, only
         family = families.get(target["tp2"])
         label = f"{target['address']:02X} {target['name']}" if target["address"] is not None else family.name
         progress("SCAN", 100 * index / len(targets), f"Reading {label} ({index + 1}/{len(targets)})")
-        result, module, vehicle = _visit(device, target, family, log, vehicle, freeze_frames, 1.0)
+        result, module, vehicle = _visit(device, target, family, log, vehicle, freeze_frames, 1.0,
+                                         group_dump_dir, progress, support_dir)
         visits.append([target, result, module])
     # Second chance: a coded module that didn't open a channel may just have been slow (the
     # same car's immobilizer answered one scan and not the next). Try those again, slower.
@@ -402,7 +430,7 @@ def _one_pass(device, gateway, progress, log, vehicle, freeze_frames=False, only
         target = visit[0]
         progress("SCAN", 99, f"Trying {target['address']:02X} {target['name']} again ({k + 1}/{len(again)})")
         result, module, vehicle = _visit(device, target, families.get(target["tp2"]), log, vehicle,
-                                         freeze_frames, 2.0)
+                                         freeze_frames, 2.0, group_dump_dir, progress, support_dir)
         if module is not None and module.get("status") != "no_answer":
             visit[1], visit[2] = result, module
     results = [r for _t, r, _m in visits if r is not None]
@@ -410,7 +438,8 @@ def _one_pass(device, gateway, progress, log, vehicle, freeze_frames=False, only
     return results, modules, vehicle
 
 
-def _visit(device, target, family, log, vehicle, freeze_frames, timeout):
+def _visit(device, target, family, log, vehicle, freeze_frames, timeout, group_dump_dir=None,
+           progress=None, support_dir=None):
     """Open one module's channel and read it. Returns (family result or None, listed-module entry
     or None, vehicle)."""
     listed = target["address"] is not None
@@ -426,7 +455,8 @@ def _visit(device, target, family, log, vehicle, freeze_frames, timeout):
         return result, (dict(module, status="no_answer", detail=str(exc)) if listed else None), vehicle
     try:
         if family:
-            fields, vehicle = _identify_family(tp, family, log, vehicle)
+            fields, vehicle = _identify_family(tp, family, log, vehicle, group_dump_dir, progress,
+                                               support_dir)
             result = dict({"family": family.name, "module": family.module}, **fields)
             status = fields["status"]
             if status in ("bootloader", "responding"):

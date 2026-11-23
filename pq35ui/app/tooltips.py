@@ -18,7 +18,6 @@ BY_TEXT = {
     "Open Projects": "Go to the Projects tab.",
     # Connect
     "Scan": "Ask every supported module address what's there (ignition on, engine off). Read-only.",
-    "Select manually  ▾": "Choose a module type yourself without scanning, e.g. on a bench harness.",
     "Select": "Work on this module in the other tabs.",
     "Read info": "Read this module's part number and software version (checks it's there).",
     "Re-read info": "Read this module's part number and software version again.",

@@ -38,8 +38,16 @@ changes are in logging, diagnostics and the interface.
     (keeps the last few minutes).
   - Alarms (the same limits as Live View's): a channel past its limit turns red, the window
     flashes red, and a popup lets you keep recording or stop.
+  - Only the channels your car has: a scan checks, once per engine/transmission/AWD
+    module (part number and software version), which measuring groups it answers, and
+    the channel lists leave out the ones it doesn't (a 2011 A3's MED17 has no groups
+    above 127, for example).
   - Per-group read rates. A value that sits in several groups (engine speed, for example)
     is filled from every group that's read, so it updates more often.
+  - Each recording keeps which measuring group every row came from and the raw bytes the
+    module sent (a small companion file, not in the CSV). Analyze uses it to show each
+    channel at its real read time, so channels from different groups line up, and any log
+    can be decoded again if a formula is ever corrected.
   - Every recording goes to Recent logs automatically. Export saves a copy as Standard
     (Datazap CSV), Integrated Engineering, MegaLogViewer or generic CSV, and optional
     auto-export does this when you press Stop.
@@ -66,7 +74,14 @@ changes are in logging, diagnostics and the interface.
 
 - **Measuring blocks**: formula 33 now reads `100*B/A`. The original `0.01*A*B` read load,
   throttle, N75 and fuel-pump duty up to 6.5x too high. Formula 34's unit is crank degrees,
-  not kW.
+  not kW, and formula 31 (lambda) has no unit. Formula 27 (ignition timing) and 4 keep
+  their before/after-TDC sign. Formula 36 is the odometer (`A*2560+B*10` km), formula 14 is
+  `0.005*A*B` bar, and formulas 80, 90-92, 96, 97, 99 and 102 are decoded. Checked against a
+  real car's group read, kw1281test and VCDS logs of a MED17.5.
+- **Channel names**: group 122 field 4 is "Transmission torque intervention" (Ross-Tech's
+  standard name; it's a status code), and the duplicate "Throttle valve angle" is gone (the
+  same reading as Throttle valve position). Older logs open with the corrected names and units
+  (lambda without "°C", for example); the files themselves aren't changed.
 - **Group 122** is the transmission's torque group. It's no longer treated as a copy of 120.
 - **candleLight / gs_usb on macOS**: the adapter can be unplugged and plugged back in
   without restarting the app.

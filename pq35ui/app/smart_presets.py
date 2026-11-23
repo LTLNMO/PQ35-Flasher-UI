@@ -22,9 +22,20 @@ from PySide6.QtWidgets import QHBoxLayout, QScrollArea, QSizePolicy, QWidget
 from . import log_export, theme
 
 AI_KEY = "smart_presets:ai"          # generate with AI automatically (default on)
-BAR_KEY = "playback:smart_bar"       # show the chip row (default on)
+BAR_KEY = "playback:smart_bar"       # show the chip row (default off: see bar_on)
+BAR_RESET_KEY = "playback:smart_bar_off_once"
 CACHE_FILE = "smart_presets.json"
 CACHE_VERSION = 2  # 2: stricter prompt + unit check (older AI answers are asked again)
+
+def bar_on(settings):
+    """Whether Analyze shows the chip row. Off unless switched on (✨ or Settings → Data): the row
+    pushed the graph below where every other page's content starts (user 2026-11-23). Switched off
+    once for everyone who had it on from the old default."""
+    if not settings.get(BAR_RESET_KEY):
+        settings.set(BAR_RESET_KEY, True)
+        settings.set(BAR_KEY, False)
+    return bool(settings.get(BAR_KEY, False))
+
 
 # ── built-in layouts: (name, description, rows); a row = (include patterns, exclude patterns) ──
 RULES = (
@@ -366,6 +377,12 @@ class _Chip(QWidget):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
+    def _badge_font(self):
+        f = self.font()
+        f.setPointSizeF(max(theme.font_size() - 2, 9))
+        f.setWeight(f.Weight.DemiBold)
+        return f
+
     def _small(self):
         f = self.font()
         f.setPointSizeF(max(f.pointSizeF() - 2.5, 8))
@@ -373,6 +390,8 @@ class _Chip(QWidget):
 
     def sizeHint(self):
         from PySide6.QtGui import QFontMetrics
+        if theme.is_mac():  # mockup .badge: 11 pt semibold, 2 px 7 px, radius 5, white .1
+            return QSize(QFontMetrics(self._badge_font()).horizontalAdvance(self.name) + 14, 20)
         bold = self.font()
         bold.setBold(True)
         w = max(QFontMetrics(bold).horizontalAdvance(self.name),
@@ -397,6 +416,16 @@ class _Chip(QWidget):
         c = theme.colors()
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if theme.is_mac():
+            r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(c.get("btn_hover", c["seg_on"]) if self._hover else c.get("conn_bg", c["surface2"])))
+            p.drawRoundedRect(r, 5, 5)
+            p.setFont(self._badge_font())
+            p.setPen(QColor(c["text"] if self._hover else c.get("sub", c["muted"])))
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.name)
+            p.end()
+            return
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         p.setPen(QColor(c["muted"] if self._hover else c["border"]))
         p.setBrush(QColor(c["surface2"] if self._hover else c["surface"]))

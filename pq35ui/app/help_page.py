@@ -1,7 +1,7 @@
 """Help: what each tab is for and how to use its features."""
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem, QSplitter, QStackedWidget, QTextBrowser,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QSplitter, QStackedWidget, QTextBrowser,
     QVBoxLayout, QWidget,
 )
 
@@ -221,7 +221,9 @@ recording. Nothing is written to the module.</p>
 box and <i>Select all</i> / <i>Hide all</i> for what the search finds. Categories open and close with a click on their name; the switch on a category turns all of it on
 (or off when it's all on). Point at or click a value
 to see what it shows (the box under the list). The line under that counts the values and the measuring groups they
-come from: each group is another read from the module, so fewer groups log faster.</li>
+come from: each group is another read from the module, so fewer groups log faster.
+After a scan, the list only has the values your car's module has: the first scan of a module
+checks which of its measuring groups answer, and values it doesn't have are left out.</li>
 <li><b>Presets</b> (the bookmark ▾ at the top right, beside the sliders icon, as on Analyze): load a ready-made or
 saved set, <i>Save preset…</i> the switched-on channels under a name (e.g. "Boost monitoring"),
 <i>Overwrite preset</i> with them, or <i>Manage presets…</i> to rename or delete. Presets are shared with
@@ -265,6 +267,12 @@ down (before Start) to change its column in the log; right-click for Remove / Se
 and graphs it live: the graph grows as rows are written and follows the newest data while the view is at the
 end (scroll back to look around). When you stop, Analyze shows the whole log. Not available for Rolling,
 whose file is written when you stop.</p>
+<p><b>Read times.</b> The module answers one measuring group at a time, so each value is only fresh when its
+own group is read (with ten groups, about every 0.7 s). Every recording also keeps which group each row came
+from and the raw bytes the module sent. Analyze uses that to show each value at the moment it was really read,
+drawing a straight line between two reads instead of holding the old value, so channels from different groups
+line up in time. Status codes and bit fields are shown as read. The CSV itself stays as recorded, and Export
+writes the recorded values.</p>
 <h3>Saving and Export</h3>
 <p>There's nothing to save by hand: the log in Datalogs is the Standard CSV (Datazap-compatible) that Analyze reads.
 <b>Export…</b> always means a copy in another format or place.
@@ -622,21 +630,25 @@ class HelpPage(QWidget):
         super().__init__(parent)
         self.state = state
         self.setObjectName("page")
+        self._history, self._ahead, self._moving = [], [], False
+        if theme.is_mac():
+            self._build_mac()
+            return
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        # Top row: the sidebar button, then search (stays when the topics are hidden)
+        # Top row: search, then the topics' toggle (a picker first, its column's toggle beside it)
         top = QHBoxLayout()
         top.setContentsMargins(16, 16, 16, 0)
         top.setSpacing(8)
         from .analyze_tools import icon_button
         self.sidebar_button = icon_button("toc", "Show or hide the topics", checkable=True)
-        top.addWidget(self.sidebar_button)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search help (alarm, trigger, map…)")
         self.search.setMaximumWidth(360)
         self.search.textChanged.connect(self._filter)
         top.addWidget(self.search, 1)
+        top.addWidget(self.sidebar_button)
         top.addStretch(1)
         outer.addLayout(top)
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -678,6 +690,149 @@ class HelpPage(QWidget):
         self.topics.setCurrentRow(0)
         theme.on_apply(lambda: self._show(self.topics.currentItem()))  # page colours follow the theme
 
+    # --- Mac interface: the mockup's Help window (Mockups/Swift native/14-help.png) ---
+
+    def _build_mac(self):
+        """Sidebar (search + topics) running up under the traffic lights; on the right a title row
+        "PQ35 Flasher Help" with back / forward, a hairline, then the text: plain, no box."""
+        from PySide6.QtWidgets import QFrame
+        from .analyze_tools import icon_button
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        split = QSplitter(Qt.Orientation.Horizontal)
+        split.setHandleWidth(1)
+        split.setChildrenCollapsible(False)
+        self._split = split
+        outer.addWidget(split)
+
+        side = QWidget()
+        side.setObjectName("helpSide")
+        side.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        sb = QVBoxLayout(side)
+        sb.setContentsMargins(10, 44, 10, 10)  # 44: clear of the traffic lights
+        sb.setSpacing(10)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search help")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self._filter)
+        from .main_window import _material_icon
+        from PySide6.QtWidgets import QLineEdit as _LE
+        self._search_icon = self.search.addAction(_material_icon("search", 16, theme.colors()["muted"]),
+                                                  _LE.ActionPosition.LeadingPosition)
+        sb.addWidget(self.search)
+        self.topics = QListWidget()
+        self.topics.setObjectName("helpTopics")
+        self.topics.setFrameShape(QFrame.Shape.NoFrame)
+        self.topics.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.topics.setTextElideMode(Qt.TextElideMode.ElideRight)  # long titles end in …
+        for key, title, _body in TOPICS:
+            item = QListWidgetItem(title)
+            item.setData(Qt.ItemDataRole.UserRole, key)
+            self.topics.addItem(item)
+        self.topics.currentItemChanged.connect(lambda item, _prev: self._show(item))
+        sb.addWidget(self.topics, 1)
+        side.setMinimumWidth(180)
+        split.addWidget(side)
+
+        right = QWidget()
+        right.setObjectName("page")
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(0)
+        bar = QWidget()
+        bar.setFixedHeight(52)
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(20, 0, 16, 0)
+        row.setSpacing(6)
+        title = QLabel("PQ35 Flasher Help")
+        title.setObjectName("h1")
+        row.addWidget(title)
+        row.addSpacing(10)
+        self.back_button = icon_button("chevron_left", "Back")
+        self.forward_button = icon_button("chevron_right", "Forward")
+        self.back_button.clicked.connect(lambda: self._step(-1))
+        self.forward_button.clicked.connect(lambda: self._step(1))
+        row.addWidget(self.back_button)
+        row.addWidget(self.forward_button)
+        row.addStretch(1)
+        rl.addWidget(bar)
+        self._rule = QFrame()
+        self._rule.setFixedHeight(1)
+        rl.addWidget(self._rule)
+        self.view = QTextBrowser()
+        self.view.setOpenExternalLinks(True)
+        self.view.setFrameShape(QFrame.Shape.NoFrame)
+        # Lines no longer than the mockup's 780 px column, however wide the window.
+        self.view.setLineWrapMode(QTextBrowser.LineWrapMode.FixedPixelWidth)
+        self.view.setLineWrapColumnOrWidth(780)
+        self.view.setViewportMargins(44, 26, 24, 26)
+        self.right_stack = QStackedWidget()
+        self.right_stack.addWidget(self.view)
+        self.log_viewer = None
+        rl.addWidget(self.right_stack, 1)
+        split.addWidget(right)
+        split.setCollapsible(1, False)
+        split.setStretchFactor(1, 1)
+        split.setSizes([220, 880])
+        self._mac_style()
+        theme.on_apply(self._mac_style)
+        self.topics.setCurrentRow(0)
+        self._nav_buttons()
+        theme.on_apply(lambda: self._show(self.topics.currentItem()))
+
+    def _mac_style(self):
+        c = theme.colors()
+        from .main_window import _material_icon
+        self._search_icon.setIcon(_material_icon("search", 16, c["muted"]))
+        line = c.get("sidebar_line", c["border"])
+        self._split.setStyleSheet(f"QSplitter::handle {{ background: {line}; }}")
+        self._rule.setStyleSheet(f"background: {c.get('header_line', line)};")
+        self.findChild(QWidget, "helpSide").setStyleSheet(
+            f"#helpSide {{ background: {c.get('sidebar', c['surface'])}; }}"
+            f" #helpSide QLineEdit {{ background: {c.get('conn_bg', c['surface2'])}; border: none;"
+            f" border-radius: 7px; padding: 4px 8px; }}"
+            f" QListWidget#helpTopics {{ background: transparent; border: none; outline: none; }}"
+            f" QListWidget#helpTopics::item {{ padding: 4px 10px; border-radius: 6px; color: {c['text']}; }}"
+            f" QListWidget#helpTopics::item:hover {{ background: transparent; }}"
+            f" QListWidget#helpTopics::item:selected {{ background: {c.get('sidebar_sel', c['surface2'])};"
+            f" color: {c['text']}; }}")
+        self.view.setStyleSheet("QTextBrowser { background: transparent; }")
+
+    def _step(self, direction):
+        """Back (-1) / Forward (+1) through the topics read, like Help Viewer."""
+        source, target = (self._history, self._ahead) if direction < 0 else (self._ahead, self._history)
+        if direction < 0 and len(source) < 2 or direction > 0 and not source:
+            return
+        if direction < 0:
+            target.append(source.pop())
+            key = source[-1]
+        else:
+            key = source.pop()
+            target.append(key)
+        row = next(i for i, (k, _t, _b) in enumerate(TOPICS) if k == key)
+        self._moving = True
+        self.topics.setCurrentRow(row)
+        self._moving = False
+        self._nav_buttons()
+
+    def _remember(self, key):
+        if self._moving or (self._history and self._history[-1] == key):
+            return
+        self._history.append(key)
+        self._ahead.clear()
+        self._nav_buttons()
+
+    def _nav_buttons(self):
+        if hasattr(self, "back_button"):
+            from PySide6.QtWidgets import QGraphicsOpacityEffect
+            for button, on in ((self.back_button, len(self._history) > 1),
+                               (self.forward_button, bool(self._ahead))):
+                button.setEnabled(on)
+                fade = button.graphicsEffect() or QGraphicsOpacityEffect(button)
+                fade.setOpacity(1.0 if on else 0.4)  # the mockup's faded arrow
+                button.setGraphicsEffect(fade)
+
     def refresh(self):
         pass
 
@@ -714,6 +869,7 @@ class HelpPage(QWidget):
         if item is None:
             return
         key = item.data(Qt.ItemDataRole.UserRole)
+        self._remember(key)
         if key == "logs":
             self.show_logs()
             return
@@ -725,6 +881,20 @@ class HelpPage(QWidget):
             import re
             body = re.sub(f"(?i)(?<![<&\\w])({re.escape(query)})(?![^<]*>)",
                           f"<span style='background:{c['accent']};color:{c['on_accent']}'>\\1</span>", body)
+        if theme.is_mac():  # the mockup: 26 px title, 17 px white headings, roomy lines
+            fs = theme.font_size()
+            self.view.setHtml(f"""
+<style>
+  body {{ color: {c['text']}; font-size: {fs + 1}pt; }}
+  p, li {{ line-height: 150%; }}
+  h2 {{ color: {c['text']}; font-size: {fs + 12}pt; font-weight: 700; margin-bottom: 10px; }}
+  h3 {{ color: {c['text']}; font-size: {fs + 4}pt; font-weight: 700; margin-top: 18px; margin-bottom: 6px; }}
+  code {{ background: {c.get('surface2', c['surface'])}; }}
+  li {{ margin-bottom: 4px; }}
+  i {{ color: {c['muted']}; }}
+</style>
+<h2>{title}</h2>{body}""")
+            return
         self.view.setHtml(f"""
 <style>
   body {{ color: {c['text']}; }}

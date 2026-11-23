@@ -112,7 +112,7 @@ class DynoRecorder(QObject):
             self._loading = False
             self.message.emit("Couldn't load the engine's values: "
                               + (error.get("message", str(error)) if isinstance(error, dict) else str(error)), "error")
-        self.state.offline("catalog", {"module": module}, loaded, failed)
+        self.state.offline("catalog", self.state.catalog_params(module), loaded, failed)
 
     def _begin(self, catalog):
         values, why = pick_values(catalog)

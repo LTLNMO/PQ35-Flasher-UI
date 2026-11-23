@@ -106,7 +106,7 @@ class MapViewer(QWidget):
         self.path_b = None
         # Right side (this widget): what the map looks like.
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 16, 16, 16)
+        layout.setContentsMargins(8, 16, 24 if theme.is_mac() else 16, 20 if theme.is_mac() else 16)
         layout.setSpacing(10)
         # Left side (self.sidebar, placed by MapsPage): which file and which map.
         self.sidebar = QWidget()
@@ -671,7 +671,7 @@ class FileCompare(QWidget):
 
         # Right side (this widget): the bytes around the selected change.
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 16, 16, 16)
+        layout.setContentsMargins(8, 16, 24 if theme.is_mac() else 16, 20 if theme.is_mac() else 16)
         layout.setSpacing(10)
         top = QHBoxLayout()
         top.addWidget(muted("Bytes around the selected change (A above B; changed bytes highlighted)."), 1)
@@ -791,13 +791,12 @@ class MapsPage(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        # Top row: the sidebar button, then the tool switch (stays when the setup is hidden)
+        # Top row: the tool switch, then the setup's toggle (a picker first, its column's toggle beside it)
         top = QHBoxLayout()
         top.setContentsMargins(16, 16, 16, 0)
         top.setSpacing(8)
         from .analyze_tools import icon_button
         self.sidebar_button = icon_button("tune", "Show or hide the map setup", checkable=True)
-        top.addWidget(self.sidebar_button)
         outer.addLayout(top)
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setHandleWidth(6)
@@ -817,7 +816,15 @@ class MapsPage(QWidget):
         self.tabs.addTab("Map viewer")
         self.tabs.addTab("Compare files")
         top.addWidget(self.tabs)
+        top.addWidget(self.sidebar_button)
         top.addStretch(1)
+        if theme.is_mac():  # mac_shell's rule 5: the setup is a full-height column; its first row
+            from .mac_shell import column, first_row  # is the tool switch + the setup's toggle
+            outer.removeItem(top)
+            top.setContentsMargins(0, 0, 0, 0)
+            sb.insertLayout(0, first_row(top))
+            column(sidebar)
+            self._top = top
         self.side_stack = QStackedWidget()
         sb.addWidget(self.side_stack, 1)
         self.splitter.addWidget(scrollable(sidebar))
@@ -831,18 +838,53 @@ class MapsPage(QWidget):
             tool.setObjectName("page")
             self.side_stack.addWidget(tool.sidebar)
             self.content_stack.addWidget(tool)
-        self.splitter.addWidget(scrollable(self.content_stack))
+        if theme.is_mac():  # the main area: rules 2–4; row 1 gets the switch while the setup is hidden
+            from .mac_shell import first_row, main_layout
+            main = QWidget()
+            main.setObjectName("page")
+            ml = main_layout(QVBoxLayout(main))
+            self._main_row = first_row(QHBoxLayout())
+            self._main_row.setContentsMargins(0, 0, 0, 0)
+            self._main_row.addStretch(1)  # the switch + toggle go in front of it, at their own width
+            self._main_row_box = QWidget()
+            self._main_row_box.setLayout(self._main_row)
+            self._main_row_box.hide()
+            ml.addWidget(self._main_row_box)
+            ml.addWidget(self.content_stack, 1)
+            self.splitter.addWidget(scrollable(main))
+        else:
+            self.splitter.addWidget(scrollable(self.content_stack))
         self.tabs.currentChanged.connect(self._tool_changed)
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setSizes([420, 880])
         self.splitter.setCollapsible(1, False)
+        if theme.is_mac():  # setup column | the tool
+            from .mac_shell import column_split
+            column_split(self.splitter, 420)  # its controls need more than a list's width
+            for tool in (self.viewer, self.compare):  # the main area has the margins
+                if tool.layout() is not None:
+                    tool.layout().setContentsMargins(0, 0, 0, 0)
         toggle = collapsible_sidebar(self.splitter, state.settings, "maps", "Map setup", button=self.sidebar_button)
         # Setup hidden: the tool keeps the page's 16 px edge
-        edge = lambda shown: self.content_stack.setContentsMargins(0 if shown else 8, 0, 0, 0)
+        edge = self._mac_shown if theme.is_mac() else (
+            lambda shown: self.content_stack.setContentsMargins(0 if shown else 8, 0, 0, 0))
         toggle.shown_changed.connect(edge)
         edge(self.sidebar_button.isChecked())
         state.open_in_maps.connect(self._open_pair)
+
+    def _mac_shown(self, shown):
+        """Rule 5: the tool switch + toggle are the setup column's first row; while it's hidden
+        they start the main area instead, in the same spot."""
+        for w in (self.tabs, self.sidebar_button):
+            self._top.removeWidget(w)
+            self._main_row.removeWidget(w)
+        target = self._top if shown else self._main_row
+        target.insertWidget(0, self.tabs)
+        target.insertWidget(1, self.sidebar_button)
+        self._main_row_box.setVisible(not shown)
+        self.tabs.show()
+        self.sidebar_button.show()
 
     def ai_context(self):
         """The open tool's data for the Assistant."""

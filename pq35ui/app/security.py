@@ -9,6 +9,7 @@ import hmac
 import os
 import time
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QVBoxLayout,
@@ -152,8 +153,13 @@ class SecurityCard(Card):
         self.status = muted("")
         self.status.setWordWrap(False)
         row = QHBoxLayout()
-        name = muted("Password")
-        name.setFixedWidth(110)  # same label column as the other Settings cards
+        from . import theme
+        mac = theme.is_mac()
+        name = muted("Password:" if mac else "Password")
+        # Same label column as the other Settings rows (Mac: 130 px, right-aligned "Label:")
+        name.setFixedWidth(130 if mac else 110)
+        if mac:
+            name.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(name)
         row.addSpacing(16)
         row.addWidget(self.status)

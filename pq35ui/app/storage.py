@@ -157,6 +157,45 @@ def imported_logs_dir() -> Path:
     return path
 
 
+# Channel ids that were dropped or merged -> the id that replaces them. Saved channel
+# selections, presets and layouts are moved over once, when the settings load.
+RENAMED_IDS = {
+    # Same field (group 3 field 3) as engine.throttle_position: one channel now (2026-11-22)
+    "engine.throttle_angle": "engine.throttle_position",
+}
+
+
+def _migrate_ids(value):
+    """Replace RENAMED_IDS in place anywhere in the settings (list items, dict keys and values),
+    without leaving a duplicate in a list. True if anything changed."""
+    changed = False
+    if isinstance(value, list):
+        out = []
+        for item in value:
+            if isinstance(item, str) and item in RENAMED_IDS:
+                item, changed = RENAMED_IDS[item], True
+            elif _migrate_ids(item):
+                changed = True
+            if isinstance(item, str) and item in out:
+                changed = True
+                continue
+            out.append(item)
+        value[:] = out
+    elif isinstance(value, dict):
+        for key in list(value):
+            if _migrate_ids(value[key]):
+                changed = True
+            if isinstance(value[key], str) and value[key] in RENAMED_IDS:
+                value[key], changed = RENAMED_IDS[value[key]], True
+            if key in RENAMED_IDS:
+                new = RENAMED_IDS[key]
+                if new not in value:
+                    value[new] = value[key]
+                del value[key]
+                changed = True
+    return changed
+
+
 class Settings:
     def __init__(self):
         self.path = data_dir() / "settings.json"
@@ -164,6 +203,8 @@ class Settings:
             self.values = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             self.values = {}
+        if _migrate_ids(self.values):
+            self._save()
         global _ACTIVE_SETTINGS
         _ACTIVE_SETTINGS = self
 

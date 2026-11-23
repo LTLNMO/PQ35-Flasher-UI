@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QDialogButtonBox,
@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from . import alarms, channel_info, log_export, recent_logs
+from . import alarms, channel_info, log_export, log_info, recent_logs, theme
 from . import units as unitconv
 from .storage import datalogs_dir
 from .presets import PresetButton
@@ -120,8 +120,12 @@ class DatazapWriter:
     WAIT_S = 5.0  # seconds to wait for every value before writing rows anyway
 
     def __init__(self, path, columns, groups, mode="continuous", keep_s=300.0,
-                 trigger=None, pre_s=5.0, post_s=3.0):
+                 trigger=None, pre_s=5.0, post_s=3.0, info_columns=None):
         self.path = path
+        # log_info companion: {key: {group, field, formula, unit, kind, id}} (filled as reads
+        # arrive), and per written row its group and raw bytes. None: no companion file.
+        self.info_columns = info_columns
+        self.row_groups, self.row_raw = [], []
         self.wait_since = None
         self.missing = []  # column titles with no value when rows started
         self.columns = columns  # [(key, title)]; raw groups add theirs on first read
@@ -144,7 +148,8 @@ class DatazapWriter:
         self.last_true = None
         self.events = 0
 
-    def update(self, group: int, values: dict, units: dict, seconds: float):
+    def update(self, group: int, values: dict, units: dict, seconds: float, raw=None):
+        """raw: the read's bytes as hex (log_info.raw_hex), kept with the row it makes."""
         self.seen.add(group)
         self.latest.update({k: v for k, v in values.items() if v is not None})
         self.units.update({k: u for k, u in units.items() if u})
@@ -157,12 +162,13 @@ class DatazapWriter:
             self.ready = True
             self.missing = [title for key, title in self.columns if key not in self.latest]
         row = [f"{seconds:.3f}"] + [self.latest.get(key, "") for key, _ in self.columns]
+        meta = (group, raw)
         if self.mode == "loop":
-            self._buffer(seconds, row, self.keep_s)
+            self._buffer(seconds, row, self.keep_s, meta)
         elif self.mode == "trigger":
-            self._triggered_row(seconds, row)
+            self._triggered_row(seconds, row, meta)
         else:
-            self._write(row)
+            self._write(row, meta)
 
     @property
     def status(self):
@@ -174,12 +180,12 @@ class DatazapWriter:
             return f"{state} · {self.events} event(s)"
         return ""
 
-    def _buffer(self, seconds, row, keep):
-        self.buffer.append((seconds, row))
+    def _buffer(self, seconds, row, keep, meta=None):
+        self.buffer.append((seconds, row, meta))
         while self.buffer and seconds - self.buffer[0][0] > keep:
             self.buffer.popleft()
 
-    def _triggered_row(self, seconds, row):
+    def _triggered_row(self, seconds, row, meta=None):
         try:
             active = bool(self.trigger(self.latest))
         except Exception:
@@ -190,15 +196,15 @@ class DatazapWriter:
                 self.triggered = True
                 self.events += 1
                 while self.buffer:
-                    self._write(self.buffer.popleft()[1])
-            self._write(row)
+                    self._write(*self.buffer.popleft()[1:])
+            self._write(row, meta)
         elif self.triggered and seconds - self.last_true <= self.post_s:
-            self._write(row)
+            self._write(row, meta)
         else:
             self.triggered = False
-            self._buffer(seconds, row, self.pre_s)
+            self._buffer(seconds, row, self.pre_s, meta)
 
-    def _write(self, row):
+    def _write(self, row, meta=None):
         if self.writer is None:
             # Line-buffered: every row reaches the file whole, at once (Analyze can follow it live)
             self.file = open(self.path, "w", newline="", encoding="utf-8", buffering=1)
@@ -206,6 +212,9 @@ class DatazapWriter:
             self.writer.writerow(["Time"] + [self._title(key, title) for key, title in self.columns])
         self.writer.writerow(row)
         self.rows += 1
+        group, raw = meta or (None, None)
+        self.row_groups.append(group)
+        self.row_raw.append(raw)
         self.last_t = float(row[0])
         if self.first_t is None:
             self.first_t = self.last_t
@@ -223,9 +232,24 @@ class DatazapWriter:
     def close(self):
         if self.mode == "loop":
             while self.buffer:
-                self._write(self.buffer.popleft()[1])
+                self._write(*self.buffer.popleft()[1:])
         if self.file:
             self.file.close()
+        self._save_info()
+
+    def _save_info(self):
+        """The log_info companion, when every written row knows its group. Never raises: the
+        recording itself is already safe."""
+        if self.info_columns is None or not self.rows or None in self.row_groups:
+            return
+        try:
+            from . import log_info
+            columns = {self._title(key, title): dict(self.info_columns.get(key) or {})
+                       for key, title in self.columns}
+            log_info.save(self.path, columns, self.row_groups, self.row_raw)
+        except Exception:
+            import logging
+            logging.getLogger("Logger").exception("Couldn't save the log's companion file")
 
 
 def _yes(answer):
@@ -238,6 +262,8 @@ class _ModeButton(QPushButton):
 
     def __init__(self, label, dropdown=False):
         super().__init__(label)
+        from .widgets import style_segment
+        style_segment(self)
         self.dropdown = dropdown
 
     def paintEvent(self, event):
@@ -273,25 +299,17 @@ class RecordingModePicker(QWidget):
     def __init__(self, open_trigger_settings, parent=None):
         super().__init__(parent)
         self._open_trigger = open_trigger_settings
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(2)
+        from . import theme
+        from .widgets import segment_track
         self.buttons = []
         self._index = 0
         for i, (_key, label, _glyph, tip) in enumerate(self.MODES):
             b = _ModeButton(label, dropdown=_key == "trigger")
-            b.setObjectName("viewTab")
-            b.setFixedHeight(34)  # same height as every toolbar button
             b.setToolTip(tip)
-            b.setProperty("active", "false")
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-            b.setIconSize(QSize(20, 20))
             b.clicked.connect(lambda _=False, i=i: self._clicked(i))
-            row.addWidget(b)
             self.buttons.append(b)
+        segment_track(self, QHBoxLayout(self), self.buttons)  # as Analyze's Single / Split / …
         self._restyle()
-        from . import theme
         theme.on_apply(self._restyle)
 
     def _clicked(self, index):
@@ -308,7 +326,10 @@ class RecordingModePicker(QWidget):
             active = i == self._index
             b.setProperty("active", "true" if active else "false")
             b.setStyleSheet("QPushButton#viewTab { padding-right: 24px; }" if b.dropdown else "")  # room for ▾
-            b.setIcon(_material_icon(glyph, 20, c["on_accent"] if active else c["tab_text"]))
+            if theme.is_mac():  # grey "on" segment: the icon stays the text colour
+                b.setIcon(_material_icon(glyph, theme.icon_px("control"), c["text"]))
+            else:
+                b.setIcon(_material_icon(glyph, 20, c["on_accent"] if active else c["tab_text"]))
 
     def currentIndex(self):
         return self._index
@@ -343,6 +364,7 @@ class LoggerPage(QWidget):
         self.setObjectName("page")
         self.catalog = []
         self.catalog_module = None
+        self.catalog_ecu = None  # whose channel list is loaded (state.ecu_key)
         self.raw_groups = set()
         self.running = False
         self.writer = None
@@ -382,6 +404,7 @@ class LoggerPage(QWidget):
             default=("now", "group"),
             bars_tip="Show or hide the bars under each channel: the reading on a gauge scale "
                      "(the unit's usual range, as Live View's bar gauges)")
+        self.sidebar.setProperty("table", True)  # Mac: drawn as a rounded card, not a sidebar
         self.tree = self.sidebar.tree
         self.tree.reordered.connect(self._channels_changed)  # the log's column order follows
         self.tree.customContextMenuRequested.connect(self._channel_menu)
@@ -475,7 +498,8 @@ class LoggerPage(QWidget):
         self.keep_min.setRange(0.5, 120)
         self.keep_min.setValue(5)
         self.keep_min.hide()
-        cl.addLayout(ctrl)
+        if not theme.is_mac():
+            cl.addLayout(ctrl)
         mode_row = QHBoxLayout()
         mode_row.setContentsMargins(0, 0, 0, 0)
         mode_row.setSpacing(8)  # the toolbar's gap
@@ -503,7 +527,10 @@ class LoggerPage(QWidget):
         mode_row.addWidget(self.name_preview, 1)
         for b in (self.recent_button, self.more_button):
             mode_row.addWidget(b)
-        cl.addLayout(mode_row)
+        if theme.is_mac():
+            self._mac_layout(ctrl, mode_row, cl)
+        else:
+            cl.addLayout(mode_row)
         self._load_recording()
         for w in (self.mode, self.trigger_op):
             w.currentIndexChanged.connect(self._recording_changed)
@@ -528,19 +555,46 @@ class LoggerPage(QWidget):
             pass
         self._show_name()
 
+    def _mac_layout(self, ctrl, mode_row, cl):
+        """Mac: the same split as every page (see playback_page._mac_toolbar)."""
+        from .mac_shell import page_bar
+        for lay in (ctrl, mode_row):
+            while lay.count():
+                lay.takeAt(0)
+        from .mac_shell import CONTENT_MARGINS
+        cl.setContentsMargins(*CONTENT_MARGINS)
+        # Title bar = only the page's main action and its readout: [● Record] readout. Every other
+        # button belongs to the content, so it sits at the right of row 2: Select channels ▾, the
+        # recording modes … the next log's name, columns / bars, Watch, Presets, Recent ▾, ⚙, ⋯.
+        self.mac_bar, bar = page_bar()
+        bar.addWidget(self.start_button)
+        bar.addWidget(self.status, 100)
+        bar.addStretch(1)  # keeps Record at the left when the readout is empty
+        from .mac_shell import first_row
+        row2 = first_row(QHBoxLayout())
+        row2.addWidget(self.channels)
+        row2.addWidget(self.mode)
+        row2.addSpacing(12)
+        row2.addWidget(self.name_preview, 1)  # right-aligned
+        from .mac_shell import row_icons  # rule 7: the one right-hand order
+        row_icons(row2, tools=(self.sidebar.columns_button, self.sidebar.bars_button, self.watch_button),
+                  recent=self.recent_button, presets=self.presets, settings=self.options, more=self.more_button)
+        cl.addLayout(row2)
+
     # --- module and catalog ---
 
     def refresh(self):
         self._show_name()
         family = self.state.setup_family
         module = family["module"] if family and family.get("can_log") else None
-        if module != self.catalog_module and not self.running:
-            self.catalog_module = module
+        ecu = self.state.catalog_params(module).get("ecu") if module is not None else None
+        if (module, ecu) != (self.catalog_module, self.catalog_ecu) and not self.running:
+            self.catalog_module, self.catalog_ecu = module, ecu
             self.catalog = []
             self.raw_groups = set()
             self._build_tree()
             if module is not None:
-                self.state.offline("catalog", {"module": module}, self._catalog_loaded,
+                self.state.offline("catalog", self.state.catalog_params(module), self._catalog_loaded,
                                    lambda e: self.banner.show_message(self.error_text(e), "error"))
         idle = not self.state.busy or self.running
         from .needs_car import gate
@@ -592,26 +646,27 @@ class LoggerPage(QWidget):
         self.tree.blockSignals(True)
         self.tree.clear()
         order = []
-        for value in self.catalog:
-            key = f"{value['group']}.{value['field']}"
-            # Unit beside the name, as Analyze's list ("Engine speed (rpm)"); Now is just the number
-            shown = unitconv.conversion(value.get("unit") or "", self.state.settings)[0]
-            item = self.tree.new_item(f"{value['name']} ({shown})" if shown else value["name"], key)
-            item.setData(0, VALUE_ROLE, value)
-            item.setData(0, CATEGORY_ROLE, value.get("category") or "Other")
-            item.setToolTip(0, self._tip(value, key))
-            item.setText(self.sidebar.col["group"], key)
-            if value["id"] in checked:
+        with self.tree.bulk():
+            for value in self.catalog:
+                key = f"{value['group']}.{value['field']}"
+                # Unit beside the name, as Analyze's list ("Engine speed (rpm)"); Now is just the number
+                shown = unitconv.conversion(value.get("unit") or "", self.state.settings)[0]
+                item = self.tree.new_item(f"{value['name']} ({shown})" if shown else value["name"], key)
+                item.setData(0, VALUE_ROLE, value)
+                item.setData(0, CATEGORY_ROLE, value.get("category") or "Other")
+                item.setToolTip(0, self._tip(value, key))
+                item.setText(self.sidebar.col["group"], key)
+                if value["id"] in checked:
+                    item.setCheckState(0, Qt.CheckState.Checked)
+                order.append(key)
+            for group in sorted(self.raw_groups):
+                item = self.tree.new_item(f"Group {group} · all fields", f"raw:{group}")
+                item.setData(0, VALUE_ROLE, {"raw_group": group})
+                item.setData(0, FIXED_ROLE, True)  # always logged while it's in the list; ✕ removes it
+                item.setData(0, RAW_GROUP_ROLE, group)
+                item.setToolTip(0, f"Every field of group {group}, unnamed. ✕ removes it.")
+                item.setText(self.sidebar.col["group"], str(group))
                 item.setCheckState(0, Qt.CheckState.Checked)
-            order.append(key)
-        for group in sorted(self.raw_groups):
-            item = self.tree.new_item(f"Group {group} · all fields", f"raw:{group}")
-            item.setData(0, VALUE_ROLE, {"raw_group": group})
-            item.setData(0, FIXED_ROLE, True)  # always logged while it's in the list; ✕ removes it
-            item.setData(0, RAW_GROUP_ROLE, group)
-            item.setToolTip(0, f"Every field of group {group}, unnamed. ✕ removes it.")
-            item.setText(self.sidebar.col["group"], str(group))
-            item.setCheckState(0, Qt.CheckState.Checked)
         self.tree.log_order = order  # the selector lists them in catalog order, by category
         self.tree.blockSignals(False)
         self._channels_changed()
@@ -777,7 +832,7 @@ class LoggerPage(QWidget):
             return sub
 
         T.menu_header(menu, "Reading")
-        choices("Rate", "speed", RATES, self.rate.currentData(),
+        choices("Rate", "pace", RATES,  # read rate: same icon as Group rates (speed = dyno) self.rate.currentData(),
                 lambda v: self.rate.setCurrentIndex(max(self.rate.findData(v), 0)),
                 "How often each group is read")
         T.menu_action(menu, "Group rates…", "pace", self._edit_rates, idle,
@@ -966,9 +1021,15 @@ class LoggerPage(QWidget):
                 value = latest.get(key)
                 return isinstance(value, (int, float)) and (value > limit if above else value < limit)
             trigger = crossed
+        # Companion data (log_info): each column's group/field/kind now, formula and unit
+        # from its first read (on_sample).
+        self.info_columns = {f"{v['group']}.{v['field']}": {
+            "group": v["group"], "field": v["field"], "kind": v.get("kind", "number"),
+            "id": v.get("id")} for v in values}
         self.writer = DatazapWriter(path, self.columns, groups, mode=mode,
                                     keep_s=self.keep_min.value() * 60, trigger=trigger,
-                                    pre_s=self.pre_s.value(), post_s=self.post_s.value())
+                                    pre_s=self.pre_s.value(), post_s=self.post_s.value(),
+                                    info_columns=self.info_columns)
         self.samples = self.errors = 0
         self.stats = {}
         self.latest_raw = {}
@@ -1272,6 +1333,10 @@ class LoggerPage(QWidget):
                 self._add_raw_field(key, self.columns[-1][1], group)
             if key in self.logged:
                 self.seen_at[key] = time.time()
+                meta = self.info_columns.setdefault(key, {"group": group, "field": field["index"],
+                                                          "kind": "number"})
+                if "formula" not in meta:
+                    meta.update(formula=field.get("formula"), unit=field.get("unit", ""))
                 raw_unit = field.get("unit", "")
                 values[key] = csv_number(field)
                 shown, conv = unitconv.conversion(raw_unit, self.state.settings)
@@ -1298,7 +1363,8 @@ class LoggerPage(QWidget):
                         st[2] += number
                         st[3] += 1
                 units[key] = field.get("unit", "")
-        self.writer.update(group, values, units, sample.get("wall_time", time.time()) - self.started)
+        self.writer.update(group, values, units, sample.get("wall_time", time.time()) - self.started,
+                           raw=log_info.raw_hex(sample.get("fields")))
 
     def _paint(self):
         self._check_alarms()

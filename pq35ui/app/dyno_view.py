@@ -51,7 +51,7 @@ class DynoView(QWidget):
         lay.setSpacing(6)
         o = _opts(self.settings)
 
-        row = QHBoxLayout()
+        row = self.control_row = QHBoxLayout()  # the page may put its sessions toggle first (Mac)
         row.setSpacing(6)
         self.pull_combo = QComboBox()
         self.pull_combo.setMinimumWidth(90)

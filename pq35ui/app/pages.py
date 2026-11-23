@@ -8,12 +8,12 @@ from PySide6.QtCore import QProcess, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog, QGridLayout, QHBoxLayout, QLabel, QListWidget, QMenu, QPushButton,
-    QScrollArea, QSpinBox, QToolButton, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QScrollArea, QSpinBox, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .needs_car import gate
 from .storage import images_dir, patched_dir, timestamp
-from .widgets import Badge, Banner, Card, DropZone, ProgressPanel, kib, muted, restyle
+from .widgets import Badge, Banner, Card, DropZone, ProgressPanel, discard, kib, muted, restyle
 
 HALDEX, EPS, BCM = "haldex-gen4", "pq-eps", "pq-bcm"
 # Modules whose full firmware can be read back over OBD and diffed, so the Flash
@@ -51,7 +51,12 @@ class Page(QScrollArea):
         from .widgets import _FitToWindow
         self.setWidget(_FitToWindow(inner) if self.fit_to_window else inner)
         self.layout_ = QVBoxLayout(inner)
-        self.layout_.setContentsMargins(28, 22, 28, 22)
+        from . import theme
+        if theme.is_mac():
+            from .mac_shell import CONTENT_MARGINS
+            self.layout_.setContentsMargins(*CONTENT_MARGINS)
+        else:
+            self.layout_.setContentsMargins(28, 22, 28, 22)
         self.layout_.setSpacing(14)
         # No title in the page body: the tab bar keeps the current tab expanded with its name.
         state.changed.connect(self.refresh)
@@ -254,7 +259,7 @@ class ModuleCard(Card):
         self.detail.setVisible(bool(detail))
 
         while self.grid.count():
-            self.grid.takeAt(0).widget().deleteLater()
+            discard(self.grid.takeAt(0).widget())
         if selected and identity:
             for row, (key, value) in enumerate(identity_rows(identity)):
                 value_label = QLabel(value)
@@ -273,6 +278,145 @@ class ModuleCard(Card):
         restyle(self)
 
 
+MAC_STATUS = {  # Mac card pills: short, like the render's Ready / Unexpected part / Can't be reached
+    "ok": ("Ready", "ok"),
+    "bootloader": ("In its bootloader", "warning"),
+    "responding": ("Won't identify", "warning"),
+    "unexpected": ("Different module", "error"),
+    "absent": ("Can't be reached", "error"),
+    None: ("Not checked", "idle"),
+}
+
+
+class MacModuleCard(ModuleCard):
+    """Mac interface: the render's compact card. [01  Engine] / part · system / [Ready] … [Select].
+    Same attributes as ModuleCard, so show_entry and the page work unchanged; the selected
+    card's full identity is in its tooltip instead of a grid that makes it taller."""
+
+    def __init__(self, family, page):
+        Card.__init__(self)
+        self.family = family
+        self.page = page
+        self.entry = None
+        self._selected = False
+        self.setProperty("module", True)
+        self.body.setContentsMargins(18, 14, 18, 14)
+        self.body.setSpacing(6)
+        self.art = QLabel()  # no pictures on these cards (paint_art keeps it hidden)
+        self.art.hide()
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        self.number = QLabel(f"{family['module']:02X}")
+        self.number.setObjectName("macModNum")
+        head.addWidget(self.number, 0, Qt.AlignmentFlag.AlignBaseline)
+        title = QLabel(family["label"])
+        title.setObjectName("macModName")
+        head.addWidget(title, 1, Qt.AlignmentFlag.AlignBaseline)
+        from . import analyze_tools as T
+        self.info_button = T.icon_button("info", "Show this module's details", checkable=True)
+        self.info_button.toggled.connect(self._toggle_info)
+        head.addWidget(self.info_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.add(head)
+        self.address = QLabel()  # kept for show_entry; shown as a row of the details
+        self.address.hide()
+        self.detail = self.add(muted(""))
+        # ⓘ opens these: part, software, description, flash counts, address (show_entry fills them)
+        self.details = QWidget()
+        self.grid = QGridLayout(self.details)
+        self.grid.setContentsMargins(0, 4, 0, 4)
+        self.grid.setHorizontalSpacing(16)
+        self.grid.setVerticalSpacing(3)
+        self.details.hide()
+        self.add(self.details)
+        foot = QHBoxLayout()
+        foot.setSpacing(6)
+        self.badge = Badge("", "idle")
+        foot.addWidget(self.badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.faults = Badge("", "error")
+        self.faults.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.faults.mousePressEvent = lambda _e: self._open_faults()
+        self.faults.hide()
+        foot.addWidget(self.faults, 0, Qt.AlignmentFlag.AlignVCenter)
+        foot.addStretch(1)
+        self.identify = QPushButton("Re-read info")
+        self.identify.clicked.connect(page.identify)
+        self.recover = QPushButton("Recover…")
+        self.recover.setObjectName("danger")
+        self.recover.clicked.connect(lambda: page.recover(self.family))
+        self.use = QPushButton("Select")
+        self.use.clicked.connect(lambda: None if self._selected else page.choose(self.family, self.entry))
+        for button in (self.identify, self.recover, self.use):
+            foot.addWidget(button)
+        self.body.addStretch(1)  # cards are evened in height: the buttons stay at the bottom
+        self.add(foot)
+
+    def paint_art(self):
+        self.art.hide()
+
+    @property
+    def expanded(self):
+        return self.info_button.isChecked()
+
+    def _toggle_info(self, on):
+        self.details.setVisible(on)
+        self.info_button.setToolTip("Hide the details" if on else "Show this module's details")
+        self.page._even_heights()  # this card grows (only its column moves down); the rest stay one size
+
+    def set_faults(self, counts):
+        codes, active = counts or (0, 0)
+        self.faults.set(f"{codes} fault{'s' if codes != 1 else ''}", "error")
+        self.faults.setToolTip(f"{codes} fault code{'s' if codes != 1 else ''}"
+                               + (f", {active} still active" if active else "")
+                               + ". Click: work on this module and see them on Diagnostics.")
+        self.faults.setVisible(bool(codes))
+
+    def show_entry(self, entry, selected, identity):
+        super().show_entry(entry, selected, identity)
+        self._selected = bool(selected and identity)
+        status = self.status()
+        workshop = (entry or {}).get("workshop")
+        self.number.setText(workshop["address_text"] if workshop else f"{self.family['module']:02X}")
+        tip = [self.family["label"], self.address.text()]
+        found = identity if self._selected else ((entry or {}).get("identity") or {})
+        rows = identity_rows(found) if found else []
+        if not self._selected:  # the scan doesn't read flash counts: leave out its placeholders
+            rows = [(k, v) for k, v in rows if k not in ("Flash attempts / successes", "Last flashed")]
+        rows.append(("Address", self.address.text()))
+        self.setToolTip("\n".join(t for t in tip if t))
+        while self.grid.count():
+            discard(self.grid.takeAt(0).widget())
+        for row, (key, value) in enumerate(rows):
+            value_label = QLabel(value)
+            value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            self.grid.addWidget(muted(key), row, 0)
+            self.grid.addWidget(value_label, row, 1)
+        self.grid.setColumnStretch(1, 1)
+        generic_quiet = self.family.get("generic") and not self.family.get("has_dtc")
+        text, level = MAC_STATUS.get(status, MAC_STATUS[None])
+        if status == "ok" and generic_quiet:
+            text, level = "No fault codes", "idle"
+        self.badge.set(text, level)
+        part = (found.get("software_part_number") or found.get("part_number") or "").strip()
+        desc = str(found.get("system_desc", "")).strip()
+        if status == "ok" or self._selected:
+            line = " · ".join(t for t in (part, desc) if t)
+            if not line:
+                line = "Answers, but didn't say what it is"
+            if (entry or {}).get("in_gateway") is False:
+                line += " · not in the gateway's list"
+            self.detail.setText(line)
+            self.detail.setWordWrap(False)
+        else:
+            self.detail.setWordWrap(True)  # the explanation from ModuleCard (loader, wrong part, …)
+        self.detail.setVisible(bool(self.detail.text()))
+        # Selected: a blue "Selected" (does nothing); others: a plain "Select".
+        can_pick = status == "ok" and not generic_quiet
+        self.use.setText("Selected" if self._selected else "Select")
+        self.use.setObjectName("primary" if self._selected else "")
+        self.use.setVisible(self._selected or (can_pick and not selected))
+        restyle(self.use)
+
+
 class ConnectPage(Page):
     title = "Connect"
     # Natural sizes + scroll: fit-to-window under-counts the wrapped intro text and took the
@@ -285,71 +429,184 @@ class ConnectPage(Page):
         self.cards = {}
         self.generic_cards = {}  # other gateway modules from the last scan ("addr:XX")
 
-        find = self.add(Card())
-        find.add(muted("Ignition on, engine off. Scan reads the main modules (choose which in "
-                       "Settings → General); Full Scan reads every module on the gateway's list. "
-                       "Both only read: what each module is and its fault codes."))
-        row = QHBoxLayout()
+        from . import theme
+        self.mac = theme.is_mac()
+        self.intro = ("Ignition on, engine off. Scan reads the main modules (choose which in "
+                      "Settings → General); Full Scan reads every module on the gateway's list. "
+                      "Both only read: what each module is and its fault codes.")
         self.scan_button = QPushButton("Scan")
         self.scan_button.setObjectName("primary")
         self.scan_button.clicked.connect(lambda: self.scan())
-        row.addWidget(self.scan_button)
         self.full_scan_button = QPushButton("Full Scan")
         self.full_scan_button.setToolTip("Like a VCDS Auto-Scan: opens every module the gateway lists and "
                                          "reads who it is and its fault codes. Read-only; about 1–2 s per "
                                          "module.")
         self.full_scan_button.clicked.connect(lambda: self.scan(full=True))
-        row.addWidget(self.full_scan_button)
-        self.pick_button = QToolButton()
-        self.pick_button.setText("Select manually  ▾")
-        self.pick_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        from .widgets import pulldown
+        from .analyze_tools import popup_menu
+        self.pick_button = pulldown(QPushButton("Choose a module" if self.mac else "Select manually"))
+        self.pick_button.setToolTip("Choose a module type yourself without scanning, e.g. on a bench harness.")
         self.pick_menu = QMenu(self)
-        self.pick_button.setMenu(self.pick_menu)
-        from .analyze_tools import anchor_menu
-        anchor_menu(self.pick_menu, self.pick_button)
-        row.addWidget(self.pick_button)
+        self.pick_button.clicked.connect(lambda: popup_menu(self.pick_menu, self.pick_button))
         self.adapter_text = muted("")
-        row.addWidget(self.adapter_text, 1)
-        find.add(row)
-        self.adapter_help = find.add(Banner())
+        self.adapter_help = Banner()
         self.bring_up = QPushButton("")
         self.bring_up.setToolTip("Bring the SocketCAN adapter up at 500 kbit/s (asks for your password).")
         self.bring_up.clicked.connect(self.bring_up_socketcan)
         self.bring_up.hide()
+        self.bring_up_process = None
+        self.scan_banner = Banner()
+        self.faults_banner = Banner()
+        state.faults_changed.connect(lambda _n: self._refresh_cards())
+        theme.on_apply(lambda: [c.paint_art() for c in {**self.cards, **self.generic_cards}.values()])
+
+        # Module cards in equal columns (Classic: two, the user's choice 2026-11-09; Mac: three,
+        # like the render). Independent columns (not a grid): when the selected Classic card grows,
+        # only its own column moves down.
+        self.cards_box = QHBoxLayout()
+        self.cards_box.setContentsMargins(0, 0, 0, 0)
+        self.cards_box.setSpacing(14 if self.mac else 10)
+        self.card_columns = []
+        for _ in range(3 if self.mac else CARD_COLUMNS):
+            column = QVBoxLayout()
+            column.setSpacing(14 if self.mac else 10)
+            self.cards_box.addLayout(column, 1)
+            self.card_columns.append(column)
+        self.cards_holder = QWidget()
+        self.cards_holder.setLayout(self.cards_box)
+        self.absent = muted("")
+        self.absent.setWordWrap(True)
+        self.others = muted("")
+        self.others.setWordWrap(True)
+        self.gateway = None
+        self.banner = Banner()
+        self.next_hint = Banner()
+        if self.mac:
+            self._build_mac()
+        else:
+            self._build_classic()
+        self.finish()
+
+    def _build_classic(self):
+        find = self.add(Card())
+        find.add(muted(self.intro))
+        row = QHBoxLayout()
+        for w in (self.scan_button, self.full_scan_button, self.pick_button):
+            row.addWidget(w)
+        row.addWidget(self.adapter_text, 1)
+        find.add(row)
+        find.add(self.adapter_help)
         row = QHBoxLayout()
         row.addWidget(self.bring_up)
         row.addStretch(1)
         find.add(row)
-        self.bring_up_process = None
-        self.scan_banner = find.add(Banner())
-        self.faults_banner = find.add(Banner())
-        state.faults_changed.connect(lambda _n: self._refresh_cards())
-        from . import theme
-        theme.on_apply(lambda: [c.paint_art() for c in {**self.cards, **self.generic_cards}.values()])
+        find.add(self.scan_banner)
+        find.add(self.faults_banner)
+        for w in (self.cards_holder, self.absent, self.others, self.banner, self.next_hint):
+            self.add(w)
 
-        # Module cards in two equal columns (user's choice, 2026-11-09): easy to read, and a
-        # scan's ~17 cards fit without much scrolling.
-        # Two independent columns (not a grid): when the selected card grows, only its own
-        # column moves down.
-        self.cards_box = QHBoxLayout()
-        self.cards_box.setContentsMargins(0, 0, 0, 0)
-        self.cards_box.setSpacing(10)
-        self.card_columns = []
-        for _ in range(CARD_COLUMNS):
-            column = QVBoxLayout()
-            column.setSpacing(10)
-            self.cards_box.addLayout(column, 1)
-            self.card_columns.append(column)
-        holder = QWidget()
-        holder.setLayout(self.cards_box)
-        self.add(holder)
-        self.absent = self.add(muted(""))
-        self.others = self.add(muted(""))
-        self.others.setWordWrap(True)
-        self.gateway = None
-        self.banner = self.add(Banner())
-        self.next_hint = self.add(Banner())
-        self.finish()
+    def _build_mac(self):
+        """The render's Connect: title bar [Scan] [Full Scan] via adapter; the car on top; MODULES
+        FOUND as a three-across grid; Select manually under it."""
+        from .mac_shell import page_bar
+        self.mac_bar, bar = page_bar()
+        bar.addWidget(self.scan_button)
+        bar.addWidget(self.full_scan_button)
+        bar.addSpacing(4)
+        bar.addWidget(self.adapter_text)
+        bar.addStretch(1)
+        self.scan_button.setMinimumWidth(72)
+        # Problems first (adapter, scan), then the car, then the modules.
+        self.add(self.adapter_help)
+        row = QHBoxLayout()
+        row.addWidget(self.bring_up)
+        row.addStretch(1)
+        self.layout_.addLayout(row)
+        self.add(self.scan_banner)
+        self.car_card = self.add(self._mac_car_card())
+        self.modules_title = self.add(QLabel("MODULES FOUND"))
+        self.modules_title.setObjectName("cardTitle")
+        self.modules_title.setContentsMargins(0, 6, 0, 0)
+        for w in (self.cards_holder, self.absent, self.others):
+            self.add(w)
+        manual = QHBoxLayout()
+        manual.setSpacing(6)
+        for w in (muted("Select manually:"), self.pick_button, muted("if a module doesn't answer the scan.")):
+            if isinstance(w, QLabel):
+                w.setWordWrap(False)
+            manual.addWidget(w)
+        manual.addStretch(1)
+        self.layout_.addLayout(manual)
+        self.add(self.banner)
+        self.add(self.next_hint)
+        # the car card and each module's pill show the faults: this banner lives in a hidden holder
+        holder = QWidget(self)
+        holder.hide()
+        QVBoxLayout(holder).addWidget(self.faults_banner)
+        self.adapter_text.setWordWrap(False)
+
+    def _mac_car_card(self):
+        """The car on top: ✓ name / VIN · how it was read · last scan, and Car details…"""
+        card = Card()
+        card.setProperty("module", True)
+        card.body.setContentsMargins(18, 12, 14, 12)
+        row = QHBoxLayout()
+        row.setSpacing(14)
+        self.car_icon = QLabel()
+        self.car_icon.setFixedSize(30, 30)
+        row.addWidget(self.car_icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        col = QVBoxLayout()
+        col.setSpacing(1)
+        self.car_title = QLabel("")
+        self.car_title.setObjectName("macCarTitle")
+        self.car_line = muted("")
+        self.car_line.setWordWrap(True)
+        col.addWidget(self.car_title)
+        col.addWidget(self.car_line)
+        row.addLayout(col, 1)
+        self.car_button = QPushButton("Car details…")
+        self.car_button.setToolTip("Your cars: details, weight for the dyno, notes")
+        self.car_button.clicked.connect(self._open_cars)
+        row.addWidget(self.car_button, 0, Qt.AlignmentFlag.AlignVCenter)
+        card.add(row)
+        return card
+
+    def _open_cars(self):
+        window = self.window()
+        if hasattr(window, "_open_cars"):
+            window._open_cars()
+
+    def _refresh_car(self):
+        """Mac car card: the car connected now (VIN read this run), else what to do."""
+        from . import theme
+        from .main_window import _material_icon
+        c = theme.colors()
+        car = (self.state.vehicle or {}) if self.state.vin() else {}
+        scan = self.state.last_scan or {}
+        if car.get("vin"):
+            self.car_title.setText(car.get("label") or "Car")
+            source = str(car.get("source") or "").replace("_", " ")
+            parts = [f"VIN {car['vin']}"] + ([f"read from the {source}"] if source else [])
+        else:
+            self.car_title.setText("No car read yet")
+            parts = ["Ignition on, engine off, then press Scan"]
+        if scan.get("started"):
+            found = sum(1 for e in scan.get("result") or () if e.get("status") == "ok")
+            found += sum(1 for m in ((scan.get("gateway") or {}).get("modules") or ())
+                         if not m.get("family") and m.get("status") == "ok")
+            codes = sum(n for n, _a in self.state.fault_summary.values())
+            when = time.strftime("%H:%M", time.localtime(scan["started"]))
+            day = "today" if time.strftime("%x", time.localtime(scan["started"])) == time.strftime("%x") \
+                else time.strftime("%b %d", time.localtime(scan["started"]))
+            parts.append(f"last scan {day} {when} ({found} module{'s' if found != 1 else ''}, "
+                         f"{codes} fault{'s' if codes != 1 else ''})")
+        self.car_line.setText(" · ".join(parts))
+        ok = bool(car.get("vin"))
+        icon = _material_icon("check_circle" if ok else "directions_car", theme.MacPx(30),
+                              c["ok"] if ok else c["muted"])  # SF Symbols on a Mac
+        self.car_icon.setPixmap(icon.pixmap(30, 30))
+        self.car_card.setToolTip(self.intro)
+        self.car_button.setVisible(ok)
 
     # --- module cards ---
 
@@ -358,7 +615,7 @@ class ConnectPage(Page):
             return
         self.pick_menu.clear()
         for family in self.state.families:
-            self.cards[family["name"]] = ModuleCard(family, self)
+            self.cards[family["name"]] = (MacModuleCard if self.mac else ModuleCard)(family, self)
             self.pick_menu.addAction(f"{family['label']}  (0x{family['module']:02X})",
                                      lambda f=family: self.choose(f, self.scan_results.get(f["name"])))
 
@@ -383,7 +640,7 @@ class ConnectPage(Page):
         for name, card in list(self.generic_cards.items()):
             self.scan_results.pop(name, None)
             self._take(card)
-            card.deleteLater()
+            discard(card)
         self.generic_cards = {}
         self.state.extra_families = {}
         for module in modules or ():
@@ -397,7 +654,7 @@ class ConnectPage(Page):
                 "family": name, "module": module["tp2"], "status": "ok" if answered else "absent",
                 "identity": family["scan_identity"] if answered else None, "in_gateway": True,
                 "workshop": {"address": module["address"], "address_text": f"{module['address']:02X}"}}
-            card = self.generic_cards[name] = ModuleCard(family, self)
+            card = self.generic_cards[name] = (MacModuleCard if self.mac else ModuleCard)(family, self)
             card.setEnabled(not self.state.busy)
             card.hide()  # placed by _refresh_cards
 
@@ -432,7 +689,7 @@ class ConnectPage(Page):
         # Left, right, left, right…: the selected card is first (top-left). It grows to show
         # its details and pushes only its own column down.
         for index, (*_, card) in enumerate(sorted(shown, key=lambda item: item[:4])):
-            self.card_columns[index % CARD_COLUMNS].addWidget(card)
+            self.card_columns[index % len(self.card_columns)].addWidget(card)
         for column in self.card_columns:
             column.addStretch(1)
         QTimer.singleShot(0, self._even_heights)
@@ -443,6 +700,9 @@ class ConnectPage(Page):
             f"{f['label']} ({'address ' + w['address_text'] + ', ' if w else ''}TP2 0x{f['module']:02X})"
             for f, w in missing) if missing else "")
         self.absent.setVisible(bool(missing))
+        if self.mac:
+            self.modules_title.setVisible(bool(shown))
+            self._refresh_car()
         rows = getattr(getattr(self.state, "faults", None), "rows", {}) or {}
         faulty = [(rows.get(n, {}).get("label") or (every[n].family["label"] if n in every else n), c)
                   for n, (c, _a) in self.state.fault_summary.items() if c]
@@ -494,13 +754,18 @@ class ConnectPage(Page):
     def _even_heights(self):
         """Every card as tall as the tallest, so the grid stays one size whatever each card shows.
         The selected card is left out: it grows to fit its details."""
-        selected = self.state.family["name"] if self.state.family else None
+        selected = self.state.family["name"] if self.state.family and not self.mac else None
         for card in self.cards.get(selected), self.generic_cards.get(selected):
             if card is not None:  # never squeezed: always room for its details
                 card.setMinimumHeight(0)
                 card.setMinimumHeight(card.natural_height(card.width()))
+        grown = [c for c in {**self.cards, **self.generic_cards}.values()
+                 if getattr(c, "expanded", False)]  # Mac: ⓘ open
+        for card in grown:
+            card.setMinimumHeight(0)
+            card.setMinimumHeight(card.natural_height(card.width()))
         cards = [c for c in {**self.cards, **self.generic_cards}.values()
-                 if c.isVisible() and c.family["name"] != selected]
+                 if c.isVisible() and c.family["name"] != selected and c not in grown]
         for card in cards:
             card.setMinimumHeight(0)
         tallest = max((card.natural_height(card.width()) for card in cards), default=0)
@@ -641,7 +906,8 @@ class ConnectPage(Page):
         gate(self.full_scan_button, self.state, idle)
         from . import quick_scan
         self.scan_button.setToolTip("Quick scan: " + quick_scan.describe(self.state.settings)
-                                    + ". Change which in Settings → General → Scan.")
+                                    + ". Change which in Settings → General → Scan."
+                                    + ("\n\n" + self.intro if self.mac else ""))
         self.pick_button.setEnabled(idle)
         for card in {**self.cards, **self.generic_cards}.values():
             card.setEnabled(idle)
@@ -910,7 +1176,7 @@ class PatchesPage(Page):
         while self.actions.count():
             item = self.actions.takeAt(0)
             if item.widget():
-                item.widget().deleteLater()
+                discard(item.widget())
 
     def load(self, path):
         if str(path).lower().endswith(".sgo"):
@@ -1027,6 +1293,7 @@ class DiagnosticsPage(Page):
         from .diagnostics_view import AutoScanView
         self.health_card = controller(state)
         self.view = AutoScanView(state)
+        self.mac_bar = getattr(self.view, "mac_bar", None)  # Mac: None (the log's buttons are in its pane)
         self.layout_.addWidget(self.view, 1)
         card = self.add(Card("Module tests"))
         self.read_card = card
@@ -1056,6 +1323,32 @@ class DiagnosticsPage(Page):
         self.tree.setColumnWidth(0, 280)
         self.tree.setMinimumHeight(150)
         state.progress.connect(self.on_progress)
+        from . import theme
+        if theme.is_mac():  # Modules column and log run to the window's edges; the rest keeps a gutter
+            self.layout_.setContentsMargins(0, 0, 0, 0)
+            self.layout_.setSpacing(0)
+            rest = QWidget()
+            rest_lay = QVBoxLayout(rest)
+            rest_lay.setContentsMargins(24, 0, 24, 16)
+            rest_lay.setSpacing(14)
+            moving = [self.layout_.itemAt(i).widget() for i in range(self.layout_.count())]
+            for w in moving:
+                if w is not None and w is not self.view:
+                    self.layout_.removeWidget(w)
+                    rest_lay.addWidget(w)
+            self.layout_.addWidget(rest)
+            self._mac_rest, self._mac_rest_lay = rest, rest_lay
+            # Only takes room (and its bottom margin) when a module test card shows; otherwise the
+            # Modules column and the log run to the window's bottom edge.
+            self._sync_mac_rest()  # and after refresh() shows / hides the cards
+
+    def _sync_mac_rest(self):
+        lay = getattr(self, "_mac_rest_lay", None)
+        if lay is None:
+            return
+        shown = any(lay.itemAt(i).widget() is not None and not lay.itemAt(i).widget().isHidden()
+                    for i in range(lay.count()))
+        self._mac_rest.setVisible(shown)
 
     def _build_pageff(self):
         # BCM only. A memory read, nothing like the Flash page: no erase, no write.
@@ -1105,6 +1398,7 @@ class DiagnosticsPage(Page):
                                "the car stationary.")
             self.banner.hide()
         self.pageff_card.setVisible(bcm)
+        self._sync_mac_rest()
         if bcm:
             self._refresh_pageff()
 

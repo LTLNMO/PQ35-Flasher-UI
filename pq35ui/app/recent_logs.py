@@ -148,6 +148,7 @@ def finish(path: Path, rows: int, seconds: float):
         data.pop(key, None)
         _save(data)
         Path(path).unlink(missing_ok=True)
+        _drop_info(path)
         return
     entry = data.setdefault(key, {"started": time.time(), "exported": []})
     entry.update(rows=int(rows), seconds=float(seconds))
@@ -191,12 +192,21 @@ def mark_exported(path, out):
     _save(data)
 
 
+def _drop_info(path):
+    from . import log_info
+    try:
+        log_info.discard(path)
+    except OSError:
+        pass
+
+
 def discard(path):
     path = Path(path)
     data = _load()
     data.pop(_key(path), None)
     _save(data)
     path.unlink(missing_ok=True)
+    _drop_info(path)
 
 
 def add_existing(path: Path, like=None):
@@ -214,6 +224,8 @@ def rename(path: Path, new: Path):
     if _key(path) in data:
         data[_key(new)] = data.pop(_key(path))
         _save(data)
+    from . import log_info
+    log_info.rename(path, new)  # the companion file follows the log
 
 
 def entries(limit=None):

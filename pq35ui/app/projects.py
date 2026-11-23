@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from . import cars, recent_logs
+from . import cars, recent_logs, theme
 from .storage import EcuRecord, datalogs_dir, modules_dir, user_dir
 from .widgets import Banner, h1, muted, scrollable
 from .popups import InputDialog, MessageBox
@@ -198,7 +198,8 @@ class ProjectsPage(QWidget):
         folder.clicked.connect(lambda: (projects_dir().mkdir(parents=True, exist_ok=True),
                                         QDesktopServices.openUrl(QUrl.fromLocalFile(str(projects_dir())))))
         sb.addWidget(folder)
-        split.addWidget(scrollable(side))
+        if not theme.is_mac():
+            split.addWidget(scrollable(side))
 
         right = QWidget()
         right.setObjectName("page")
@@ -227,6 +228,7 @@ class ProjectsPage(QWidget):
         rl.addLayout(car_row)
         self.car_info = muted("")
         self.car_info.setWordWrap(True)
+        self.car_info.hide()  # shown once it has something to say
         rl.addWidget(self.car_info)
         self.banner = Banner()
         rl.addWidget(self.banner)
@@ -308,13 +310,80 @@ class ProjectsPage(QWidget):
         nl.addWidget(muted("Saved automatically."))
         self.tabs.addTab(nbox, "Notes")
         rl.addWidget(self.tabs, 1)
+        if theme.is_mac():
+            self._mac_layout(split, side, sb, row, folder, rl, car_row)
         split.addWidget(scrollable(right))
         split.setSizes([280, 800])
+        if theme.is_mac():
+            from .mac_shell import column_split
+            column_split(split)
         cars.filler(state).changed.connect(lambda _cid: self._fill_cars() if self.project else None)
         state.car_changed.connect(self._car_connected)
         self.reload()
 
     # --- list ---
+
+    def _mac_layout(self, split, side, sb, row, folder, rl, car_row):
+        """Mac (Mockups/Swift native 02-projects): a Projects column (title, +, ⋮, the list, where
+        they're kept) and the project's name, car and Active on one row above the tabs."""
+        from PySide6.QtWidgets import QFrame
+        from . import analyze_tools as T
+        _pdir = projects_dir
+        panel = QFrame()
+        panel.setObjectName("macPanel")
+        panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        panel.setMinimumWidth(240)
+        panel.setMaximumWidth(340)
+        lay = QVBoxLayout(panel)
+        lay.setContentsMargins(0, 8, 0, 0)  # the list starts near the top (no heading: the title bar names it)
+        lay.setSpacing(8)
+        # + and ⋯ under the list, as macOS lists keep their add buttons (not in the title bar:
+        # they act on the list)
+        head = QHBoxLayout()
+        head.setContentsMargins(20, 6, 12, 0)  # the + glyph's left edge 24 px in (mac_shell rule 5)
+        head.setSpacing(4)
+        add = T.icon_button("add", "New project…")
+        add.clicked.connect(self._new)
+        head.addWidget(add)
+
+        def fill_more(menu):
+            T.menu_action(menu, "Rename…", "edit", self._rename, self.rename_button.isEnabled())
+            T.menu_action(menu, "Delete…", "delete", self._delete, self.delete_button.isEnabled(),
+                          tip=self.delete_button.toolTip())
+            menu.addSeparator()
+            T.menu_action(menu, "Open projects folder", "folder_open", lambda: (
+                _pdir().mkdir(parents=True, exist_ok=True),
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(_pdir())))))
+        head.addWidget(T.MenuIconButton("more_horiz", "Rename, delete, open the projects folder", fill_more))
+        sb.removeWidget(self.list)
+        lay.addWidget(self.list, 1)
+        line = QFrame()
+        line.setObjectName("macFootLine")
+        line.setFixedHeight(1)
+        lay.addWidget(line)
+        head.addStretch(1)
+        lay.addLayout(head)
+        foot = muted("Each project is a folder in Documents/PQ35 Flasher/Projects.")
+        foot.setWordWrap(True)
+        foot.setContentsMargins(24, 4, 16, 20)
+        lay.addWidget(foot)
+        side.setParent(self)  # keeps Rename/Delete (their enabled state drives the menu)
+        side.hide()
+        split.insertWidget(0, panel)
+        split.setHandleWidth(1)
+        # Right: name, car and Active on one row, then the tabs; the mockup's 26 px sides.
+        from .mac_shell import main_layout
+        main_layout(rl)  # rules 2–4 beside the column
+        rl.removeWidget(self.heading)
+        self.heading.setObjectName("macPaneTitle")
+        rl.removeItem(car_row)
+        car_label = car_row.takeAt(0).widget()  # "Car": the pop-up shows the car's name already
+        car_label.hide()
+        car_row.insertWidget(0, self.heading)
+        car_row.insertSpacing(1, 6)
+        from .mac_shell import first_row
+        rl.insertLayout(0, first_row(car_row))
+        self.car_combo.setMinimumContentsLength(14)
 
     def reload(self, select=None):
         current = select or (self.project.root if self.project else None)
@@ -418,6 +487,7 @@ class ProjectsPage(QWidget):
                 table.setRowCount(0)
             self.modules.clear()
             self.car_info.setText("")
+            self.car_info.hide()  # no empty line above the content
             return
         self.banner.hide()
         d = self.project.data
@@ -494,6 +564,7 @@ class ProjectsPage(QWidget):
         else:
             info = "Pick the car this project is for: then its new logs and dyno sessions can come here by themselves."
         self.car_info.setText(info)
+        self.car_info.setVisible(bool(info))
 
     def _car_picked(self, *_):
         if not self.project:

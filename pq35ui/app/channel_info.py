@@ -21,7 +21,6 @@ DESCRIPTIONS = {
         "above atmosphere.",
     "engine.altitude_correction_factor": "How much the ECU corrects for altitude (thinner air).",
     "engine.throttle_position": "How far the throttle valve is open: 0% closed, 100% wide open.",
-    "engine.throttle_angle": "Throttle valve opening as an angle (same reading as Throttle valve position).",
     "engine.pedal_position": "How far the accelerator pedal is pressed (G79).",
     "engine.pedal.sensor2.position": "Accelerator pedal second sensor (G185), used as a cross-check.",
     "engine.throttle.sensor1.position": "Throttle body angle sensor 1 (G187).",
@@ -88,7 +87,8 @@ DESCRIPTIONS = {
     "engine.torque.transmission_specified": "Torque limit asked for by the transmission. Drops briefly "
         "during shifts; a high value means no limit.",
     "engine.traction_control.status": "Traction control intervention status (a code).",
-    "engine.transmission.status": "Transmission intervention status (a code).",
+    "engine.transmission.status": "Whether the transmission is asking the engine to cut torque "
+                                  "(e.g. during a shift): a status code, no unit.",
     # --- temperatures, electrical, vehicle ---
     "engine.coolant_temperature": "Engine coolant temperature (G62). About 90 °C when warm.",
     "engine.oil_temperature": "Engine oil temperature.",

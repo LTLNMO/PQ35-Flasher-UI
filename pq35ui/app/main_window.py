@@ -19,6 +19,19 @@ def _material_icon(codepoint, size=20, color="#8a8880", rotate=0, fill=False):
     """Render a Material Symbols Rounded glyph to a QIcon via QPainter (stylesheet-proof).
     rotate: degrees clockwise (e.g. 90 turns bar_chart into horizontal bars).
     fill: the filled style (the font's FILL axis), e.g. a solid dot for fiber_manual_record."""
+    if theme.is_mac():
+        size = theme.mac_icon_size(size)  # one scale for every icon (theme.icon_px)
+    if not rotate and not fill and theme.is_mac():  # Mac interface: Apple's SF Symbols instead
+        from . import sf_symbols
+        if codepoint == "arrow_drop_down":  # a menu's ▾: AppKit's small semibold chevron
+            sym = sf_symbols.icon("chevron.down", size, color, "semibold", point=max(7.0, size * 0.42))
+            if sym is not None:
+                return sym
+        name = sf_symbols.MATERIAL_TO_SF.get(codepoint)
+        if name:
+            sym = sf_symbols.icon(name, size, color)
+            if sym is not None:
+                return sym
     from PySide6.QtWidgets import QApplication
     dpr = QApplication.instance().devicePixelRatio() if QApplication.instance() else 1
     real = int(size * dpr)
@@ -299,8 +312,41 @@ class MainWindow(QMainWindow):
         outer.setSpacing(0)
         self.tab_buttons = {}
         self._tab_seps = []  # divider widgets (reused when the order changes)
-        outer.addWidget(self._topbar())
-        outer.addWidget(self._tabbar())
+        topbar, tabbar = self._topbar(), self._tabbar()
+        outer.addWidget(topbar)
+        outer.addWidget(tabbar)
+        pages_layout = outer
+        # Mac interface (Settings → Appearance → Interface): a sidebar and page header instead of
+        # the top bar and tab bar. Those stay, hidden: they keep the rules (locked, hidden, current
+        # page) that the sidebar mirrors (mac_shell).
+        self.mac = theme.is_mac()
+        self.sidebar = self.mac_header = None
+        if self.mac and sys.platform == "darwin":
+            # Content runs up under the traffic lights, title bar see-through (Qt 6.9+), like Finder.
+            # Qt keeps layouts out of the title bar area (safe area margins) unless told not to.
+            self.setWindowFlag(Qt.WindowType.NoTitleBarBackgroundHint, True)
+            for widget in (self, root):
+                widget.setAttribute(Qt.WidgetAttribute.WA_ContentsMarginsRespectsSafeArea, False)
+        if self.mac:
+            from . import mac_shell
+            topbar.hide()
+            tabbar.hide()
+            body = QHBoxLayout()
+            body.setContentsMargins(0, 0, 0, 0)
+            body.setSpacing(0)
+            self.sidebar = mac_shell.Sidebar(self)
+            body.addWidget(self.sidebar)
+            pages_layout = QVBoxLayout()
+            pages_layout.setContentsMargins(0, 0, 0, 0)
+            pages_layout.setSpacing(0)
+            self.mac_header = mac_shell.Header(self)
+            pages_layout.addWidget(self.mac_header)
+            body.addLayout(pages_layout, 1)
+            outer.addLayout(body, 1)
+            from PySide6.QtWidgets import QApplication
+            mac_shell.install_app_tweaks(QApplication.instance(), self)
+            if sys.platform == "darwin":
+                mac_shell.build_menu_bar(self)
 
         # Page stack — full width, no sidebar
         # Every page is built here, before the window shows (EAGER_PAGES). The session log itself
@@ -309,14 +355,16 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.pages = {}
         self._page_classes = {key: cls for key, _icon, _label, cls in NAV}
-        outer.addWidget(self.stack, 1)
+        pages_layout.addWidget(self.stack, 1)
         self.busy_bar = QProgressBar()
         self.busy_bar.setFixedHeight(4)
         self.busy_bar.hide()
-        outer.addWidget(self.busy_bar)
+        pages_layout.addWidget(self.busy_bar)
         # The window is assembled first and the pages go into it after: Qt restyles a whole
         # widget tree each time it moves to a new parent, so attaching it last styled every page twice.
         self.setCentralWidget(root)
+        if self.sidebar is not None:
+            self.mac_header.make_room(self.sidebar.width())
         for key in EAGER_PAGES:
             self._ensure_page(key)
 
@@ -370,7 +418,7 @@ class MainWindow(QMainWindow):
         # F11 (and ⌃⌘F on macOS) switches between full screen and a window.
         from PySide6.QtGui import QKeySequence, QShortcut
         QShortcut(QKeySequence("Ctrl+K"), self).activated.connect(  # ⌘K on a Mac
-            lambda: self.assistant_tab.isVisible() and self._open_assistant())
+            lambda: self._ai_on() and self._open_assistant())
         for keys in (QKeySequence("F11"), QKeySequence(QKeySequence.StandardKey.FullScreen)):
             if not keys.isEmpty():
                 QShortcut(keys, self).activated.connect(self.toggle_fullscreen)
@@ -460,6 +508,10 @@ class MainWindow(QMainWindow):
         self._switch_tab(key)
 
     def _switch_tab(self, key):
+        if self.mac and sys.platform == "darwin" and key in ("help", "settings"):
+            from .mac_shell import open_side_window
+            open_side_window(self, key, next((lbl for k, _i, lbl, _c in NAV if k == key), key))
+            return  # their own windows; the main window stays on its page
         for k, btn in self.tab_buttons.items():
             active = k == key
             btn.setProperty("active", "true" if active else "false")
@@ -469,6 +521,11 @@ class MainWindow(QMainWindow):
             btn.set_pinned(active)
         self._paint_tab_icons()
         self.stack.setCurrentWidget(self._ensure_page(key)[0])
+        if self.mac_header is not None:
+            from .mac_shell import COLUMN_PAGES
+            self.mac_header.set_page(next((lbl for k, _i, lbl, _c in NAV if k == key), ""), self.pages.get(key))
+            self.mac_header.setVisible(key not in COLUMN_PAGES)
+            self.sidebar.window_resized()  # this page may need the room the names take
         if getattr(self, "_assistant", None) is not None and self._assistant.isVisible():
             from .assistant import refresh
             refresh(self)  # its hint and suggestions follow the page
@@ -565,6 +622,12 @@ class MainWindow(QMainWindow):
         settings_page = self.pages.get("settings")
         if settings_page is not None and hasattr(settings_page, "sync_window_mode"):
             settings_page.sync_window_mode()
+
+    def _ai_on(self):
+        """AI switched on in Settings. (Not "the ✦ tab is visible": the Mac interface hides the
+        Classic tab bar, which left ⌘K doing nothing there.)"""
+        from . import ai
+        return ai.enabled(self.settings)
 
     def _open_assistant(self):
         """✦ in the tab bar (or ⌘K / Ctrl+K): the Assistant, which also sees what's on screen."""
@@ -698,6 +761,8 @@ class MainWindow(QMainWindow):
             if btn is self.tab_buttons.get(BADGE_TAB) and self.fault_count:
                 icon = self._with_badge(icon, size)
             btn.setIcon(icon)
+        if getattr(self, "sidebar", None) is not None:
+            self.sidebar.sync()
 
     def _dot_icon(self):
         from PySide6.QtGui import QColor, QPainter, QPixmap
@@ -770,6 +835,8 @@ class MainWindow(QMainWindow):
             return
         self.interfaces = interfaces
         current = self.state.adapter or self.settings.get("interface")
+        if not isinstance(current, dict):
+            current = None  # a damaged setting: just pick the first interface found
         selected = next((i for i, a in enumerate(interfaces) if self.state.same_adapter(a, current)),
                         0 if interfaces else -1)
         self.interface_menu.clear()
@@ -836,9 +903,15 @@ class MainWindow(QMainWindow):
     def _module_menu(self):
         """The modules the last scan found, to switch between from any page. Choosing works
         exactly like Select on Connect (which stays the place to find and recover them)."""
+        menu = QMenu(self)
+        self.fill_module_menu(menu)
+        from .analyze_tools import popup_menu
+        popup_menu(menu, self.status)
+
+    def fill_module_menu(self, menu):
+        """The module menu's items (Classic: the module button; Mac: the connection card)."""
         state = self.state
         connect = self.pages.get("connect")
-        menu = QMenu(self)
         entries = (state.last_scan or {}).get("result") or []
         found = [e for e in entries if e.get("status") == "ok"]
         stuck = [e for e in entries if e.get("status") in ("bootloader", "responding")]
@@ -874,8 +947,6 @@ class MainWindow(QMainWindow):
             find.triggered.connect(lambda: (self.navigate("connect"), connect.scan()))
             find.setEnabled(bool(state.adapter))
         menu.addAction("Open Connect").triggered.connect(lambda: self.navigate("connect"))
-        from .analyze_tools import popup_menu
-        popup_menu(menu, self.status)
 
     # --- state ---
 
@@ -1009,7 +1080,7 @@ class MainWindow(QMainWindow):
         # If current tab is hidden or disabled, go back to Connect
         current_key = next((k for k, b in self.tab_buttons.items()
                             if b.property("active") == "true"), "connect")
-        if not self.tab_buttons[current_key].isVisible() or self.tab_buttons[current_key].property("locked"):
+        if self.tab_buttons[current_key].isHidden() or self.tab_buttons[current_key].property("locked"):
             self._switch_tab("connect")
 
     # --- updates ---
@@ -1095,6 +1166,18 @@ class MainWindow(QMainWindow):
             self._state_changed()
             if getattr(self, "close_when_idle", False):
                 QTimer.singleShot(0, self.close)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if getattr(self, "sidebar", None) is not None:
+            self.sidebar.window_resized(self.width())
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.mac and not getattr(self, "_full_size", False):
+            from .mac_shell import full_size_content
+            self._full_size = True
+            full_size_content(self)  # title hidden (the content itself goes under it: see __init__)
 
     def closeEvent(self, event):
         logger = self.pages.get("logger")

@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PySide6.QtCore import QObject, QRectF
-from PySide6.QtGui import QColor, QFontDatabase, QFontMetrics, QPainter
+from PySide6.QtGui import QFont, QColor, QFontDatabase, QFontMetrics, QPainter
 from PySide6.QtWidgets import QHeaderView, QMenu, QPushButton, QStyle, QStyleOptionHeader, QToolButton
 
 from . import log_export
@@ -62,12 +62,21 @@ class RawHeader(QHeaderView):
         from . import theme
         label = self._label_rect(rect, section)
         font = self.font()
-        font.setBold(True)
+        mac = theme.is_mac()
+        if mac:  # the Logger table's header: small, semibold, over its column like the values
+            font.setPointSizeF(max(theme.font_size() - 2, 9))
+            font.setWeight(QFont.Weight.DemiBold)
+            label = rect.adjusted(12, 0, -12, 0)
+        else:
+            font.setBold(True)
         fm = QFontMetrics(font)
         room = label.width() - (DOT + DOT_GAP if color else 0)
         text = fm.elidedText(name, Qt.TextElideMode.ElideRight, max(room, 0))
         width = fm.horizontalAdvance(text) + (DOT + DOT_GAP if color else 0)
-        x = label.left() + max((label.width() - width) / 2, 0)
+        if mac:
+            x = label.left() if section == 0 else label.left() + max(label.width() - width, 0)
+        else:
+            x = label.left() + max((label.width() - width) / 2, 0)
         painter.save()
         painter.setClipRect(rect)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -115,6 +124,10 @@ class RawModel(QAbstractTableModel):
             v = self.times[r] if c == 0 else self.cols[c - 1][r]
             return "" if np.isnan(v) else (f"{v:.2f}" if c == 0 else f"{v:.6g}")
         if role == Qt.ItemDataRole.TextAlignmentRole:
+            from . import theme
+            if theme.is_mac():  # as the Logger's table: time on the left, numbers on the right
+                return int((Qt.AlignmentFlag.AlignLeft if index.column() == 0 else Qt.AlignmentFlag.AlignRight)
+                           | Qt.AlignmentFlag.AlignVCenter)
             return int(Qt.AlignmentFlag.AlignCenter)
         if role == Qt.ItemDataRole.FontRole:
             return self.mono
@@ -293,23 +306,75 @@ def menu_sub(menu, text, glyph, sub=None):
     return sub
 
 
+def tool_metrics(dropdown=False):
+    """Toolbar icon buttons: (button w, h, icon strip w, glyph px). Classic: 36 (50 with ▾) x 34,
+    22 px glyphs. Mac (mockup .tbtn): 30 (42 with a chevron) x 28, 16 px SF Symbols (measured
+    against the mockup at 2x: its bookmark is 25 px tall, history 26 px; 18 px came out 15 % bigger)."""
+    from . import theme
+    if theme.is_mac():
+        g = theme.icon_px("toolbar")  # 19 at 13 pt text: a step bigger than the text, as AppKit toolbars
+        return (42 if dropdown else 30), 28, g + (12 if dropdown else 0), g
+    return (50 if dropdown else 36), 34, (36 if dropdown else 22), 22
+
+
+def tool_color(checked):
+    """A toolbar icon's colour. Classic: accent while a toggle is on. Mac: always the grey glyph
+    colour; an on toggle shows a soft square behind it instead (QPushButton#iconTool:checked)."""
+    from . import theme
+    c = theme.colors()
+    if checked and not theme.is_mac():
+        return c["accent"]
+    return c["tab_text"]
+
+
+def _optical(name):
+    """Mac: (point scale, box ratio) for a toolbar symbol drawn larger than the rest, else None."""
+    from . import theme
+    if not theme.is_mac():
+        return None
+    from . import sf_symbols
+    return sf_symbols.OPTICAL_SCALE.get(sf_symbols.MATERIAL_TO_SF.get(name))
+
+
+def icon_size(glyph, dropdown=False):
+    """The QSize a toolbar button's icon is drawn at (wider for an OPTICAL_SCALE symbol)."""
+    from PySide6.QtCore import QSize
+    _w, _h, strip, g = tool_metrics(dropdown)
+    wide = None if dropdown else _optical(glyph.partition("@")[0])
+    return QSize(round(g * wide[1]) if wide else strip, g)
+
+
 def toolbar_icon(glyph, color, dropdown=False):
-    """A toolbar icon (Material glyph, 22 px); dropdown: with a small ▾ after it (36 x 22)."""
+    """A toolbar icon (Classic: Material glyph, 22 px; Mac: SF Symbol, theme.icon_px()); dropdown: with a
+    small ▾ / chevron after it."""
     from PySide6.QtCore import QSize
     from PySide6.QtGui import QIcon, QPainter, QPixmap
     from PySide6.QtWidgets import QApplication
+    from . import theme
     from .main_window import _material_icon
+    _w, _h, strip, g = tool_metrics(dropdown)
     name, _, rot = glyph.partition("@")  # "glyph@90" = rotated glyph
-    icon = _material_icon(name, 22, color, int(rot or 0))
+    wide = _optical(name)
+    if wide and not dropdown:  # Mac: a text-like symbol (f(x)) drawn as big as its neighbours
+        from . import sf_symbols
+        scale, ratio = wide
+        sym = sf_symbols.icon(sf_symbols.MATERIAL_TO_SF[name], g, color, point=g * 0.8 * scale,
+                              width=round(g * ratio))
+        if sym is not None:
+            return sym
+    icon = _material_icon(name, g, color, int(rot or 0))
     if not dropdown:
         return icon
     dpr = QApplication.instance().devicePixelRatio() if QApplication.instance() else 1
-    px = QPixmap(int(36 * dpr), int(22 * dpr))
+    px = QPixmap(int(strip * dpr), int(g * dpr))
     px.setDevicePixelRatio(dpr)
     px.fill(Qt.GlobalColor.transparent)
     p = QPainter(px)
-    p.drawPixmap(0, 0, icon.pixmap(QSize(22, 22)))
-    p.drawPixmap(20, 3, _material_icon("arrow_drop_down", 16, color).pixmap(QSize(16, 16)))
+    p.drawPixmap(0, 0, icon.pixmap(QSize(g, g)))
+    if theme.is_mac():  # a small chevron 2 px after the glyph
+        p.drawPixmap(g + 2, max(0, (g - 10) // 2), _material_icon("arrow_drop_down", 10, color).pixmap(QSize(10, 10)))
+    else:
+        p.drawPixmap(20, 3, _material_icon("arrow_drop_down", 16, color).pixmap(QSize(16, 16)))
     p.end()
     return QIcon(px)
 
@@ -395,21 +460,19 @@ SIDEBAR_GLYPH = "\U000ffe94"  # speed_4_progress, by codepoint (its name ligatur
 def icon_button(glyph, tip, checkable=False, dropdown=False):
     """A toolbar icon button like Analyze's (36 x 34, or 50 x 34 with a ▾): grey icon, accent
     while a checkable one is on; follows the theme."""
-    from PySide6.QtCore import QSize
     from PySide6.QtWidgets import QPushButton
     from . import theme
     b = QPushButton()
     b.setObjectName("iconTool")
     b.setToolTip(tip)
     b.setCheckable(checkable)
-    b.setFixedSize(50 if dropdown else 36, 34)
-    b.setIconSize(QSize(36, 22) if dropdown else QSize(22, 22))
+    w, h, strip, g = tool_metrics(dropdown)
+    b.setFixedSize(w, h)
+    b.setIconSize(icon_size(glyph, dropdown))
 
     def tint(*_):
         try:
-            c = theme.colors()
-            color = c["accent"] if b.isCheckable() and b.isChecked() else c["tab_text"]
-            b.setIcon(toolbar_icon(glyph, color, dropdown))
+            b.setIcon(toolbar_icon(glyph, tool_color(b.isCheckable() and b.isChecked()), dropdown))
         except RuntimeError:  # deleted
             pass
     tint()
@@ -429,8 +492,9 @@ class MenuIconButton(QToolButton):
         from PySide6.QtCore import QSize
         self.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         # same as icon_button, so ⚙ matches the icons beside it (50 wide with a ▾)
-        self.setFixedSize(50 if dropdown else 36, 34)
-        self.setIconSize(QSize(36, 22) if dropdown else QSize(22, 22))
+        w, h, strip, g = tool_metrics(dropdown)
+        self.setFixedSize(w, h)
+        self.setIconSize(QSize(strip, g))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setStyleSheet("QToolButton { padding: 0; } QToolButton::menu-indicator { image: none; width: 0; }")
@@ -448,8 +512,7 @@ class MenuIconButton(QToolButton):
         if self.dropdown:
             self.setIcon(toolbar_icon(self.glyph, theme.colors()["tab_text"], dropdown=True))
             return
-        from .main_window import _material_icon
-        self.setIcon(_material_icon(self.glyph, 22, theme.colors()["tab_text"]))
+        self.setIcon(toolbar_icon(self.glyph, theme.colors()["tab_text"]))
 
 
 class RunButton(QPushButton):
@@ -468,7 +531,17 @@ class RunButton(QPushButton):
         self.frame = frame
         self.glyph_px = self.GLYPH if frame else self.SIZE
         self.running = False
-        self.setFixedSize(self.SIZE, self.SIZE)
+        from . import theme
+        self.mac = theme.is_mac()
+        if self.mac:  # mockup .rec: a 28 px pill, icon + "Start" / "Record"
+            from PySide6.QtGui import QFontMetrics
+            self.label = "Start" if glyph == "play_arrow" else "Record"
+            f = self.font()
+            f.setWeight(f.Weight.Medium)
+            width = max(QFontMetrics(f).horizontalAdvance(t) for t in (self.label, "Stop"))
+            self.setFixedSize(9 + 12 + 7 + width + 12, 28)
+        else:
+            self.setFixedSize(self.SIZE, self.SIZE)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
@@ -476,9 +549,42 @@ class RunButton(QPushButton):
         self.running = on
         self.update()
 
+    def _paint_mac(self):
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QColor, QPainter
+        from . import sf_symbols, theme
+        c = theme.colors()
+        enabled = self.isEnabled()
+        hover = enabled and self.underMouse()
+        key = "err" if self.running else self.color
+        color = c[key] if enabled else c["muted"]
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        # The page's main action, so it stands out: a tinted pill in its own colour (Start green,
+        # Record / Stop red); still faintly tinted while it can't be used yet.
+        bg = theme._mix(c["bg"], c[key], (0.26 if hover else 0.18) if enabled else 0.08)
+        p.setBrush(QColor(bg))
+        color = c[key] if enabled else theme._mix(c["muted"], c[key], 0.35)
+        p.drawRoundedRect(QRectF(self.rect()), 6, 6)
+        symbol = "stop.fill" if self.running else ("play.fill" if self.color == "ok" else "circle.fill")
+        icon = sf_symbols.icon(symbol, 12, color, point=9 if symbol != "circle.fill" else 10)
+        if icon is not None:
+            p.drawPixmap(9, (self.height() - 12) // 2, icon.pixmap(12, 12))
+        f = self.font()
+        f.setWeight(f.Weight.Medium)
+        p.setFont(f)
+        p.setPen(QColor(c["text"] if enabled else c["muted"]))
+        p.drawText(QRectF(28, 0, self.width() - 28, self.height()),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "Stop" if self.running else self.label)
+        p.end()
+
     set_recording = set_running  # the Logger's word for it
 
     def paintEvent(self, event):
+        if self.mac:
+            self._paint_mac()
+            return
         from PySide6.QtCore import QRectF
         from PySide6.QtGui import QColor, QPainter, QPen
         from . import theme
