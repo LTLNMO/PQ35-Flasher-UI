@@ -3,7 +3,7 @@ with an overview timeline, and overlay channels on pyqtgraph plots."""
 from pathlib import Path
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QPoint, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QSize, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox, QDoubleSpinBox, QMenu, QTabWidget,
@@ -46,6 +46,25 @@ class _TitleLabel(ElidedLabel):
 
     def minimumSizeHint(self):
         return QSize(0, super().minimumSizeHint().height())
+
+
+class _BandFollow(QObject):
+    """Shows `band` while any of `parts` is shown (each part's own show / hide decides)."""
+
+    def __init__(self, band, parts):
+        super().__init__(band)
+        self.band, self.parts = band, parts
+        for p in parts:
+            p.installEventFilter(self)
+        self.sync()
+
+    def sync(self):
+        self.band.setVisible(any(not p.isHidden() for p in self.parts))
+
+    def eventFilter(self, obj, event):
+        if event.type() in (QEvent.Type.ShowToParent, QEvent.Type.HideToParent):
+            self.sync()
+        return False
 
 
 class PlaybackPage(LiveFollowMixin, ToolbarMixin, RawMixin, TimelineMixin, ColumnsMixin, AnalysisMixin, CompareMixin, QWidget):
@@ -338,6 +357,9 @@ class PlaybackPage(LiveFollowMixin, ToolbarMixin, RawMixin, TimelineMixin, Colum
         self.time_layout.addWidget(self.bottom_band)
         self.bottom_band.installEventFilter(self)  # re-align the timeline on resize
         self.ov_box.setVisible(self.timeline_button.isChecked())
+        # Nothing in it (timeline and legend both off): no strip either, else its top gap left
+        # the graph 8 px short of where every page's content ends
+        self._band_follow = _BandFollow(self.bottom_band, (self.ov_box, self.legend))
         self.cursor_idx = 0
 
         self.sidebar.install(self.splitter, right, self._right_layout, self.ctrl_row, self.sidebar_button,
