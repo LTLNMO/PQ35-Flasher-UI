@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QFileDialog
 from .storage import user_dir
 from .popups import InputDialog, MessageBox
 from .toolbar import ToolIcon
+from . import menus
 
 FORMAT_TAG = "pq35-dashboard"
 
@@ -47,7 +48,6 @@ class DashboardButton(ToolIcon):
 
     def _fill(self, menu):
         """Like Analyze's menus: saved dashboards (✓ on the one loaded), then actions with icons."""
-        from . import analyze_tools as T
         saved = self.saved()
         if not self._key():
             menu.addAction("Choose a module first").setEnabled(False)
@@ -59,13 +59,13 @@ class DashboardButton(ToolIcon):
             act.triggered.connect(lambda _=False, n=name: self.load(n))
         if not saved:
             menu.addAction("No saved dashboards").setEnabled(False)
-        T.menu_header(menu, "Manage")
-        T.menu_action(menu, "Save current as…", "bookmark_add", self.save_as)
-        T.menu_action(menu, "Delete…", "delete", self.delete, enabled=bool(saved))
-        T.menu_header(menu, "Share")
-        T.menu_action(menu, "Export…", "upload", self.export, enabled=bool(saved),
+        menus.menu_header(menu, "Manage")
+        menus.menu_action(menu, "Save current as…", "bookmark_add", self.save_as)
+        menus.menu_action(menu, "Delete…", "delete", self.delete, enabled=bool(saved))
+        menus.menu_header(menu, "Share")
+        menus.menu_action(menu, "Export…", "upload", self.export, enabled=bool(saved),
                       tip="Save a dashboard as a file to share")
-        T.menu_action(menu, "Import…", "download", self.import_, tip="Add a dashboard from a file")
+        menus.menu_action(menu, "Import…", "download", self.import_, tip="Add a dashboard from a file")
 
     def load(self, name):
         state = self.saved().get(name)

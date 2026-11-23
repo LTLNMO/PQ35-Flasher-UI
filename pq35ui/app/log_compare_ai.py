@@ -12,10 +12,11 @@ from PySide6.QtWidgets import (
     QMenu, QPushButton, QVBoxLayout,
 )
 
-from . import ai, analyze_tools, log_digest, log_import, recent_logs
+from . import ai, log_digest, log_import, recent_logs
 from .popups import OverlayDialog
 from .storage import datalogs_dir
 from .widgets import muted
+from . import menus
 
 PATH_ROLE = Qt.ItemDataRole.UserRole
 PULLS_KEY = "compare_ai:pulls_only"
@@ -59,15 +60,15 @@ class CompareLogsDialog(OverlayDialog):
         self.list.model().rowsMoved.connect(lambda *_: self._relabel())
         lay.addWidget(self.list, 1)
         row = QHBoxLayout()
-        add = QPushButton(analyze_tools.menu_icon("file_open"), "Add logs…")
+        add = QPushButton(menus.menu_icon("file_open"), "Add logs…")
         add.setToolTip("Choose one or more datalog files")
         add.clicked.connect(self._add_files)
         row.addWidget(add)
-        self.recent = QPushButton(analyze_tools.menu_icon("history"), "Recent ▾")
+        self.recent = QPushButton(menus.menu_icon("history"), "Recent ▾")
         self.recent.setToolTip("Add one of the logs you recorded recently")
         self.recent.clicked.connect(self._recent_menu)
         row.addWidget(self.recent)
-        self.remove = QPushButton(analyze_tools.menu_icon("delete"), "Remove")
+        self.remove = QPushButton(menus.menu_icon("delete"), "Remove")
         self.remove.setToolTip("Take the selected logs off the list (the files stay)")
         self.remove.clicked.connect(self._remove)
         row.addWidget(self.remove)
@@ -144,7 +145,7 @@ class CompareLogsDialog(OverlayDialog):
             act.triggered.connect(lambda _=False, p=path: (self._add(p), self._relabel()))
         if not entries:
             menu.addAction("No recent recordings").setEnabled(False)
-        analyze_tools.popup_menu(menu, self.recent)
+        menus.popup_menu(menu, self.recent)
 
     def _remove(self):
         for it in self.list.selectedItems() or ([self.list.currentItem()] if self.list.currentItem() else []):

@@ -21,9 +21,10 @@ from .gauges import BarGauge, DialGauge
 from .presets import PresetButton
 from .channel_list import (CATEGORY_ROLE, FIXED_ROLE, RAW_CATEGORY, RAW_GROUP_ROLE, ROLE, VALUE_ROLE,
                            ChannelDropdown, ChannelTree, ask_raw_group, groups_summary)
-from . import analyze_tools as T
 from .widgets import Banner, discard, muted, scrollable
 from .toolbar import ToolIcon
+from . import menus
+from . import toolbar
 
 WINDOW_SECONDS = (("30 s", 30), ("1 min", 60), ("2 min", 120), ("5 min", 300))
 MAX_POINTS = 6000
@@ -186,7 +187,7 @@ class LayoutPicker(ToolIcon):
     def __init__(self, on_pick, parent=None):
         super().__init__(None, dropdown=True, parent=parent)
         from . import theme
-        from .analyze_tools import tool_metrics
+        from .toolbar import tool_metrics
         if theme.is_mac():  # the toolbar's SF Symbol box: same size as the icons beside it
             self.ICON_W = self.ICON_H = tool_metrics()[3] * 0.8
         else:  # the grid, about as big as the 22 px icons beside it
@@ -211,7 +212,7 @@ class LayoutPicker(ToolIcon):
         action.setDefaultWidget(holder)
         self.menu_.addAction(action)
         self.setMenu(self.menu_)
-        from .analyze_tools import anchor_menu
+        from .menus import anchor_menu
         anchor_menu(self.menu_, self)
         self.set_current(0)
 
@@ -228,12 +229,12 @@ class LayoutPicker(ToolIcon):
         self.update()
 
     def paint_glyph(self, p):
-        from . import analyze_tools, theme
+        from . import theme
         c = theme.colors()
-        _w, _h, strip, g = analyze_tools.tool_metrics(dropdown=True)
+        _w, _h, strip, g = toolbar.tool_metrics(dropdown=True)
         left = (self.width() - strip) / 2  # the icon+▾ strip centred, as on every dropdown icon
         # the ▾ exactly as the other dropdown icons draw it: a dropdown icon with a blank glyph
-        caret = analyze_tools.toolbar_icon("\u0020", c["tab_text"], dropdown=True)
+        caret = toolbar.toolbar_icon("\u0020", c["tab_text"], dropdown=True)
         p.drawPixmap(int(left), int((self.height() - g) / 2), caret.pixmap(QSize(strip, g)))
         rect = QRectF(left + (g - self.ICON_W) / 2, (self.height() - self.ICON_H) / 2, self.ICON_W, self.ICON_H)
         color = QColor(c["tab_text"] if theme.is_mac() else c["accent"])
@@ -771,13 +772,13 @@ class LiveViewPage(QWidget):
 
         # Row 1 (page_frame places it): ▶ Start, Clear, the reading rate; Select channels; then the
         # panels' icons (Math, Presets, layout, dashboards, ⚙).
-        self.start_button = T.RunButton("play_arrow", "ok")  # ▶ start (green, like "stopped") / ■ stop
+        self.start_button = toolbar.RunButton("play_arrow", "ok")  # ▶ start (green, like "stopped") / ■ stop
         self.start_button.setToolTip("Start: show live values (nothing is saved)")
         self.start_button.clicked.connect(self.toggle)
 
         # ⋯: Clear graphs and readings (⇧⌘K). Start clears them too, so this is for mid-run.
         def fill_more(menu):
-            act = T.menu_action(menu, "Clear graphs and readings", "clear_all", self._clear_data,
+            act = menus.menu_action(menu, "Clear graphs and readings", "clear_all", self._clear_data,
                                 tip="Empty the graphs and readings, keep the channels (Start does this too)")
             act.setShortcut(QKeySequence("Ctrl+Shift+K"))  # ⇧⌘K (⌘K is the Assistant): shown here, the page's
             act.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)  # own shortcut does the work (two
@@ -1231,10 +1232,9 @@ class LiveViewPage(QWidget):
 
     def _fill_options(self, menu):
         """⚙: Time shown ▸ and Scale ▸ (✓ on the current choice)."""
-        from . import analyze_tools as T
         for title, glyph, box in (("Time shown", "schedule", self.window_combo),
                                   ("Scale", "height", self.scale_combo)):
-            sub = T.menu_sub(menu, title, glyph)
+            sub = menus.menu_sub(menu, title, glyph)
             for i in range(box.count()):
                 act = sub.addAction(box.itemText(i))
                 act.setCheckable(True)
@@ -1362,7 +1362,6 @@ class LiveViewPage(QWidget):
 
     def _channel_menu(self, key, global_pos):
         """Right-click a channel in the selector: alarm, math channels."""
-        from . import analyze_tools as T
         item = next((it for it in self.tree.items() if it.data(0, ROLE) == key), None)
         value = item.data(0, VALUE_ROLE) if item is not None else None
         if not value or "raw_group" in value:
@@ -1370,10 +1369,10 @@ class LiveViewPage(QWidget):
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
         # the dialogs open over the page, so the dropdown closes first
-        T.menu_action(menu, f"Set alarm for {value['name']}…", "notifications",
+        menus.menu_action(menu, f"Set alarm for {value['name']}…", "notifications",
                       lambda: (self.channels.close_picker(), self._edit_alarm(key)))
-        T.menu_header(menu, "More")
-        T.menu_action(menu, "Math channels…", "function",
+        menus.menu_header(menu, "More")
+        menus.menu_action(menu, "Math channels…", "function",
                       lambda: (self.channels.close_picker(), self._edit_math()))
         menu.exec(global_pos)
 

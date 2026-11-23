@@ -110,7 +110,7 @@ class ConnectionCard(QFrame):
     def menu(self):
         """Interface and module choices (Classic has them as two buttons in its top bar)."""
         from PySide6.QtWidgets import QMenu
-        from .analyze_tools import menu_icon, popup_menu
+        from .menus import menu_icon, popup_menu
         w = self.window_
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
@@ -494,7 +494,7 @@ ICON_SLOT = 42  # every right-hand icon's slot: an icon with a ▾ fills it, a p
 
 def icon_slot():
     """A right-hand icon's slot in this interface: as wide as an icon with a ▾ (Mac ICON_SLOT)."""
-    from .analyze_tools import tool_metrics
+    from .toolbar import tool_metrics
     return tool_metrics(dropdown=True)[0]
 
 

@@ -28,6 +28,7 @@ from .storage import EcuRecord, datalogs_dir, modules_dir, user_dir
 from .widgets import Banner, h1, muted, scrollable
 from .popups import InputDialog, MessageBox
 from .toolbar import ToolIcon
+from . import menus
 
 
 def projects_dir() -> Path:
@@ -328,7 +329,6 @@ class ProjectsPage(QWidget):
         """Mac (Mockups/Swift native 02-projects): a Projects column (title, +, ⋮, the list, where
         they're kept) and the project's name, car and Active on one row above the tabs."""
         from PySide6.QtWidgets import QFrame
-        from . import analyze_tools as T
         _pdir = projects_dir
         panel = QFrame()
         panel.setObjectName("macPanel")
@@ -348,11 +348,11 @@ class ProjectsPage(QWidget):
         head.addWidget(add)
 
         def fill_more(menu):
-            T.menu_action(menu, "Rename…", "edit", self._rename, self.rename_button.isEnabled())
-            T.menu_action(menu, "Delete…", "delete", self._delete, self.delete_button.isEnabled(),
+            menus.menu_action(menu, "Rename…", "edit", self._rename, self.rename_button.isEnabled())
+            menus.menu_action(menu, "Delete…", "delete", self._delete, self.delete_button.isEnabled(),
                           tip=self.delete_button.toolTip())
             menu.addSeparator()
-            T.menu_action(menu, "Open projects folder", "folder_open", lambda: (
+            menus.menu_action(menu, "Open projects folder", "folder_open", lambda: (
                 _pdir().mkdir(parents=True, exist_ok=True),
                 QDesktopServices.openUrl(QUrl.fromLocalFile(str(_pdir())))))
         head.addWidget(ToolIcon("more_horiz", "Rename, delete, open the projects folder", menu=fill_more))

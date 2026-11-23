@@ -391,7 +391,7 @@ class AutoScanView(QWidget):
         self.log.setMinimumHeight(320)
         lay.addWidget(self.log, 1)
         # The selected module's actions, under the log (the right-click menu has them too).
-        from .analyze_tools import menu_icon
+        from .menus import menu_icon
         row = QHBoxLayout()
         self.module_reread = QPushButton(menu_icon("refresh"), "Re-read")
         self.module_reread.clicked.connect(lambda: self._selected() and self.health.reread([self._selected()]))
@@ -411,7 +411,7 @@ class AutoScanView(QWidget):
         return item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
 
     def _log_buttons(self):
-        from .analyze_tools import menu_action
+        from .menus import menu_action
         from .toolbar import ToolIcon
 
         def fill_more(menu):

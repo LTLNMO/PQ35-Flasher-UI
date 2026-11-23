@@ -4,6 +4,7 @@ Stored per module family under settings "presets:<family>" as {name: [value ids]
 
 from .popups import InputDialog, MessageBox
 from .toolbar import ToolIcon
+from . import menus
 
 # Built-in presets offered for a module on top of the user's own. Keyed by
 # family name. "Integrated Engineering Logger" reads exactly the 27 measuring-block fields Integrated
@@ -91,36 +92,35 @@ class PresetButton(ToolIcon):
         return BUILTIN_PRESETS.get(family["name"], {}) if family else {}
 
     def fill_menu(self, menu):
-        from . import analyze_tools as T
         from .smart_presets import icon_for
         if self.extra_menu:
             self.extra_menu(menu)
         builtins = self._builtins()
         if builtins:
-            T.menu_header(menu, "Ready-made")
+            menus.menu_header(menu, "Ready-made")
             for name in sorted(builtins, key=str.lower):
-                T.menu_action(menu, f"{name}  ({len(builtins[name])})", icon_for(name),
+                menus.menu_action(menu, f"{name}  ({len(builtins[name])})", icon_for(name),
                               lambda _=False, n=name: self._load(n, True), tip="Built in")
         saved = self.presets()
-        T.menu_header(menu, "Your presets")
+        menus.menu_header(menu, "Your presets")
         for name in sorted(saved, key=str.lower):
-            T.menu_action(menu, f"{name}  ({len(saved[name])})", "bookmark",
+            menus.menu_action(menu, f"{name}  ({len(saved[name])})", "bookmark",
                           lambda _=False, n=name: self._load(n, False))
         if not saved:
             menu.addAction("None saved yet").setEnabled(False)
         menu.addSeparator()
         have = bool(list(self.get_ids()))
-        T.menu_action(menu, "Save preset…", "bookmark_add", self._save, have,
+        menus.menu_action(menu, "Save preset…", "bookmark_add", self._save, have,
                       tip="Save the ticked channels as a new preset" if have else "Tick some channels first")
-        over = T.menu_sub(menu, "Overwrite preset", "save_as")
+        over = menus.menu_sub(menu, "Overwrite preset", "save_as")
         # Always opens, saying why when there's nothing to pick (a greyed item explains nothing).
         if not saved:
             over.addAction("No saved presets yet: use Save preset… first").setEnabled(False)
         elif not have:
             over.addAction("Tick some channels first").setEnabled(False)
         for name in sorted(saved, key=str.lower):
-            T.menu_action(over, name, "bookmark", lambda _=False, n=name: self._overwrite(n), have)
-        T.menu_action(menu, "Manage presets…", "tune", self._manage, tip="Rename or delete your presets")
+            menus.menu_action(over, name, "bookmark", lambda _=False, n=name: self._overwrite(n), have)
+        menus.menu_action(menu, "Manage presets…", "tune", self._manage, tip="Rename or delete your presets")
         return menu
 
     def _load(self, name, builtin):
@@ -156,7 +156,6 @@ class PresetButton(ToolIcon):
         self._store(presets)
 
     def _manage(self):
-        from . import analyze_tools as T
 
         def rename(old, new):
             self._store({(new if k == old else k): v for k, v in self.presets().items()})
@@ -166,6 +165,6 @@ class PresetButton(ToolIcon):
             presets.pop(name, None)
             self._store(presets)
 
-        T.manage_presets(self, self.presets, rename, delete,
+        menus.manage_presets(self, self.presets, rename, delete,
                          "No presets saved yet.\nTick channels, then Presets → Save preset….",
                          tip=lambda _name, ids: f"{len(ids)} channels")

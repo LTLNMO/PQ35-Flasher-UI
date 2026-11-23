@@ -100,7 +100,7 @@ class LayoutRules(unittest.TestCase):
 
     def test_toolbar_icons_one_size(self):
         """Every ToolIcon is the size rule's: plain or ▾ width, the interface's height."""
-        from pq35ui.app import analyze_tools as T
+        from pq35ui.app import toolbar as T
         from pq35ui.app import theme
         bad = []
         for interface in ("classic", "mac"):
@@ -162,7 +162,7 @@ class LayoutRules(unittest.TestCase):
     def test_mac_right_icons_on_the_grid(self):
         """Rule 7: right-hand icons sit on fixed columns from the right margin: ⋯ / ⚙ ends on the
         margin, each slot ICON_SLOT + ROW_SPACING to its left."""
-        from pq35ui.app import analyze_tools as T
+        from pq35ui.app import toolbar as T
         from pq35ui.app.mac_shell import CONTENT_MARGINS, ICON_SLOT, ROW_SPACING
         os.environ["PQ35_INTERFACE"] = "mac"
         last = L.WIDTH - CONTENT_MARGINS[2] - T.tool_metrics(False)[0]

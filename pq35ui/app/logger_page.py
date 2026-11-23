@@ -27,11 +27,12 @@ from .channel_list import (ALARM_ROLE, CATEGORY_ROLE, FIXED_ROLE, FRAC_ROLE, RAW
                            ChannelDropdown,
                            ask_raw_group, groups_summary)
 from .channel_sidebar import ChannelSidebar
-from . import analyze_tools as T
 from .widgets import Banner, muted, scrollable
 from .popups import OverlayDialog
 from .gauges import ScaleTracker
 from .toolbar import ToolIcon
+from . import menus
+from . import toolbar
 
 # Per-group read interval: 0 is as fast as the module answers.
 RATES = (("As fast as possible", 0), ("10 Hz", 100), ("5 Hz", 200), ("2 Hz", 500), ("1 Hz", 1000))
@@ -450,7 +451,7 @@ class LoggerPage(QWidget):
         self.rate = QComboBox()
         for label, interval in RATES:
             self.rate.addItem(label, interval)
-        self.start_button = T.RunButton("fiber_manual_record", "err")  # ● record / ■ stop (filled)
+        self.start_button = toolbar.RunButton("fiber_manual_record", "err")  # ● record / ■ stop (filled)
         self.start_button.setToolTip("Record: start reading the ticked values and saving them to a datalog.")
         self.start_button.clicked.connect(self.toggle)
         # The readout while logging (time · reads · rows …), right beside the record button
@@ -534,10 +535,10 @@ class LoggerPage(QWidget):
         self._export_ok = False
 
         def fill_more(menu):
-            T.menu_action(menu, "Export last log…", "ios_share", lambda: self._export(self.last_log), self._export_ok,
+            menus.menu_action(menu, "Export last log…", "ios_share", lambda: self._export(self.last_log), self._export_ok,
                           tip="Save the last log to Datalogs (or anywhere) as Standard CSV, Integrated "
                               "Engineering, MegaLogViewer or generic CSV")
-            T.menu_action(menu, "Open Datalogs folder", "folder_open", self._open_datalogs,
+            menus.menu_action(menu, "Open Datalogs folder", "folder_open", self._open_datalogs,
                           tip="Where exports go")
         self.more_button = ToolIcon("more_vert", "More: export the last log, open the Datalogs folder",
                                     menu=fill_more)
@@ -806,36 +807,35 @@ class LoggerPage(QWidget):
     def _smart_menu(self, menu):
         """Presets ▾, top section: the smart presets for this module, then their options."""
         from . import ai, smart_presets
-        T_ = T
         gen = self.smart
-        T_.menu_header(menu, "Smart presets")
-        T_.menu_action(menu, "Ask AI for a preset…", "auto_awesome", lambda: smart_presets.ask_dialog(self, self.smart),
+        menus.menu_header(menu, "Smart presets")
+        menus.menu_action(menu, "Ask AI for a preset…", "auto_awesome", lambda: smart_presets.ask_dialog(self, self.smart),
                        enabled=bool(self.catalog) and not self.running and not gen.busy,
                        tip="Say what you want to look at; your AI picks the channels connected to it")
         for layout in gen.layouts:
             n, g = len(smart_presets.channels_of(layout)), len(self._smart_groups(layout))
             glyph = "warning" if layout.get("fault") else "auto_awesome" if layout.get("asked") \
                 else smart_presets.icon_for(layout["name"])
-            T_.menu_action(menu, f"{layout['name']}  ({n} · {g} group{'s' if g != 1 else ''})", glyph, lambda _=False, l=layout: self._apply_smart(l),
+            menus.menu_action(menu, f"{layout['name']}  ({n} · {g} group{'s' if g != 1 else ''})", glyph, lambda _=False, l=layout: self._apply_smart(l),
                            enabled=not self.running, tip=layout.get("description", ""))
         if gen.busy:
             menu.addAction("Generating with your AI…").setEnabled(False)
         elif not gen.layouts:
             menu.addAction("Choose a module first" if not self.catalog else "None for this module").setEnabled(False)
-        sm = T_.menu_sub(menu, "Smart preset options", "auto_awesome")
+        sm = menus.menu_sub(menu, "Smart preset options", "auto_awesome")
         on = ai.enabled(self.state.settings)
-        T_.menu_action(sm, "Generating…" if gen.busy else "Regenerate with AI", "refresh",
+        menus.menu_action(sm, "Generating…" if gen.busy else "Regenerate with AI", "refresh",
                        lambda: gen.regenerate(self), enabled=bool(gen.headers) and on and not gen.busy,
                        tip="Ask your AI again for this module's channels" if on
                        else "Choose an AI in Settings → AI first")
-        T_.menu_toggle(sm, "Show smart preset chips", "view_carousel",
+        menus.menu_toggle(sm, "Show smart preset chips", "view_carousel",
                        bool(self.state.settings.get(self.SMART_BAR_KEY, False)), self._smart_bar_toggled)
-        T_.menu_toggle(sm, "Generate with AI automatically", "auto_awesome",
+        menus.menu_toggle(sm, "Generate with AI automatically", "auto_awesome",
                        bool(self.state.settings.get(smart_presets.AI_KEY, True)),
                        lambda v: self.state.settings.set(smart_presets.AI_KEY, bool(v)),
                        tip="When a module with new channels is chosen, ask your AI for sets (only channel names are sent)")
         if any(l.get("asked") for l in gen.layouts):
-            T_.menu_action(sm, "Remove my Ask AI presets", "delete", gen.forget_asked)
+            menus.menu_action(sm, "Remove my Ask AI presets", "delete", gen.forget_asked)
         if gen.error:
             sm.addSeparator()
             sm.addAction(f"Last AI attempt: {gen.error[:70]}").setEnabled(False)
@@ -921,7 +921,7 @@ class LoggerPage(QWidget):
         idle = not self.running
 
         def choices(title, glyph, items, current, pick, tip="", enabled=None):
-            sub = T.menu_sub(menu, title, glyph)
+            sub = menus.menu_sub(menu, title, glyph)
             sub.setEnabled(idle if enabled is None else enabled)
             if tip:
                 sub.menuAction().setToolTip(tip)
@@ -932,19 +932,19 @@ class LoggerPage(QWidget):
                 act.triggered.connect(lambda _=False, v=value: pick(v))
             return sub
 
-        T.menu_header(menu, "Reading")
+        menus.menu_header(menu, "Reading")
         choices("Rate", "pace", RATES,  # read rate: same icon as Group rates (speed = dyno) self.rate.currentData(),
                 lambda v: self.rate.setCurrentIndex(max(self.rate.findData(v), 0)),
                 "How often each group is read")
-        T.menu_action(menu, "Group rates…", "pace", self._edit_rates, idle,
+        menus.menu_action(menu, "Group rates…", "pace", self._edit_rates, idle,
                       tip="Read some groups faster than others")
-        T.menu_header(menu, "Rolling")
+        menus.menu_header(menu, "Rolling")
         lengths = [(f"{m:g} min", float(m)) for m in (1, 2, 5, 10, 15, 30, 60)]
         if all(v != self.keep_min.value() for _l, v in lengths):  # an older custom length
             lengths.append((f"{self.keep_min.value():g} min", self.keep_min.value()))
         choices("Keep last", "autorenew", lengths, self.keep_min.value(), self.keep_min.setValue,
                 "Rolling recording keeps this much, saved when you press Stop")
-        T.menu_header(menu, "Saving")
+        menus.menu_header(menu, "Saving")
         # Every log is saved in Datalogs (Standard format) as it records. Auto-export
         # also puts a copy in your format into Datalogs at every Stop, without the dialog.
         choices("Auto-export", "ios_share",
@@ -999,12 +999,12 @@ class LoggerPage(QWidget):
         idle = not self.running
         for path, entry in items:
             current = self.running and self.writer is not None and path == self.writer.path
-            sub = T.menu_sub(menu, f"{path.stem}   {recent_logs.describe(entry)}",
+            sub = menus.menu_sub(menu, f"{path.stem}   {recent_logs.describe(entry)}",
                              "check_circle" if entry.get("exported") else "description")
             sub.setEnabled(not current)
-            T.menu_action(sub, "Open in Analyze", "query_stats", lambda _=False, p=path: self._analyze(p))
-            T.menu_action(sub, "Export…", "ios_share", lambda _=False, p=path: self._export(p), idle)
-            T.menu_action(sub, "Discard…", "delete", lambda _=False, p=path: self._discard(p))
+            menus.menu_action(sub, "Open in Analyze", "query_stats", lambda _=False, p=path: self._analyze(p))
+            menus.menu_action(sub, "Export…", "ios_share", lambda _=False, p=path: self._export(p), idle)
+            menus.menu_action(sub, "Discard…", "delete", lambda _=False, p=path: self._discard(p))
         menu.addSeparator()
         note = menu.addAction("Saved in Datalogs; nothing is deleted unless you discard it")
         note.setEnabled(False)
@@ -1192,22 +1192,22 @@ class LoggerPage(QWidget):
         menu.setToolTipsVisible(True)
         idle = not self.running
         if item is not None:
-            T.menu_header(menu, "This channel")
+            menus.menu_header(menu, "This channel")
             if item.data(0, RAW_GROUP_ROLE) is not None:
                 group = item.data(0, RAW_GROUP_ROLE)
-                T.menu_action(menu, "Remove from log", "close", lambda: self._remove_raw(group), enabled=idle)
+                menus.menu_action(menu, "Remove from log", "close", lambda: self._remove_raw(group), enabled=idle)
             else:
-                T.menu_action(menu, "Remove from log", "close",
+                menus.menu_action(menu, "Remove from log", "close",
                               lambda: (item.setCheckState(0, Qt.CheckState.Unchecked),
                                        self._channels_changed(), self.channels.refresh()), enabled=idle)
                 key = item.data(0, ROLE)
                 value = item.data(0, VALUE_ROLE) or {}
                 # alarms can be set or changed mid-recording
-                T.menu_action(menu, f"Set alarm for {value.get('name', 'this channel')}…", "notifications",
+                menus.menu_action(menu, f"Set alarm for {value.get('name', 'this channel')}…", "notifications",
                               lambda: self._edit_alarm(key))
-        T.menu_header(menu, "All channels")
-        T.menu_action(menu, "Select channels…", "checklist", self.channels.click, enabled=idle)
-        T.menu_action(menu, "Remove all", "clear_all", self._remove_all, enabled=idle)
+        menus.menu_header(menu, "All channels")
+        menus.menu_action(menu, "Select channels…", "checklist", self.channels.click, enabled=idle)
+        menus.menu_action(menu, "Remove all", "clear_all", self._remove_all, enabled=idle)
         menu.exec(self.tree.viewport().mapToGlobal(pos))
 
     def _remove_all(self):
@@ -1314,7 +1314,7 @@ class LoggerPage(QWidget):
             return  # raw groups have no named channel to set a limit on
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
-        T.menu_action(menu, f"Set alarm for {value['name']}…", "notifications",
+        menus.menu_action(menu, f"Set alarm for {value['name']}…", "notifications",
                       lambda: (self.channels.close_picker(), self._edit_alarm(key)))
         menu.exec(global_pos)
 

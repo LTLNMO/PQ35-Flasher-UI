@@ -952,7 +952,7 @@ class PopupCard(QFrame):
         screen = QGuiApplication.screenAt(below) or QGuiApplication.primaryScreen()
         area = screen.availableGeometry()
         x = max(area.left() + 4, min(x, area.right() - size.width() - 4))
-        win = anchor.window()  # and inside the window, like the menus (analyze_tools._place)
+        win = anchor.window()  # and inside the window, like the menus (menus._place)
         w_left = win.mapToGlobal(win.rect().topLeft()).x()
         x = max(w_left + 4, min(x, w_left + win.width() - size.width() - 4))
         if y + size.height() > area.bottom():

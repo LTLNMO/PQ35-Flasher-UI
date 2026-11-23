@@ -25,6 +25,7 @@ EDGE = 0.28         # top / bottom share of a row where a drop makes a new row i
 
 
 from .units import fmt as _fmt  # one number style on every tab
+from . import menus
 
 
 def _drag_picture(names, colors):
@@ -652,34 +653,33 @@ class SplitView(QWidget):
 
     def _row_menu(self, k, menu):
         """Row items on top of the page's right-click menu."""
-        from . import analyze_tools as T
         first = menu.actions()[0] if menu.actions() else None
         r = self.rows[k]
         added = []
         for name in r["names"]:
-            sub = T.menu_sub(menu, f"Move {name} to", "low_priority")
+            sub = menus.menu_sub(menu, f"Move {name} to", "low_priority")
             for j, other in enumerate(self.rows):
                 if j == k:
                     continue
-                T.menu_action(sub, f"Row {j + 1}: " + ", ".join(other["names"]), "splitscreen",
+                menus.menu_action(sub, f"Row {j + 1}: " + ", ".join(other["names"]), "splitscreen",
                               lambda _=False, n=name, j=j: self.move_channel(n, j))
             if len(r["names"]) > 1:
-                T.menu_action(sub, "A row of its own", "add", lambda _=False, n=name: self.move_channel(n, None))
+                menus.menu_action(sub, "A row of its own", "add", lambda _=False, n=name: self.move_channel(n, None))
             if sub.isEmpty():
                 sub.addAction("Only one row").setEnabled(False)
             added.append(sub.menuAction())
         if k > 0:
-            added.append(T.menu_action(menu, "Move row up", "arrow_upward", lambda: self.move_row(k, -1)))
+            added.append(menus.menu_action(menu, "Move row up", "arrow_upward", lambda: self.move_row(k, -1)))
         if k < len(self.rows) - 1:
-            added.append(T.menu_action(menu, "Move row down", "arrow_downward", lambda: self.move_row(k, 1)))
+            added.append(menus.menu_action(menu, "Move row down", "arrow_downward", lambda: self.move_row(k, 1)))
         if len(self.rows) > 1:
-            added.append(T.menu_action(menu, "Equal row heights", "density_medium", self.equal_heights))
+            added.append(menus.menu_action(menu, "Equal row heights", "density_medium", self.equal_heights))
         if len(r["names"]) > 1:
-            added.append(T.menu_action(menu, "Split this row (one channel per row)", "call_split",
+            added.append(menus.menu_action(menu, "Split this row (one channel per row)", "call_split",
                                        lambda: self.split_row(k)))
             if not r["fitted"]:
                 for name in r["names"]:
-                    added.append(T.menu_toggle(menu, f"Own y axis: {name}", "stacked_line_chart",
+                    added.append(menus.menu_toggle(menu, f"Own y axis: {name}", "stacked_line_chart",
                                                name in r["extra"],
                                                lambda _on, n=name: self.page.toggle_own_axis(n)))
         if first is not None:  # move them above the page's items, a separator between

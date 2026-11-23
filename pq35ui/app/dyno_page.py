@@ -15,13 +15,14 @@ from PySide6.QtWidgets import (
     QPushButton, QSpinBox, QSplitter, QVBoxLayout, QWidget,
 )
 
-from . import analyze_tools as T
 from . import cars, dyno, recent_logs, theme
 from .dyno_recorder import DynoRecorder
 from .dyno_view import DynoView, imperial
 from . import units as unitconv
 from .widgets import Banner, collapsible_sidebar, muted
 from .toolbar import ToolIcon
+from . import menus
+from . import toolbar
 
 PATH_ROLE = Qt.ItemDataRole.UserRole
 
@@ -54,7 +55,7 @@ class DynoPage(QWidget):
         top.setSpacing(8)
         self.sidebar_button = ToolIcon("list_alt", "Show or hide the sessions sidebar", checkable=True)
         top.addWidget(self.sidebar_button)
-        self.record_button = T.RunButton("fiber_manual_record", "err")
+        self.record_button = toolbar.RunButton("fiber_manual_record", "err")
         self.record_button.clicked.connect(self.toggle)
         top.addWidget(self.record_button)
         self.status = QLabel("")
@@ -502,11 +503,11 @@ class DynoPage(QWidget):
             return
         path = Path(item.data(PATH_ROLE))
         menu = QMenu(self)
-        T.menu_action(menu, "Open in Analyze", "troubleshoot", lambda: self.state.open_in_playback.emit(str(path)))
+        menus.menu_action(menu, "Open in Analyze", "troubleshoot", lambda: self.state.open_in_playback.emit(str(path)))
         from .widgets import reveal_file
-        T.menu_action(menu, "Show in Finder" if sys.platform == "darwin" else "Show in folder", "folder_open",
+        menus.menu_action(menu, "Show in Finder" if sys.platform == "darwin" else "Show in folder", "folder_open",
                       lambda: reveal_file(path))
-        T.menu_action(menu, "Discard…", "delete", lambda: self._discard(path))
+        menus.menu_action(menu, "Discard…", "delete", lambda: self._discard(path))
         menu.exec(self.sessions.viewport().mapToGlobal(pos))
 
     def _discard(self, path):
@@ -556,13 +557,13 @@ class DynoPage(QWidget):
         idle = not self.recording()
         sheet = self.view.can_export() and idle
         tip = "" if sheet else "Pick a session with a pull first"
-        T.menu_header(menu, "This pull")
-        T.menu_action(menu, "Export graph as image…", "image", self._export_png, enabled=sheet,
+        menus.menu_header(menu, "This pull")
+        menus.menu_action(menu, "Export graph as image…", "image", self._export_png, enabled=sheet,
                       tip=tip or "A PNG picture of the sheet as shown: the figures, details and graph, to share")
-        T.menu_action(menu, "Export numbers as table…", "table_chart", self._export_csv, enabled=sheet,
+        menus.menu_action(menu, "Export numbers as table…", "table_chart", self._export_csv, enabled=sheet,
                       tip=tip or "A CSV of the curves shown (power and torque at each rpm), for a spreadsheet")
-        T.menu_header(menu, "This session")
-        T.menu_action(menu, "Export log…", "ios_share", self._export_log, enabled=self.path is not None and idle,
+        menus.menu_header(menu, "This session")
+        menus.menu_action(menu, "Export log…", "ios_share", self._export_log, enabled=self.path is not None and idle,
                       tip="The whole recording (every reading) as Standard CSV, Integrated Engineering, "
                           "MegaLogViewer or generic CSV, e.g. for Analyze or another tool")
 

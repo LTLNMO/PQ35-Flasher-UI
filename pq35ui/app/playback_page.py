@@ -49,6 +49,7 @@ RAW_COL_MIN = 150  # px: Raw columns at least this wide, so a useful part of the
 
 from .units import fmt as _fmt  # one number style on every tab
 from .toolbar import ToolIcon
+from . import menus
 
 
 def _parse_csv(path: Path):
@@ -191,7 +192,7 @@ class PlaybackPage(QWidget):
         self.compare_button = ToolIcon("compare", "Compare logs: overlay a second log on the "
                                                 "graph, or compare several logs with AI", dropdown=True)
         self.compare_button.clicked.connect(
-            lambda: analyze_tools.popup_menu(self._compare_menu(), self.compare_button))
+            lambda: menus.popup_menu(self._compare_menu(), self.compare_button))
         ctrl.addStretch(1)
 
         self.legend_button = ToolIcon("list", "Show or hide the legend under the graph "
@@ -212,7 +213,7 @@ class PlaybackPage(QWidget):
         self.presets_button = ToolIcon("bookmark", "Presets: put a ready-made set of "
                                                 "channels on the graph, or save your own",
                                                 dropdown=True)
-        self.presets_button.clicked.connect(lambda: analyze_tools.popup_menu(self._presets_menu(), self.presets_button))
+        self.presets_button.clicked.connect(lambda: menus.popup_menu(self._presets_menu(), self.presets_button))
         ctrl.addWidget(self.presets_button)
         self.axis_button = QPushButton()
         self.axis_button.setToolTip("Shared: every channel on one y axis in its real units.\n"
@@ -220,10 +221,10 @@ class PlaybackPage(QWidget):
                                     "and large values both fill the graph.\n"
                                     "In Shared, click a line to give that channel its own y axis.\n"
                                     "Applies to the Single graph and to Split rows holding several channels.")
-        self.axis_button.clicked.connect(lambda: analyze_tools.popup_menu(self._axis_menu(), self.axis_button))
+        self.axis_button.clicked.connect(lambda: menus.popup_menu(self._axis_menu(), self.axis_button))
         ctrl.addWidget(self.axis_button)
         self.more_button = ToolIcon("more_vert", "Log details, edit, reset view, download")
-        self.more_button.clicked.connect(lambda: analyze_tools.popup_menu(self._more_menu(), self.more_button))
+        self.more_button.clicked.connect(lambda: menus.popup_menu(self._more_menu(), self.more_button))
         self._more_menu_width = 0
         ctrl.addWidget(self.more_button)
         rl.addLayout(ctrl)
@@ -585,21 +586,20 @@ class PlaybackPage(QWidget):
 
     def _open_menu(self):
         """Open ▾: Open file…, then the recent recordings (✓ = exported)."""
-        T = analyze_tools
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
-        T.menu_action(menu, "Open file…", "file_open", self._open_file,
+        menus.menu_action(menu, "Open file…", "file_open", self._open_file,
                       tip="A log from this app or another tool")
         items = recent_logs.entries(limit=recent_logs.KEEP)
-        T.menu_header(menu, "Recent logs")
+        menus.menu_header(menu, "Recent logs")
         if not items:
             menu.addAction("No recordings yet").setEnabled(False)
         for path, entry in items:
-            act = T.menu_action(menu, f"{path.stem}   {recent_logs.describe(entry)}",
+            act = menus.menu_action(menu, f"{path.stem}   {recent_logs.describe(entry)}",
                                 "speed" if entry.get("mode") == "dyno" else "description",
                                 lambda _=False, p=path: self.load_csv(p))
             act.setToolTip(str(path))
-        analyze_tools.popup_menu(menu, self.open_button)
+        menus.popup_menu(menu, self.open_button)
 
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -957,7 +957,7 @@ class PlaybackPage(QWidget):
         self.file_label.hide()
         old_open = self.open_button
         old_open.hide()
-        pill = QPushButton(analyze_tools.menu_icon("description"), "Open a log…")
+        pill = QPushButton(menus.menu_icon("description"), "Open a log…")
         pill.setObjectName("macFilePill")
         pill.setToolTip(old_open.toolTip())
         pill.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1037,14 +1037,13 @@ class PlaybackPage(QWidget):
 
     def _graph_menu(self):
         """Right-click on the graph (and the ⚙): view, what's shown, stats, export."""
-        T = analyze_tools
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
-        T.menu_header(menu, "View")
-        T.menu_action(menu, "Reset view", "fit_screen", self._reset_view,
+        menus.menu_header(menu, "View")
+        menus.menu_action(menu, "Reset view", "fit_screen", self._reset_view,
                       tip="The whole log across, every line back in view")
         sub = analyze_tools.StickyMenu("Channels", menu)
-        T.menu_sub(menu, "Channels", "checklist", sub)
+        menus.menu_sub(menu, "Channels", "checklist", sub)
         items = self.tree.items()
         order = getattr(self.tree, "log_order", []) or []
         items.sort(key=lambda it: order.index(it.data(0, ROLE)) if it.data(0, ROLE) in order else 0)
@@ -1057,20 +1056,20 @@ class PlaybackPage(QWidget):
         if not items:
             sub.addAction("Open a log first").setEnabled(False)
         sub.addSeparator()
-        T.menu_action(sub, "Remove all", "clear_all", lambda: self._set_all_checked(False))
-        T.menu_sub(menu, "Axis", "height", self._axis_menu(QMenu("Axis", menu)))
-        T.menu_header(menu, "Show")
-        T.menu_toggle(menu, "Legend", "list", self.legend_button.isChecked(), self.legend_button.setChecked)
-        T.menu_toggle(menu, "Timeline", "acute", self.timeline_button.isChecked(), self.timeline_button.setChecked)
-        T.menu_toggle(menu, "Follow mouse", "mouse", self.follow_check.isChecked(), self.follow_check.setChecked,
+        menus.menu_action(sub, "Remove all", "clear_all", lambda: self._set_all_checked(False))
+        menus.menu_sub(menu, "Axis", "height", self._axis_menu(QMenu("Axis", menu)))
+        menus.menu_header(menu, "Show")
+        menus.menu_toggle(menu, "Legend", "list", self.legend_button.isChecked(), self.legend_button.setChecked)
+        menus.menu_toggle(menu, "Timeline", "acute", self.timeline_button.isChecked(), self.timeline_button.setChecked)
+        menus.menu_toggle(menu, "Follow mouse", "mouse", self.follow_check.isChecked(), self.follow_check.setChecked,
                       tip="Move the cursor as the mouse moves over the graph. Off: click to place it.")
-        T.menu_header(menu, "Stats")
+        menus.menu_header(menu, "Stats")
         self._stats_menu(menu)
-        T.menu_header(menu, "More")
-        T.menu_action(menu, "Export graph…", "image", self._export_graph,
+        menus.menu_header(menu, "More")
+        menus.menu_action(menu, "Export graph…", "image", self._export_graph,
                       tip="Save the graph as an image (PNG, SVG) or its lines as CSV, or print it")
-        T.menu_sub(menu, "Axes and mouse", "open_with", self._view_menu())
-        T.menu_sub(menu, "Plot options", "tune", self.plot.getPlotItem().ctrlMenu)
+        menus.menu_sub(menu, "Axes and mouse", "open_with", self._view_menu())
+        menus.menu_sub(menu, "Plot options", "tune", self.plot.getPlotItem().ctrlMenu)
         self._last_graph_menu_width = menu.sizeHint().width()
         return menu
 
@@ -1093,50 +1092,50 @@ class PlaybackPage(QWidget):
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
         headers = list(self.headers) if self.times is not None else []
-        T.menu_header(menu, "Smart presets")
+        menus.menu_header(menu, "Smart presets")
         gen = self.smart
-        T.menu_action(menu, "Ask AI for a preset…", "auto_awesome", lambda: smart_presets.ask_dialog(self, gen),
+        menus.menu_action(menu, "Ask AI for a preset…", "auto_awesome", lambda: smart_presets.ask_dialog(self, gen),
                       enabled=self.times is not None and not gen.busy,
                       tip="Say what you want to look at; your AI picks the channels connected to it")
         for layout in gen.layouts:
             rows = len(layout["charts"])
             glyph = "warning" if layout.get("fault") else "auto_awesome" if layout.get("asked") \
                 else smart_presets.icon_for(layout["name"])
-            T.menu_action(menu, f"{layout['name']}  ({rows} row{'s' if rows != 1 else ''})", glyph, lambda _=False, l=layout: self._apply_smart(l),
+            menus.menu_action(menu, f"{layout['name']}  ({rows} row{'s' if rows != 1 else ''})", glyph, lambda _=False, l=layout: self._apply_smart(l),
                           tip=layout.get("description", ""))
         if not gen.layouts:
             menu.addAction("Open a log to see them" if self.times is None else "None for this log").setEnabled(False)
-        sm = T.menu_sub(menu, "Smart preset options", "auto_awesome")
-        T.menu_action(sm, "Generating…" if gen.busy else "Regenerate with AI", "refresh",
+        sm = menus.menu_sub(menu, "Smart preset options", "auto_awesome")
+        menus.menu_action(sm, "Generating…" if gen.busy else "Regenerate with AI", "refresh",
                               lambda: (smart_presets.forget(gen.headers), gen.generate(self)),
                               enabled=bool(gen.headers) and ai.enabled(self.state.settings) and not gen.busy,
                               tip="Ask your AI again for this log's channels" if ai.enabled(self.state.settings)
                               else "Choose an AI in Settings → AI first")
-        T.menu_toggle(sm, "Show smart preset chips", "view_carousel",
+        menus.menu_toggle(sm, "Show smart preset chips", "view_carousel",
                       smart_presets.bar_on(self.state.settings), self._smart_bar_toggled)
-        T.menu_toggle(sm, "Generate with AI automatically", "auto_awesome",
+        menus.menu_toggle(sm, "Generate with AI automatically", "auto_awesome",
                       bool(self.state.settings.get(smart_presets.AI_KEY, True)),
                       lambda on: self.state.settings.set(smart_presets.AI_KEY, bool(on)),
                       tip="When a log with new channels opens, ask your AI for layouts (only channel names are sent)")
         if any(l.get("asked") for l in gen.layouts):
-            T.menu_action(sm, "Remove my Ask AI presets", "delete", gen.forget_asked)
+            menus.menu_action(sm, "Remove my Ask AI presets", "delete", gen.forget_asked)
         if gen.error:
             sm.addSeparator()
             sm.addAction(f"Last AI attempt: {gen.error[:70]}").setEnabled(False)
         saved = T.saved_presets(self.state.settings)
-        T.menu_header(menu, "Your presets")
+        menus.menu_header(menu, "Your presets")
         for name, names in saved.items():
             chans = T.resolve(names, headers)
-            T.menu_action(menu, f"{name}  ({len(chans)}/{len(names)})", "bookmark",
+            menus.menu_action(menu, f"{name}  ({len(chans)}/{len(names)})", "bookmark",
                           lambda _=False, c=chans: self._apply_channels(c), bool(chans),
                           tip="" if chans else "None of its channels are in this log")
         if not saved:
             menu.addAction("None saved yet").setEnabled(False)
         menu.addSeparator()
         have = bool(self._checked_channels())
-        T.menu_action(menu, "Save preset…", "bookmark_add", self._save_preset, have,
+        menus.menu_action(menu, "Save preset…", "bookmark_add", self._save_preset, have,
                       tip="Save the channels on the graph as a new preset")
-        over = menu.addMenu(T.menu_icon("save_as"), "Overwrite preset")
+        over = menu.addMenu(menus.menu_icon("save_as"), "Overwrite preset")
         over.menuAction().setIconVisibleInMenu(True)  # macOS hides menu icons unless asked
         over.setToolTipsVisible(True)
         # Always opens, saying why when there's nothing to pick (a greyed item explains nothing).
@@ -1145,8 +1144,8 @@ class PlaybackPage(QWidget):
         elif not have:
             over.addAction("Put some channels on the graph first").setEnabled(False)
         for name in saved:
-            T.menu_action(over, name, "bookmark", lambda _=False, n=name: self._overwrite_preset(n), have)
-        T.menu_action(menu, "Manage presets…", "tune", self._manage_presets,
+            menus.menu_action(over, name, "bookmark", lambda _=False, n=name: self._overwrite_preset(n), have)
+        menus.menu_action(menu, "Manage presets…", "tune", self._manage_presets,
                       tip="Rename or delete your presets")
         return menu
 
@@ -1185,7 +1184,7 @@ class PlaybackPage(QWidget):
     def _manage_presets(self):
         """Rename or delete saved presets."""
         settings = self.state.settings
-        analyze_tools.manage_presets(
+        menus.manage_presets(
             self, lambda: analyze_tools.saved_presets(settings),
             lambda old, new: analyze_tools.rename_preset(settings, old, new),
             lambda name: analyze_tools.delete_preset(settings, name),
@@ -1193,19 +1192,18 @@ class PlaybackPage(QWidget):
             tip=lambda _name, names: ", ".join(names))
 
     def _more_menu(self):
-        T = analyze_tools
         menu = QMenu(self)
         loaded = self.times is not None
-        T.menu_header(menu, "This log")
-        T.menu_action(menu, "Log details", "info", lambda: self._show_file_details(self.more_button), loaded)
-        T.menu_action(menu, "Edit log…", "edit", self._edit_log, loaded)
-        T.menu_action(menu, "Export…", "ios_share", self._export, loaded)
-        T.menu_header(menu, "View")
-        T.menu_action(menu, "Reset view", "fit_screen", self._reset_view, loaded)
+        menus.menu_header(menu, "This log")
+        menus.menu_action(menu, "Log details", "info", lambda: self._show_file_details(self.more_button), loaded)
+        menus.menu_action(menu, "Edit log…", "edit", self._edit_log, loaded)
+        menus.menu_action(menu, "Export…", "ios_share", self._export, loaded)
+        menus.menu_header(menu, "View")
+        menus.menu_action(menu, "Reset view", "fit_screen", self._reset_view, loaded)
         if theme.is_mac():  # their toolbar buttons are off the Mac top bar (four icons, as in the mockup)
-            T.menu_toggle(menu, "Legend", "list", self.legend_button.isChecked(), self.legend_button.setChecked,
+            menus.menu_toggle(menu, "Legend", "list", self.legend_button.isChecked(), self.legend_button.setChecked,
                           tip="The channel chips under the graph")
-            T.menu_toggle(menu, "Timeline", "acute", self.timeline_button.isChecked(),
+            menus.menu_toggle(menu, "Timeline", "acute", self.timeline_button.isChecked(),
                           self.timeline_button.setChecked, tip="The whole log in miniature under the graph")
         self._more_menu_width = menu.sizeHint().width()
         return menu
@@ -1427,25 +1425,24 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
         self._split_if_shown("highlight")
 
     def _channel_menu(self, pos):
-        T = analyze_tools
         item = self.tree.itemAt(pos)
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
         if item is not None:
             name = item.data(0, ROLE)
-            T.menu_header(menu, "This channel")
+            menus.menu_header(menu, "This channel")
             hidden = name in self.hidden
-            T.menu_action(menu, "Show line" if hidden else "Hide line",
+            menus.menu_action(menu, "Show line" if hidden else "Hide line",
                           "visibility" if hidden else "visibility_off", lambda: self.toggle_hidden(name))
-            T.menu_toggle(menu, "Own y axis", "stacked_line_chart", name in self.own_axis,
+            menus.menu_toggle(menu, "Own y axis", "stacked_line_chart", name in self.own_axis,
                           lambda _on: self.toggle_own_axis(name), enabled=not self._fitted,
                           tip="Draw this channel on its own y axis in its colour (Shared axis). "
                               "Same as clicking its line on the graph.")
-            T.menu_action(menu, "Remove from graph", "close",
+            menus.menu_action(menu, "Remove from graph", "close",
                           lambda: item.setCheckState(0, Qt.CheckState.Unchecked))
-        T.menu_header(menu, "All channels")
-        T.menu_action(menu, "Select channels…", "checklist", lambda: self.picker.open_for(self.select_button))
-        T.menu_action(menu, "Remove all", "clear_all", lambda: self._set_all_checked(False))
+        menus.menu_header(menu, "All channels")
+        menus.menu_action(menu, "Select channels…", "checklist", lambda: self.picker.open_for(self.select_button))
+        menus.menu_action(menu, "Remove all", "clear_all", lambda: self._set_all_checked(False))
         menu.exec(self.tree.viewport().mapToGlobal(pos))
 
     def _restore_checked(self, wanted):
@@ -1770,7 +1767,7 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
 
     def _columns_menu_extra(self, menu):
         """Analyze's part of the sidebar's value-columns menu: what Min / Max / Avg cover."""
-        analyze_tools.menu_header(menu, "Stats")
+        menus.menu_header(menu, "Stats")
         self._stats_menu(menu)
 
     def _columns_changed(self):
@@ -1780,7 +1777,7 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
     def _stats_menu(self, parent):
         """'Min / Max / Avg use' submenu: what part of the log the stats, heatmap and scatter use."""
         text = self.range_label.text()
-        sub = analyze_tools.menu_sub(parent, "Min / Max / Avg use" + (f"  ({text})" if text else ""), "analytics")
+        sub = menus.menu_sub(parent, "Min / Max / Avg use" + (f"  ({text})" if text else ""), "analytics")
         tips = {"view": "The part the graph shows (zoom in to narrow it)",
                 "all": "Everything, however far you zoom",
                 "sel": "The blue band on the graph. Drag it or its edges, or Shift-drag across "
@@ -2383,18 +2380,17 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
         self.compare_row.setVisible(has)
 
     def _compare_menu(self):
-        T = analyze_tools
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
         loaded = self.times is not None
-        T.menu_action(menu, "Overlay a log on the graph…", "stacked_line_chart", self._open_compare,
+        menus.menu_action(menu, "Overlay a log on the graph…", "stacked_line_chart", self._open_compare,
                       enabled=loaded, tip="Show a second log as dashed lines over this one" if loaded
                       else "Open a log first")
-        T.menu_action(menu, "Compare logs with AI…", "auto_awesome", self._compare_with_ai,
+        menus.menu_action(menu, "Compare logs with AI…", "auto_awesome", self._compare_with_ai,
                       tip="Pick any number of logs; your AI compares them side by side, by rpm")
         if self.compare is not None:
-            T.menu_header(menu, "Overlay")
-            T.menu_action(menu, "Stop overlaying", "close", self._clear_compare)
+            menus.menu_header(menu, "Overlay")
+            menus.menu_action(menu, "Stop overlaying", "close", self._clear_compare)
         return menu
 
     def _load_for_ai(self, path):

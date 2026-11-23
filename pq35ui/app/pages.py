@@ -443,7 +443,7 @@ class ConnectPage(Page):
                                          "module.")
         self.full_scan_button.clicked.connect(lambda: self.scan(full=True))
         from .widgets import pulldown
-        from .analyze_tools import popup_menu
+        from .menus import popup_menu
         self.pick_button = pulldown(QPushButton("Choose a module" if self.mac else "Select manually"))
         self.pick_button.setToolTip("Choose a module type yourself without scanning, e.g. on a bench harness.")
         self.pick_menu = QMenu(self)

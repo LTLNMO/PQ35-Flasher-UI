@@ -11,11 +11,11 @@ switch, and showing / hiding the sidebar in its splitter. Settings are per page:
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import QHBoxLayout, QHeaderView, QMenu, QVBoxLayout, QWidget
 
-from . import analyze_tools as T
 from . import theme
 from .channel_list import ChannelTree
 from .widgets import collapsible_sidebar, scrollable
 from .toolbar import ToolIcon
+from . import menus
 
 COLUMN_WIDTH = 76
 SIDEBAR_WIDTH = 370  # room for Channel + Now / Min / Max
@@ -71,7 +71,7 @@ class ChannelSidebar(QWidget):
             self.pick_row.addWidget(select_button, 1)
         self.columns_button = ToolIcon("avg_pace", columns_tip or "Choose which values the "
                                             "list shows")
-        self.columns_button.clicked.connect(lambda: T.popup_menu(self.columns_menu(), self.columns_button))
+        self.columns_button.clicked.connect(lambda: menus.popup_menu(self.columns_menu(), self.columns_button))
         self.pick_row.addWidget(self.columns_button)
         self.bars_button = ToolIcon("notes", bars_tip or "Show or hide the bars under each "
                                          "channel", checkable=True)
@@ -254,12 +254,12 @@ class ChannelSidebar(QWidget):
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
         shown = self.visible_columns()
-        T.menu_header(menu, "Values in the list")
+        menus.menu_header(menu, "Values in the list")
         for key, header, tip in self.columns:
-            T.menu_toggle(menu, f"{header}  —  {tip}", COLUMN_GLYPHS.get(key, "view_column"), key in shown,
+            menus.menu_toggle(menu, f"{header}  —  {tip}", COLUMN_GLYPHS.get(key, "view_column"), key in shown,
                           lambda on, k=key: self._toggle_column(k, on))
         names = [h for k, h, _t in self.columns if k in self.default]
-        T.menu_action(menu, "Reset to " + (" + ".join(names) if len(names) > 1 else f"{names[0]} only"),
+        menus.menu_action(menu, "Reset to " + (" + ".join(names) if len(names) > 1 else f"{names[0]} only"),
                       "restart_alt", lambda: self.set_columns(list(self.default)))
         if self.extra_menu:
             self.extra_menu(menu)

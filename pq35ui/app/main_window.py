@@ -565,7 +565,7 @@ class MainWindow(QMainWindow):
         self.interface_button.setToolTip("CAN interface")
         self.interface_menu = QMenu(self)
         self.interface_button.setMenu(self.interface_menu)
-        from .analyze_tools import anchor_menu
+        from .menus import anchor_menu
         anchor_menu(self.interface_menu, self.interface_button)
         self.interface_group = QActionGroup(self)
         layout.addWidget(self.interface_button)
@@ -905,7 +905,7 @@ class MainWindow(QMainWindow):
         exactly like Select on Connect (which stays the place to find and recover them)."""
         menu = QMenu(self)
         self.fill_module_menu(menu)
-        from .analyze_tools import popup_menu
+        from .menus import popup_menu
         popup_menu(menu, self.status)
 
     def fill_module_menu(self, menu):

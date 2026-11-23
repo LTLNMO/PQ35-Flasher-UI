@@ -17,6 +17,7 @@ DOT = 7
 
 
 from .units import fmt as _fmt  # one number style on every tab
+from . import menus
 
 
 class _Chip(QWidget):
@@ -231,19 +232,18 @@ class LegendStrip(QScrollArea):
                 "Right-click for more.")
 
     def _menu(self, name, pos):
-        from . import analyze_tools as T
         page = self.page
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
         hidden = name in page.hidden
-        T.menu_header(menu, "This channel")
-        T.menu_action(menu, "Show line" if hidden else "Hide line",
+        menus.menu_header(menu, "This channel")
+        menus.menu_action(menu, "Show line" if hidden else "Hide line",
                       "visibility" if hidden else "visibility_off", lambda: page.toggle_hidden(name))
-        T.menu_action(menu, "Show only this", "filter_center_focus", lambda: page.show_only(name))
-        T.menu_toggle(menu, "Own y axis", "stacked_line_chart", name in page.own_axis,
+        menus.menu_action(menu, "Show only this", "filter_center_focus", lambda: page.show_only(name))
+        menus.menu_toggle(menu, "Own y axis", "stacked_line_chart", name in page.own_axis,
                       lambda _on: page.toggle_own_axis(name), enabled=not page._fitted and not hidden)
-        T.menu_action(menu, "Highlight", "ink_highlighter", lambda: page.highlight_channel(name))
-        T.menu_action(menu, "Remove from graph", "close", lambda: page.remove_channel(name))
-        T.menu_header(menu, "All channels")
-        T.menu_action(menu, "Show all", "visibility", lambda: page.show_only(None), enabled=bool(page.hidden))
+        menus.menu_action(menu, "Highlight", "ink_highlighter", lambda: page.highlight_channel(name))
+        menus.menu_action(menu, "Remove from graph", "close", lambda: page.remove_channel(name))
+        menus.menu_header(menu, "All channels")
+        menus.menu_action(menu, "Show all", "visibility", lambda: page.show_only(None), enabled=bool(page.hidden))
         menu.exec(pos)
