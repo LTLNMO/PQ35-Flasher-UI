@@ -172,7 +172,7 @@ def _dyno_summary(settings, path):
             return None
         return {"whp": best["peaks"]["whp"], "wtq": best["peaks"]["wtq"], "pulls": len(pulls),
                 "when": path.stat().st_mtime, "name": path.stem}
-    except Exception:
+    except Exception:  # a dashboard tile from any old log file: skip what can't be read
         return None
 
 

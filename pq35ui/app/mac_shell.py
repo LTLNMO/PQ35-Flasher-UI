@@ -635,7 +635,7 @@ def full_size_content(widget):
         o["set_bool"](win, sel(b"setTitlebarAppearsTransparent:"), True)
         set_long(win, sel(b"setTitleVisibility:"), 1)  # NSWindowTitleHidden
         return True
-    except Exception:
+    except Exception:  # Objective-C calls: on any failure keep the normal title bar
         return False
 
 

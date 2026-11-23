@@ -562,8 +562,9 @@ class PlaybackPage(QWidget):
                 try:
                     self.state.offline("catalog", {"module": family["module"], "all": True}, got,
                                        lambda _e: None)  # every channel: logs from any car
-                except Exception:
-                    pass
+                except Exception:  # names only make the list nicer; never stop a log opening
+                    import logging
+                    logging.getLogger(__name__).exception("catalog request for %s failed", family.get("module"))
 
     def _describe_channel(self, key):
         """The value under the mouse in Select channels: the ECU's description when the name is

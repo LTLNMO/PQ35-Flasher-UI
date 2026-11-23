@@ -536,7 +536,7 @@ def _mac_arrows(c):
         updown = sf_symbols.symbol_file("chevron.up.chevron.down", 12, c["sub"], "semibold", point=8.5)
         up = sf_symbols.symbol_file("chevron.up", 8, c["sub"], "bold", point=6)
         down = sf_symbols.symbol_file("chevron.down", 8, c["sub"], "bold", point=6)
-    except Exception:
+    except Exception:  # cosmetic: without the symbols, Qt's own arrows
         return ""
     css = ""
     on, off = _mac_checkbox_files(c)

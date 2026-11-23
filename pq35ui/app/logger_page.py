@@ -190,7 +190,7 @@ class DatazapWriter:
     def _triggered_row(self, seconds, row, meta=None):
         try:
             active = bool(self.trigger(self.latest))
-        except Exception:
+        except Exception:  # the user's trigger condition on live values (None, divide by 0 ...): not met
             active = False
         if active:
             self.last_true = seconds
@@ -249,7 +249,7 @@ class DatazapWriter:
             columns = {self._title(key, title): dict(self.info_columns.get(key) or {})
                        for key, title in self.columns}
             log_info.save(self.path, columns, self.row_groups, self.row_raw)
-        except Exception:
+        except Exception:  # the recording itself must never fail over its companion file (logged)
             import logging
             logging.getLogger("Logger").exception("Couldn't save the log's companion file")
 

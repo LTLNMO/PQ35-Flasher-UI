@@ -444,7 +444,7 @@ class DynoPage(QWidget):
             try:
                 _h, times, cols = _parse(path)
                 self._pull_counts[key] = len(dyno.find_pulls(times, cols))
-            except Exception:
+            except Exception:  # any log file, any shape: unreadable means "no count", not a crash
                 self._pull_counts[key] = None
         return self._pull_counts[key]
 

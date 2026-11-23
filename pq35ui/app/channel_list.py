@@ -906,7 +906,7 @@ class ChannelPicker(PopupCard):
     def _show_info(self, key):
         try:
             text = self.describe(key) if key else ""
-        except Exception:
+        except Exception:  # the page's describe() is cosmetic: a blank box, never a broken picker
             text = ""
         self.info.setText(text or self.HINT)
 

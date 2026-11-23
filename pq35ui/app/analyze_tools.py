@@ -226,7 +226,7 @@ def trim_csv(src: Path, dst: Path, a: float, b: float):
             first = line.split(",", 1)[0].strip().strip('"')
             try:
                 t = log_export.parse_time(first)
-            except Exception:
+            except ValueError:  # the header row, or a line that isn't data
                 t = None
             if t is None or not isinstance(t, (int, float)):
                 out.write(line)  # header-like row (names, units, VIN line...)
@@ -244,7 +244,7 @@ def relink_projects(old: Path, new: Path):
     """After a rename, point any project that lists the old file at the new one."""
     try:
         from .projects import Project
-    except Exception:
+    except ImportError:
         return
     for project in Project.all():
         logs = project.data.get("logs", [])

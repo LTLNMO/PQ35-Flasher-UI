@@ -102,7 +102,7 @@ def _read_cache():
     try:
         data = json.loads(_cache_path().read_text(encoding="utf-8"))
         return data if data.get("version") == CACHE_VERSION else {"version": CACHE_VERSION, "logs": {}}
-    except Exception:
+    except (OSError, ValueError, AttributeError):  # missing, unreadable or not our JSON: start afresh
         return {"version": CACHE_VERSION, "logs": {}}
 
 

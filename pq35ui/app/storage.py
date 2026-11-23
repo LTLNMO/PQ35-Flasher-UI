@@ -42,7 +42,7 @@ def user_dir() -> Path:
         try:
             from PySide6.QtCore import QStandardPaths
             documents = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
-        except Exception:
+        except Exception:  # no Qt yet (worker, tests): the home-folder fallback below
             pass
         base = Path(documents or Path.home() / "Documents") / "PQ35 Flasher"
     if os.environ.get("PQ35_DEMO"):

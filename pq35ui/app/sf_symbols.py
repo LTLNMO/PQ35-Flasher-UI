@@ -43,7 +43,7 @@ def _runtime():
             "rep": ctypes.CFUNCTYPE(vp, vp, vp, ctypes.c_ulong, vp)(addr),
             "ulong": ctypes.CFUNCTYPE(ctypes.c_ulong, vp, vp)(addr),
         }
-    except Exception:
+    except Exception:  # no AppKit (not a Mac, or a sandbox): Material icons instead
         _RT = False
     return _RT or None
 
@@ -77,7 +77,7 @@ def _png(name, point_size, weight):
         length = rt["ulong"](png, sel(b"length"))
         data = rt["id0"](png, sel(b"bytes"))
         return ctypes.string_at(data, length) if data and length else None
-    except Exception:
+    except Exception:  # Objective-C calls: no symbol, the caller draws its Material icon
         return None
     finally:
         rt["id0"](pool, sel(b"drain"))

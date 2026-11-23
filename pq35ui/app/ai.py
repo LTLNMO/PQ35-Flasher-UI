@@ -730,8 +730,9 @@ class AskDialog(QDialog):
         if self.refresh_hook is not None:
             try:
                 self.refresh_hook(self)
-            except Exception:
-                pass
+            except Exception:  # a page's hook must never break the dialog, but say what went wrong
+                import logging
+                logging.getLogger(__name__).exception("assistant refresh hook failed")
 
     def changeEvent(self, event):
         from PySide6.QtCore import QEvent
