@@ -239,7 +239,23 @@ def set_root(widget):
 
 
 def on_apply(callback):
+    """Call `callback` after every apply(). A widget's own method is dropped as soon as the widget
+    is destroyed (else every dialog or rebuilt control left one behind for good)."""
     _listeners.append(callback)
+    owner = getattr(callback, "__self__", None)
+    destroyed = getattr(owner, "destroyed", None)
+    if destroyed is not None:
+        try:
+            destroyed.connect(lambda *_a, cb=callback: _forget(cb))
+        except (RuntimeError, TypeError):
+            pass
+
+
+def _forget(callback):
+    try:
+        _listeners.remove(callback)
+    except ValueError:
+        pass
 
 
 def font_size() -> int:
