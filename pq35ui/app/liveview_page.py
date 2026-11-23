@@ -8,7 +8,7 @@ import time
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, QTimer, QSize, QRectF
-from PySide6.QtGui import QPainter, QColor
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QShortcut
 from PySide6.QtWidgets import (
     QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QMenu, QPushButton, QScrollArea, QSplitter,
@@ -775,9 +775,17 @@ class LiveViewPage(QWidget):
         self.start_button.setToolTip("Start: show live values (nothing is saved)")
         self.start_button.clicked.connect(self.toggle)
 
-        self.clear_button = ToolIcon("clear_all", "Clear: empty the graphs and readings "
-                                          "(keeps the channels)")
-        self.clear_button.clicked.connect(self._clear_data)
+        # ⋯: Clear graphs and readings (⇧⌘K). Start clears them too, so this is for mid-run.
+        def fill_more(menu):
+            act = T.menu_action(menu, "Clear graphs and readings", "clear_all", self._clear_data,
+                                tip="Empty the graphs and readings, keep the channels (Start does this too)")
+            act.setShortcut(QKeySequence("Ctrl+Shift+K"))  # ⇧⌘K (⌘K is the Assistant): shown here, the page's
+            act.setShortcutContext(Qt.ShortcutContext.WidgetShortcut)  # own shortcut does the work (two
+            act.setShortcutVisibleInContextMenu(True)  # live ones for one key: neither fires)
+        self.more_button = ToolIcon("more_vert", "More: clear the graphs and readings (⇧⌘K)", menu=fill_more)
+        clear_key = QShortcut(QKeySequence("Ctrl+Shift+K"), self)
+        clear_key.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        clear_key.activated.connect(self._clear_data)
         # Sample rate: its changing width only eats into the stretch, so nothing moves.
         self.rate_label = muted("")
         self.rate_label.setToolTip("Readings received per second from the module")
@@ -807,9 +815,9 @@ class LiveViewPage(QWidget):
         self.dashboard_button = DashboardButton(self)
 
         from .page_frame import page_frame
-        page_frame(self, self.right_layout, action=(self.start_button, self.clear_button, self.rate_label),
+        page_frame(self, self.right_layout, action=(self.start_button, self.rate_label),
                    left=(self.channels,), tools=(self.math_button, self.layout_picker, self.dashboard_button),
-                   presets=self.presets, settings=self.options)
+                   presets=self.presets, settings=self.options, more=self.more_button)
 
         self.banner = Banner()
         self.right_layout.addWidget(self.banner)

@@ -173,7 +173,7 @@ CAN configuration, serial EEPROM). <i>Samples</i> sets how many readings to take
     ("liveview", "Live View", """
 <p>Shows live values on screen. Nothing is saved and nothing is written to the module.
 Switch channels on in <b>Select channels ▾</b> at the left of the toolbar (or load a set from
-<b>Presets</b>, the bookmark ▾ at the top right), then press the round <b>▶ start</b> button (it turns into <b>■ stop</b> while running; the clear-all icon beside it clears the graphs and readings).
+<b>Presets</b>, the bookmark ▾ at the top right), then press the round <b>▶ start</b> button (it turns into <b>■ stop</b> while running, and each start begins with empty graphs). To empty them mid-run: <b>⋯ → Clear graphs and readings</b>, or <b>⇧⌘K</b> (Ctrl+Shift+K).
 The dropdown has every channel under its category, a search box, and <i>Select all</i> / <i>Hide all</i> for
 what the search finds; a channel that's on shows its colour (the same as its line on the graphs).
 Categories open and close with a click on their name; the switch on a category turns all of it on
