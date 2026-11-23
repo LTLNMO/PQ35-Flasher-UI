@@ -157,7 +157,7 @@ def last_dyno(settings):
 def _dyno_summary(settings, path):
     try:
         from . import cars, dyno, log_export
-        from .playback_page import _parse_csv
+        from .playback_common import _parse_csv
         headers, times, columns = _parse_csv(path)
         chans = dyno.find_channels(headers)
         pulls = dyno.find_pulls(times, columns, chans)

@@ -29,7 +29,7 @@ PATH_ROLE = Qt.ItemDataRole.UserRole
 
 def _parse(path):
     """(headers, times, columns) of a Standard log (Analyze's reader)."""
-    from .playback_page import _parse_csv
+    from .playback_common import _parse_csv
     return _parse_csv(path)
 
 

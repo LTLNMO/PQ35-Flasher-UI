@@ -86,7 +86,7 @@ class CompanionFile(_Env):
 
 class Align(_Env):
     def test_channels_land_on_their_real_read_times(self):
-        from pq35ui.app.playback_page import _parse_csv
+        from pq35ui.app.playback_common import _parse_csv
         path, _w = self.record()
         headers, times, cols = _parse_csv(path)
         rpm = cols["Engine speed (rpm)"]
@@ -95,13 +95,13 @@ class Align(_Env):
         np.testing.assert_allclose(rpm[inside], 100.0 * times[inside], atol=1e-6)
 
     def test_status_codes_are_not_interpolated(self):
-        from pq35ui.app.playback_page import _parse_csv
+        from pq35ui.app.playback_common import _parse_csv
         path, _w = self.record()
         _h, _t, cols = _parse_csv(path)
         self.assertEqual(set(np.unique(cols["Transmission torque intervention"])), {12.0, 120.0})
 
     def test_without_companion_nothing_changes(self):
-        from pq35ui.app.playback_page import _parse_csv
+        from pq35ui.app.playback_common import _parse_csv
         path, _w = self.record()
         self.log_info.discard(path)
         _h, times, cols = _parse_csv(path)

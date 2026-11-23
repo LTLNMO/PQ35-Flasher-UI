@@ -407,7 +407,7 @@ class SplitView(QWidget):
             self.graphs.setMinimumHeight(0)
             return
         self._sync_groups(names)
-        from .playback_page import AXIS_SCALE
+        from .playback_common import AXIS_SCALE
         mode = AXIS_SCALE[page._axis()]
         plans = []
         for g in self.groups:
