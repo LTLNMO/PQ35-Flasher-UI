@@ -496,11 +496,11 @@ QTableWidget::item {{ padding: 5px 7px; }}
 QScrollArea {{ border: none; background: transparent; }}
 QAbstractScrollArea::corner {{ background: transparent; }}
 QScrollBar:vertical {{ background: transparent; width: 12px; margin: 3px; }}
-QScrollBar::handle:vertical {{ background: {border}; border-radius: 3px; min-height: 40px; }}
-QScrollBar::handle:vertical:hover {{ background: {muted}; }}
+QScrollBar::handle:vertical {{ background: {muted}; border-radius: 3px; min-height: 40px; }}
+QScrollBar::handle:vertical:hover {{ background: {text}; }}
 QScrollBar:horizontal {{ background: transparent; height: 12px; margin: 3px; }}
-QScrollBar::handle:horizontal {{ background: {border}; border-radius: 3px; min-width: 40px; }}
-QScrollBar::handle:horizontal:hover {{ background: {muted}; }}
+QScrollBar::handle:horizontal {{ background: {muted}; border-radius: 3px; min-width: 40px; }}
+QScrollBar::handle:horizontal:hover {{ background: {text}; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 
@@ -599,6 +599,20 @@ def _mac_checkbox_files(c):
 # Added after STYLE in the Mac interface: San Francisco, Mac-sized radii and controls, the sidebar
 # frame (mac_shell) and segmented view switches in the system blue.
 MAC_STYLE = """
+/* Overlay scroll bars (widgets.OverlayScrollBars): no groove, a thin rounded thumb that thickens
+   under the mouse, as macOS draws them */
+QScrollBar#overlayBar {{ background: transparent; border: none; }}
+QScrollBar#overlayBar:vertical {{ width: 11px; margin: 0; }}
+QScrollBar#overlayBar:horizontal {{ height: 11px; margin: 0; }}
+QScrollBar#overlayBar::handle {{ background: {muted}; border-radius: 3px; }}
+QScrollBar#overlayBar::handle:vertical {{ margin: 0 2px 0 3px; min-height: 36px; }}
+QScrollBar#overlayBar::handle:horizontal {{ margin: 3px 0 2px 0; min-width: 36px; }}
+QScrollBar#overlayBar::handle:hover, QScrollBar#overlayBar::handle:pressed {{ background: {text}; }}
+QScrollBar#overlayBar:vertical:hover {{ background: rgba(128, 128, 128, 0.10); border-radius: 5px; }}
+QScrollBar#overlayBar:horizontal:hover {{ background: rgba(128, 128, 128, 0.10); border-radius: 5px; }}
+QScrollBar#overlayBar::add-line, QScrollBar#overlayBar::sub-line {{ width: 0; height: 0; }}
+QScrollBar#overlayBar::add-page, QScrollBar#overlayBar::sub-page {{ background: transparent; }}
+
 QWidget {{ font-family: ".AppleSystemUIFont", "SF Pro Text", "Helvetica Neue"; }}
 /* Buttons (mockup .btn: 24 px tall, 0 11 px, radius 6, white .12, no border) */
 QPushButton {{ background: {btn}; border: 1px solid {btn_border}; border-radius: 6px; padding: 2px 11px;

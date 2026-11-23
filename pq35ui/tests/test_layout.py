@@ -46,6 +46,12 @@ def _measure():
                 if sb.isVisible() and sb.orientation().name == "Horizontal" and sb.maximum() > 0 \
                         and isinstance(sb.parent().parent(), QAbstractScrollArea) and page.isAncestorOf(sb):
                     hbars.append(_name(sb.parent().parent()) or type(sb.parent().parent()).__name__)
+            # Mac: overlay bars stay hidden until you scroll, so ask the area's own range instead
+            for area in w.findChildren(QAbstractScrollArea):
+                overlay = getattr(area, "_pq35_overlay", None)
+                if overlay is not None and area.isVisible() and page.isAncestorOf(area) and any(
+                        not vertical and real.maximum() > 0 for vertical, _b, real, _e, _f in overlay.bars):
+                    hbars.append(_name(area) or type(area).__name__)
             views = []  # graphs, lists, tables, logs: the content views
             for v in w.findChildren(QAbstractScrollArea):
                 if v.isVisible() and page.isAncestorOf(v) and v.width() > 200 and v.height() > 100 \

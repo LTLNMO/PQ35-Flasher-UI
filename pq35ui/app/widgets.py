@@ -643,6 +643,8 @@ class AppEventFilter(QObject):
         self._wheel_type = WheelGuard._WHEEL
         self._popup_types = (RoundPopups._POLISH, RoundPopups._SHOW)
         self._extra = {}  # event type -> [handler objects with eventFilter(obj, event)]
+        from PySide6.QtCore import QEvent
+        self.add(ScrollBarStyle(self), (QEvent.Type.Show,))  # every scroll area's bars (Mac / Classic)
 
     def add(self, handler, kinds):
         """Send events of `kinds` (QEvent types) to handler.eventFilter; True from it eats the event."""
@@ -1290,3 +1292,152 @@ def collapsible_sidebar(splitter, settings=None, key=None, title="", header=None
     sidebar instead (no collapse button, no rail)."""
     splitter.sidebar_toggle = SidebarToggle(splitter, settings, key, title, header, button)
     return splitter.sidebar_toggle
+
+
+# ── Scroll bars: macOS-style overlay (Mac), under the column header (both) ──
+
+OVERLAY_W = 11      # the overlay bar's hit area (its handle is drawn thinner, see theme #overlayBar)
+OVERLAY_HIDE_MS = 1100
+EDGE_PX = 18        # the mouse this close to the right / bottom edge shows the bars
+
+
+class OverlayScrollBars(QObject):
+    """Mac: a scroll area's bars as macOS draws them: hidden until you scroll (or move near the
+    edge), floating over the content instead of taking room, inside the viewport (so under a
+    column header and clear of rounded corners), fading out after a moment. The area keeps its own
+    bars (hidden) as the model: these mirror their range and value both ways, so wheel, keyboard
+    and code scrolling all work as before."""
+
+    def __init__(self, area):
+        super().__init__(area)
+        from PySide6.QtCore import QPropertyAnimation, QTimer
+        from PySide6.QtWidgets import QGraphicsOpacityEffect, QScrollBar
+        self.area = area
+        self.bars = []
+        for orient in (Qt.Orientation.Vertical, Qt.Orientation.Horizontal):
+            vertical = orient == Qt.Orientation.Vertical
+            policy = area.verticalScrollBarPolicy() if vertical else area.horizontalScrollBarPolicy()
+            if policy == Qt.ScrollBarPolicy.ScrollBarAlwaysOff:
+                continue  # the area doesn't want this bar at all
+            real = area.verticalScrollBar() if vertical else area.horizontalScrollBar()
+            bar = QScrollBar(orient, area)
+            bar.setObjectName("overlayBar")
+            bar.setCursor(Qt.CursorShape.ArrowCursor)
+            effect = QGraphicsOpacityEffect(bar)
+            effect.setOpacity(0.0)
+            bar.setGraphicsEffect(effect)
+            fade = QPropertyAnimation(effect, b"opacity", bar)
+            fade.setDuration(180)
+            # faded out = gone: an invisible bar would still catch clicks along the edge
+            fade.finished.connect(lambda bar=bar, effect=effect: effect.opacity() < 0.01 and bar.hide())
+            bar.hide()
+
+            def sync(lo, hi, bar=bar, real=real):
+                bar.setRange(lo, hi)
+                bar.setPageStep(real.pageStep())
+                bar.setSingleStep(real.singleStep())
+                if hi <= lo:
+                    bar.hide()
+            real.rangeChanged.connect(sync)
+            real.valueChanged.connect(bar.setValue)
+            bar.valueChanged.connect(real.setValue)
+            real.valueChanged.connect(lambda _v: self.flash())
+            sync(real.minimum(), real.maximum())
+            bar.setValue(real.value())
+            (area.setVerticalScrollBarPolicy if vertical else area.setHorizontalScrollBarPolicy)(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.bars.append((vertical, bar, real, effect, fade))
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.setInterval(OVERLAY_HIDE_MS)
+        self.timer.timeout.connect(self._fade_out)
+        area.installEventFilter(self)
+        area.viewport().installEventFilter(self)
+        area.viewport().setMouseTracking(True)
+        self.place()
+
+    def place(self):
+        vp = self.area.viewport().geometry()  # below a header, inside the frame
+        v_shown = any(v and r.maximum() > r.minimum() for v, _b, r, _e, _f in self.bars)
+        for vertical, bar, _real, _e, _f in self.bars:
+            if vertical:
+                bar.setGeometry(vp.right() - OVERLAY_W, vp.top() + 3, OVERLAY_W, max(0, vp.height() - 6))
+            else:
+                room = OVERLAY_W if v_shown else 0
+                bar.setGeometry(vp.left() + 3, vp.bottom() - OVERLAY_W, max(0, vp.width() - 6 - room), OVERLAY_W)
+            bar.raise_()
+
+    def flash(self):
+        """Show the bars that have something to scroll; hide them again after a moment."""
+        for _v, bar, real, effect, fade in self.bars:
+            if real.maximum() <= real.minimum():
+                continue
+            if not bar.isVisible() or effect.opacity() < 1.0:
+                fade.stop()
+                bar.show()
+                bar.raise_()
+                fade.setStartValue(effect.opacity())
+                fade.setEndValue(1.0)
+                fade.start()
+        self.timer.start()
+
+    def _fade_out(self):
+        for _v, bar, _r, effect, fade in self.bars:
+            if bar.underMouse() or bar.isSliderDown():
+                self.timer.start()  # being used: stay
+                return
+        for _v, bar, _r, effect, fade in self.bars:
+            if bar.isVisible():
+                fade.stop()
+                fade.setStartValue(effect.opacity())
+                fade.setEndValue(0.0)
+                fade.start()
+
+    def eventFilter(self, obj, event):
+        from PySide6.QtCore import QEvent
+        kind = event.type()
+        if kind in (QEvent.Type.Resize, QEvent.Type.Show, QEvent.Type.LayoutRequest):
+            self.place()
+        elif kind == QEvent.Type.MouseMove and obj is self.area.viewport():
+            pos = event.position().toPoint()
+            r = obj.rect()
+            if pos.x() > r.right() - EDGE_PX or pos.y() > r.bottom() - EDGE_PX:
+                self.flash()
+        return False
+
+
+def _header_spacer(area):
+    """Classic: the vertical bar starts under the column header, not beside it."""
+    from PySide6.QtWidgets import QHeaderView
+    header = getattr(area, "header", None) or getattr(area, "horizontalHeader", None)
+    header = header() if callable(header) else None
+    if not isinstance(header, QHeaderView) or header.isHidden():
+        return
+    spacer = QWidget()
+    spacer.setFixedHeight(header.sizeHint().height())
+    area.addScrollBarWidget(spacer, Qt.AlignmentFlag.AlignTop)
+
+
+class ScrollBarStyle(QObject):
+    """App-wide (through AppEventFilter, on each scroll area's first Show): Mac overlay bars, or
+    Classic bars that start under the header. Once per area."""
+
+    def eventFilter(self, obj, event):
+        from PySide6.QtWidgets import QAbstractScrollArea
+        if not isinstance(obj, QAbstractScrollArea) or obj.property("pq35_scrollbars"):
+            return False
+        obj.setProperty("pq35_scrollbars", True)
+        try:
+            if theme.is_mac():
+                obj._pq35_overlay = OverlayScrollBars(obj)
+            else:
+                _header_spacer(obj)
+        except RuntimeError:
+            pass
+        return False
+
+
+def install_scrollbar_style(app=None):
+    from PySide6.QtCore import QEvent
+    f = app_filter(app)
+    f.add(ScrollBarStyle(f), (QEvent.Type.Show,))
