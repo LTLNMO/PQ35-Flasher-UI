@@ -954,6 +954,7 @@ class ChannelDropdown(QPushButton):
     def __init__(self, tree, on_change, parent, footer=None, describe=None):
         super().__init__("Select channels", parent)
         self.tree, self._on_change = tree, on_change
+        self.compact = False  # row 1 too narrow (mac_shell rule 6): just "(n/N)", the name in the tooltip
         self.picker = ChannelPicker(tree, self._changed, parent, footer=footer, describe=describe)
         self.selector = self.picker.selector
         self.setToolTip("Choose which channels to read")
@@ -973,7 +974,19 @@ class ChannelDropdown(QPushButton):
     def update_count(self):
         rows = [it for it in self.tree.items() if not it.data(0, FIXED_ROLE)]
         on = sum(it.checkState(0) == Qt.CheckState.Checked for it in rows)
-        self.setText(f"Select channels ({on}/{len(rows)})" if rows else "Select channels")
+        count = f"({on}/{len(rows)})" if rows else ""
+        if self.compact:
+            self.setText(count or "Channels")
+            self.setToolTip(f"Select channels {count}: choose which channels to read".replace("  ", " "))
+        else:
+            self.setText(f"Select channels {count}".strip())
+            self.setToolTip("Choose which channels to read")
+
+    def set_compact(self, on):
+        """mac_shell.fit_row: the short form while row 1 doesn't fit."""
+        if on != self.compact:
+            self.compact = on
+            self.update_count()
 
     def close_picker(self):
         self.picker.hide()

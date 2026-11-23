@@ -541,9 +541,10 @@ def row_icons(row, tools=(), recent=None, presets=None, settings=None, more=None
 class _RowFit(QObject):
     """fit_row's watcher: segments show their names while row 1 fits, icons only when it doesn't."""
 
-    def __init__(self, area, row, buttons):
+    def __init__(self, area, row, buttons, shrink=()):
         super().__init__(area)
         self.area, self.row, self.buttons = area, row, list(buttons)
+        self.shrink = list(shrink)  # widgets with set_compact(on), e.g. Select channels
         self.labels = [b.text() for b in self.buttons]
         self.tips = [b.toolTip() for b in self.buttons]  # kept: a segment's own description
         self.full = None  # the row's width with every name shown (measured while they are)
@@ -567,13 +568,16 @@ class _RowFit(QObject):
         for b, label, tip in zip(self.buttons, self.labels, self.tips):
             b.setText("" if compact else label)
             b.setToolTip((f"{label}: {tip}" if tip else label) if compact else tip)
+        for w in self.shrink:
+            w.set_compact(compact)
 
 
-def fit_row(area, row, buttons):
+def fit_row(area, row, buttons, shrink=()):
     """Rule 6: when row 1 is wider than `area` (the main area's visible part, e.g. a splitter's
     scroll area) allows, the segment `buttons` drop their names and show icons only (names in their
-    tooltips), as macOS toolbars do, instead of the row running past the window."""
-    return _RowFit(area, row, buttons)
+    tooltips), as macOS toolbars do, instead of the row running past the window. `shrink`: other
+    widgets with a short form (set_compact), e.g. Select channels → "(n/N)"."""
+    return _RowFit(area, row, buttons, shrink)
 
 
 def first_row(layout):

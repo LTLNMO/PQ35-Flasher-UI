@@ -52,5 +52,6 @@ def page_frame(page, layout, *, action=(), left=(), middle=None, tools=(), recen
     layout.addLayout(row)
     if segments:
         from .mac_shell import fit_row
-        page._row_fit = fit_row(area or page, row, segments)
+        page._row_fit = fit_row(area or page, row, segments,
+                                shrink=[w for w in left if hasattr(w, "set_compact")])
     return row
