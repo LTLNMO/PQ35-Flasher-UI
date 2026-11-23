@@ -15,6 +15,8 @@ Do not Dumb.
 
 ## About this fork
 
+Working on the code? [ARCHITECTURE.md](ARCHITECTURE.md) maps the parts and the rules the tests enforce.
+
 This is LTLNMO's fork of [DSparks156x/PQ35-Flasher-UI](https://github.com/DSparks156x/PQ35-Flasher-UI).
 All credit for the original app and the flasher goes to Drew (DSparks156x). It's based on his
 commit `63d5fec` (2026-11-04). Flashing works the way it does in his version. Most of the
