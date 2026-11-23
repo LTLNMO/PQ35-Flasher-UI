@@ -9,7 +9,6 @@
 Run:  .venv/bin/python -m unittest pq35ui.tests.test_performance"""
 import os
 import time
-import types
 import unittest
 
 from pq35ui.tests import layout_tools as L
@@ -24,25 +23,19 @@ BUILD_S = 25.0       # building + showing the window (measured ~4-5 s offscreen)
 
 class LiveViewCost(unittest.TestCase):
     def test_full_graphs_stay_cheap(self):
-        from pq35ui.app import liveview_page as LV
-        page = types.SimpleNamespace(channel_data={f"c{i}": {"x": [], "y": [], "conv": None} for i in range(25)})
-        push = LV.LiveViewPage._push.__get__(page)
-        real = LV.units.to_display
-        LV.units.to_display = lambda v, c: v
-        try:
-            for k in page.channel_data:  # full: the steady state of a long session
-                for t in range(LV.MAX_POINTS + LV.TRIM_SLACK):
-                    push(k, float(t), 1.0)
-            n = 2000
-            t0 = time.perf_counter()
-            for i in range(n):
-                for k in page.channel_data:
-                    push(k, 1e6 + i, 1.0)
-            per = (time.perf_counter() - t0) / n / len(page.channel_data) * 1e6
-        finally:
-            LV.units.to_display = real
+        from pq35ui.app import live_data as D
+        channels = [{"x": [], "y": []} for _ in range(25)]
+        for ch in channels:  # full: the steady state of a long session
+            for t in range(D.MAX_POINTS + D.TRIM_SLACK):
+                D.push(ch, float(t), 1.0)
+        n = 2000
+        t0 = time.perf_counter()
+        for i in range(n):
+            for ch in channels:
+                D.push(ch, 1e6 + i, 1.0)
+        per = (time.perf_counter() - t0) / n / len(channels) * 1e6
         self.assertLess(per, PUSH_US, f"Live View: {per:.1f} us per reading per channel")
-        self.assertTrue(all(len(d["x"]) <= LV.MAX_POINTS + LV.TRIM_SLACK for d in page.channel_data.values()))
+        self.assertTrue(all(len(ch["x"]) <= D.MAX_POINTS + D.TRIM_SLACK for ch in channels))
 
 
 class WindowBuild(unittest.TestCase):

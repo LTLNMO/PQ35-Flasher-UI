@@ -28,7 +28,7 @@ class _Env(unittest.TestCase):
     def record(self, mode="continuous", seconds=10.0, trigger=None):
         """A two-group recording: group 2 = rpm (a ramp, rpm = 100*t), group 122 = a status code.
         Reads alternate every 0.1 s, as the logger does."""
-        from pq35ui.app.logger_page import DatazapWriter
+        from pq35ui.app.log_writer import DatazapWriter
         path = Path(self.tmp.name) / f"engine_{mode}.csv"
         columns = [("2.1", "Engine speed"), ("122.4", "Transmission torque intervention")]
         info = {"2.1": {"group": 2, "field": 1, "kind": "number", "formula": 1, "unit": "rpm"},
@@ -66,7 +66,7 @@ class CompanionFile(_Env):
         self.assertEqual(len(info["groups"]), w.rows)
 
     def test_no_raw_no_file(self):
-        from pq35ui.app.logger_page import DatazapWriter
+        from pq35ui.app.log_writer import DatazapWriter
         path = Path(self.tmp.name) / "plain.csv"
         w = DatazapWriter(path, [("2.1", "Engine speed")], [2])  # e.g. the dyno recorder
         w.update(2, {"2.1": 800.0}, {"2.1": "rpm"}, 0.0)

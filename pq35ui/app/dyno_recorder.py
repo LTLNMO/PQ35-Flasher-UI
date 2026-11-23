@@ -13,7 +13,7 @@ import time
 from PySide6.QtCore import QObject, Signal
 
 from . import recent_logs
-from .logger_page import DatazapWriter, csv_number
+from .log_writer import DatazapWriter, csv_number
 
 VALUES = ("engine.rpm", "vehicle.speed", "engine.pedal_position", "engine.throttle_position",
           "engine.maf", "engine.torque.actual", "engine.torque.actual.group122",

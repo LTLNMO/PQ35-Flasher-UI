@@ -2,7 +2,6 @@
 
 Configurable panel layout: pick a grid arrangement via icons, then
 set each section to Gauges or Graph via its header dropdown."""
-import bisect
 import time
 
 import numpy as np
@@ -27,8 +26,7 @@ from . import menus
 from . import toolbar
 
 WINDOW_SECONDS = (("30 s", 30), ("1 min", 60), ("2 min", 120), ("5 min", 300))
-MAX_POINTS = 6000
-TRIM_SLACK = 1000  # a channel may run this far past MAX_POINTS before its oldest points go
+from . import live_data
 
 # Grid arrangements: (name, groups, columns). Normally each group is a row
 # with N slots; with columns=True each group is a column with N slots stacked.
@@ -619,8 +617,7 @@ class GraphPanel(PanelChannels, QFrame):
         for i, (key, _curve) in self.curves.items():
             d = data.get(key)
             if d and d["x"]:
-                start = max(bisect.bisect_left(d["x"], now - window) - 1, 0)
-                visible[i] = (d["x"][start:], d["y"][start:])
+                visible[i] = live_data.window(d, now, window)
         # Ranges only grow while running, so lines don't jump as values come and go. A new line
         # starts from everything buffered; after that the visible points are enough, since
         # anything older was already counted while it was on screen.
@@ -1589,13 +1586,9 @@ class LiveViewPage(QWidget):
             return
         ch["last_raw"] = value
         value = units.to_display(value, ch["conv"])
-        ch["x"].append(t)
-        ch["y"].append(value)
+        live_data.push(ch, t, value)
         ch["last"] = value
         ch["last_text"] = units.fmt(value)
-        if len(ch["x"]) > MAX_POINTS + TRIM_SLACK:  # trim in one go now and then, in place: copying
-            del ch["x"][:-MAX_POINTS]                # all MAX_POINTS on every reading once full was
-            del ch["y"][:-MAX_POINTS]                # most of a long session's work
 
     def _paint(self):
         states = self._check_alarms() if (self.running or self.mirroring) else {}
