@@ -462,6 +462,9 @@ class LoggerPage(QWidget):
         self.smart_bar = smart_presets.SmartBar(self, self.smart, verb="tick these channels",
                                                 detail=self._smart_detail)
         self.smart_bar.apply.connect(self._apply_smart)
+        self.smart.asked.connect(self._apply_smart)  # an Ask AI answer: ticked at once
+        self.smart_bar.on_ask = lambda: smart_presets.ask_dialog(self, self.smart)
+        state.faults_changed.connect(lambda _n: self.catalog and self._load_smart())  # new scan: fault sets
         self.smart_bar.hide()
         # Presets: the same button as Analyze's (bookmark ▾), beside ⚙
         self.presets = PresetButton(state, lambda: {v["id"] for v in self._checked_values()},
@@ -710,7 +713,9 @@ class LoggerPage(QWidget):
     SMART_BAR_KEY = "logger:smart_bar"
 
     def _load_smart(self):
-        """The module's channels (names with their module units, as sent to the AI) -> presets."""
+        """The module's channels (names with their module units, as sent to the AI) -> presets,
+        led by sets for the module's fault codes from the last Diagnostics check."""
+        from . import smart_presets
         self._smart_ids, groups = {}, {}
         for v in self.catalog:
             unit = v.get("unit") or ""
@@ -719,6 +724,8 @@ class LoggerPage(QWidget):
                 self._smart_ids[name] = v["id"]
                 groups[name] = v["group"]
         self.smart_profile.groups = groups
+        family = self.state.setup_family
+        self.smart_profile.faults = smart_presets.faults_for(self.state.settings, family["name"]) if family else []
         self.smart.load(list(self._smart_ids))
         self._sync_smart_bar()
 
@@ -756,10 +763,14 @@ class LoggerPage(QWidget):
         T_ = T
         gen = self.smart
         T_.menu_header(menu, "Smart presets")
+        T_.menu_action(menu, "Ask AI for a preset…", "auto_awesome", lambda: smart_presets.ask_dialog(self, self.smart),
+                       enabled=bool(self.catalog) and not self.running and not gen.busy,
+                       tip="Say what you want to look at; your AI picks the channels connected to it")
         for layout in gen.layouts:
             n, g = len(smart_presets.channels_of(layout)), len(self._smart_groups(layout))
-            T_.menu_action(menu, f"{layout['name']}  ({n} · {g} group{'s' if g != 1 else ''})",
-                           smart_presets.icon_for(layout["name"]), lambda _=False, l=layout: self._apply_smart(l),
+            glyph = "warning" if layout.get("fault") else "auto_awesome" if layout.get("asked") \
+                else smart_presets.icon_for(layout["name"])
+            T_.menu_action(menu, f"{layout['name']}  ({n} · {g} group{'s' if g != 1 else ''})", glyph, lambda _=False, l=layout: self._apply_smart(l),
                            enabled=not self.running, tip=layout.get("description", ""))
         if gen.busy:
             menu.addAction("Generating with your AI…").setEnabled(False)
@@ -777,6 +788,8 @@ class LoggerPage(QWidget):
                        bool(self.state.settings.get(smart_presets.AI_KEY, True)),
                        lambda v: self.state.settings.set(smart_presets.AI_KEY, bool(v)),
                        tip="When a module with new channels is chosen, ask your AI for sets (only channel names are sent)")
+        if any(l.get("asked") for l in gen.layouts):
+            T_.menu_action(sm, "Remove my Ask AI presets", "delete", gen.forget_asked)
         if gen.error:
             sm.addSeparator()
             sm.addAction(f"Last AI attempt: {gen.error[:70]}").setEnabled(False)

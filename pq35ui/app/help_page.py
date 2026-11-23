@@ -236,6 +236,11 @@ fuel, mixture, …), suggested by your AI (only the channel names are sent) or b
 to at most 4 measuring groups, because every extra group slows every channel down; the menu shows how many channels
 and groups each one has. Click one to switch on exactly its channels. Presets → Smart preset options: Regenerate with
 AI, <i>Show smart preset chips</i> (a row of them under the controls), and whether to ask your AI automatically.</li>
+<li><b>Ask AI for a preset…</b> (top of Presets ▾, or the <i>Ask AI…</i> chip; Analyze has it too): say what you
+want to look at, e.g. "check for a boost leak" or "why it hesitates at 3000 rpm", and your AI picks the channels
+connected to it and switches them on. It's kept at the front of the smart presets; Smart preset options → Remove my
+Ask AI presets clears them. <b>Fault codes:</b> when the last Diagnostics check found codes on the module, the smart
+presets start with one per fault (⚠, e.g. "Fault P0299") holding what you'd watch to diagnose it.</li>
 <li><b>Raw groups</b> (the last category in the list): <i>＋ Add group…</i> logs every field of any measuring group by
 number, unnamed (<i>Group 115 field 1</i>, <i>field 2</i>…), e.g. a group with no named values. A raw group is always
 logged while it's in the list; its <b>✕</b> removes it.</li>

@@ -115,9 +115,10 @@ def cached(headers, ns=""):
 def store(headers, layouts, ns=""):
     data = _read_cache()
     data["logs"][signature(headers, ns)] = {
-        "layouts": [{"name": l["name"], "description": l.get("description", ""),
-                     "charts": [{"title": c.get("title", ""), "channels": [_base(n) for n in c["channels"]]}
-                                for c in l["charts"]]} for l in layouts]}
+        "layouts": [dict({k: l[k] for k in ("fault", "asked") if l.get(k)}, name=l["name"],
+                         description=l.get("description", ""),
+                         charts=[{"title": c.get("title", ""), "channels": [_base(n) for n in c["channels"]]}
+                                 for c in l["charts"]]) for l in layouts]}
     try:
         _cache_path().write_text(json.dumps(data, indent=1), encoding="utf-8")
     except OSError:
@@ -174,9 +175,14 @@ def resolve(layouts, headers):
         sig = frozenset(seen)
         if sum(len(c["channels"]) for c in charts) >= 2 and sig not in layouts_seen:
             layouts_seen.add(sig)
-            out.append({"name": str(l["name"]).replace("_", " ").strip()[:40],
-                        "description": str(l.get("description") or "").strip()[:90],
-                        "charts": charts[:6]})
+            entry = {"name": str(l["name"]).replace("_", " ").strip()[:40],
+                     "description": str(l.get("description") or "").strip()[:90],
+                     "charts": charts[:6]}
+            if l.get("fault"):
+                entry["fault"] = str(l["fault"])[:40]
+            if l.get("asked"):
+                entry["asked"] = True
+            out.append(entry)
     return out[:8]
 
 
@@ -252,14 +258,73 @@ def parse(text):
     return data
 
 
+def faults_for(settings, family="engine"):
+    """The fault codes the last Diagnostics check found on `family`'s module, as 'code: text'."""
+    out = []
+    for m in (settings.get("health_last") or {}).get("modules") or []:
+        if m.get("family") == family and m.get("dtc"):
+            for c in m.get("list") or []:
+                code = str(c.get("code") or "").strip()
+                if code:
+                    text = str(c.get("text") or "").strip()
+                    out.append(f"{code}: {text}" if text else code)
+    return out[:12]
+
+
+def extras(faults=(), want=None):
+    """What goes after a prompt: the car's fault codes, or one request in the user's words."""
+    text = ""
+    if want:
+        text += ("\n\nIMPORTANT, this replaces the number asked for above: make EXACTLY 1 layout, for this "
+                 f"request from the user (in their words): \"{want}\". Pick the channels that are connected to "
+                 "it, as a technician would to answer it. Name it after the request in at most 3 words, and "
+                 'add "asked": true to it.')
+    if faults and not want:
+        text += ("\n\nThe car has these fault codes stored right now:\n" + "\n".join(f"- {c}" for c in faults)
+                 + "\nPut FIRST one layout per fault (or per group of related faults) holding the channels a "
+                 "technician watches to diagnose it, as well as the usual ones. Name each after the fault in at "
+                 "most 3 words, say in its description what to look for, and add "
+                 '"fault": "<the code>" to it.')
+    return text
+
+
+# Built-in: which of the RULES layouts suits a fault, by words in its description
+FAULT_RULES = (
+    (r"boost|charge|turbo|wastegate|n75|pressure regulat|overboost|underboost", "Boost control"),
+    (r"rail|fuel pressure|high.pressure|fuel pump|lpfp|hpfp|injector", "Fuel pressure"),
+    (r"lambda|o2|oxygen|mixture|lean|rich|fuel trim|adaptation", "Mixture"),
+    (r"misfire|knock|ignition|coil|spark", "Timing and knock"),
+    (r"air mass|\bmaf\b|airflow|throttle|intake manifold|\bmap\b|vacuum|leak", "Airflow and torque"),
+    (r"coolant|temperature|thermostat|oil temp", "Temperatures"),
+)
+
+
+def fault_rule_layouts(headers, faults):
+    """Built-in layouts for the car's faults: the matching rule layout, named after the code."""
+    base = {l["name"]: l for l in rule_layouts(headers)}
+    out, used = [], set()
+    for fault in faults:
+        code, _, text = fault.partition(":")
+        for pattern, name in FAULT_RULES:
+            if re.search(pattern, fault, re.I) and name in base and name not in used:
+                used.add(name)
+                out.append(dict(base[name], name=f"Fault {code.strip()[:18]}",
+                                description=(text.strip() or name)[:90], fault=code.strip()))
+                break
+    return out
+
+
 class AnalyzeProfile:
     """What Analyze asks for: views of a log's channels."""
     ns = ""
     system = SYSTEM
     subject = "this log's channels"
 
-    def prompt(self, headers):
-        return prompt(headers)
+    def __init__(self):
+        self.faults = []  # the car's fault codes (faults_for): their layouts come first
+
+    def prompt(self, headers, want=None):
+        return prompt(headers) + extras(self.faults, want)
 
     def fit(self, layouts):
         return layouts
@@ -282,6 +347,7 @@ class LoggerProfile:
 
     def __init__(self):
         self.groups = {}  # channel name (as listed) -> measuring group
+        self.faults = []  # the car's fault codes (faults_for): their sets come first
 
     def fit(self, layouts):
         """Every set within MAX_GROUPS measuring groups (the AI's too, and the built-in rules,
@@ -308,7 +374,7 @@ class LoggerProfile:
                 out.append(dict(l, charts=charts))
         return out
 
-    def prompt(self, headers):
+    def prompt(self, headers, want=None):
         names = "\n".join(f"- {h}  [group {self.groups[h]}]" if h in self.groups else f"- {h}"
                           for h in headers)
         return (
@@ -323,7 +389,8 @@ class LoggerProfile:
             'Answer as: {"layouts": [{"name": "Boost control", "description": "Boost vs target, N75 duty, load", '
             '"charts": [{"title": "Engine speed", "channels": ["Engine speed (rpm)"]}, '
             '{"title": "Boost", "channels": ["exact actual name", "exact specified name"]}]}]}\n'
-            "name: at most 3 words. description: at most 60 characters, listing what's recorded.")
+            "name: at most 3 words. description: at most 60 characters, listing what's recorded."
+            + extras(self.faults, want))
 
 
 def channels_of(layout):
@@ -340,6 +407,7 @@ class Generator(QObject):
     """Smart presets for one log (or the Logger's module): built-in ones at once, then the AI's
     (cached, or asked for in the background). Signals arrive on the UI thread."""
     changed = Signal()      # layouts / busy / source changed
+    asked = Signal(dict)    # the layout made for an Ask AI request (the page applies it)
 
     def __init__(self, settings, parent=None, profile=None):
         super().__init__(parent)
@@ -349,6 +417,27 @@ class Generator(QObject):
         self.headers = []
         self._req = None
         self._reply = ""
+        self._want = None   # the Ask AI request in flight (None: the usual set)
+
+    def _ns(self):
+        """Cache namespace: the profile's, plus the fault codes (other faults, other presets)."""
+        faults = getattr(self.profile, "faults", None)
+        tag = hashlib.sha1("\n".join(faults).encode()).hexdigest()[:8] + ":" if faults else ""
+        return self.profile.ns + tag
+
+    def _asked_ns(self):
+        return "asked:" + self.profile.ns
+
+    def _with_asked(self, layouts):
+        """Your own Ask AI presets first (kept per set of channels), then the rest, no repeats."""
+        mine = cached(self.headers, self._asked_ns()) or []
+        out, seen = [], set()
+        for l in self.profile.fit(mine) + layouts:
+            sig = frozenset(channels_of(l))
+            if sig not in seen:
+                seen.add(sig)
+                out.append(l)
+        return out
 
     def ai_wanted(self):
         return bool(self.settings.get(AI_KEY, True))
@@ -370,25 +459,30 @@ class Generator(QObject):
         self.cancel()
         self.headers = [h for h in headers if h]
         self.error = ""
-        found = cached(self.headers, self.profile.ns)
+        found = cached(self.headers, self._ns())
         if found:
-            self.layouts, self.source = self.profile.fit(found), "ai"
+            self.layouts, self.source = self._with_asked(self.profile.fit(found)), "ai"
         else:
-            self.layouts, self.source = self.profile.fit(rule_layouts(self.headers)), "rules"
+            faults = getattr(self.profile, "faults", None) or []
+            self.layouts = self._with_asked(self.profile.fit(
+                fault_rule_layouts(self.headers, faults) + rule_layouts(self.headers)))
+            self.source = "rules"
             if self.ai_wanted() and self.ai_ready():
                 self.generate()
                 return
         self.changed.emit()
 
-    def generate(self, parent=None):
-        """Ask the AI now (Regenerate, or the first time for these channels)."""
+    def generate(self, parent=None, want=None):
+        """Ask the AI now (Regenerate, or the first time for these channels). want: one request in
+        the user's words instead (Ask AI): its layout is kept and sent out with `asked`."""
         from . import ai
         if not self.headers or not ai.enabled(self.settings):
             return
-        system, text = self.profile.system, self.profile.prompt(self.headers)
+        system, text = self.profile.system, self.profile.prompt(self.headers, want=want)
         if parent is not None and not ai.confirm_send(parent, self.settings, system + "\n\n" + text):
             return
         self.cancel()
+        self._want = want
         self.busy, self.error, self._reply = True, "", ""
         self.changed.emit()
         self._req = ai.Ask(self.settings, system, [{"role": "user", "content": text}], "medium", self)
@@ -413,13 +507,26 @@ class Generator(QObject):
 
     def _done(self):
         self._req, self.busy = None, False
+        want, self._want = self._want, None
         try:
             layouts = self.profile.fit(resolve(parse(self._reply), self.headers))
         except Exception as e:
             layouts, self.error = [], f"Couldn't read the AI's answer ({e})."
+        if want and layouts:
+            mine = dict(layouts[0], asked=True)
+            kept = [l for l in (cached(self.headers, self._asked_ns()) or []) if l["name"] != mine["name"]]
+            store(self.headers, [mine] + kept[:5], self._asked_ns())
+            self.layouts = self._with_asked(self.layouts)
+            self.changed.emit()
+            self.asked.emit(mine)
+            return
+        if want:
+            self.error = self.error or "The AI couldn't find channels for that request."
+            self.changed.emit()
+            return
         if layouts:
-            store(self.headers, layouts, self.profile.ns)
-            self.layouts, self.source = layouts, "ai"
+            store(self.headers, layouts, self._ns())
+            self.layouts, self.source = self._with_asked(layouts), "ai"
         elif not self.error:
             self.error = "The AI didn't suggest any layouts for these channels."
         self.changed.emit()
@@ -430,8 +537,19 @@ class Generator(QObject):
 
     def regenerate(self, parent=None):
         """Forget the cached answer for these channels and ask the AI again."""
-        forget(self.headers, self.profile.ns)
+        forget(self.headers, self._ns())
         self.generate(parent)
+
+    def ask(self, want, parent=None):
+        """One preset for a request in the user's words ("check for a boost leak")."""
+        want = (want or "").strip()
+        if want:
+            self.generate(parent, want=want[:200])
+
+    def forget_asked(self):
+        forget(self.headers, self._asked_ns())
+        self.layouts = [l for l in self.layouts if not l.get("asked")]
+        self.changed.emit()
 
 
 # ── the chip row ──
@@ -542,6 +660,21 @@ class _Chip(QWidget):
         p.end()
 
 
+def ask_dialog(parent, gen):
+    """Ask AI for a preset: the user says what they want; gen.asked brings the layout back."""
+    from . import ai
+    from .popups import InputDialog, MessageBox
+    if not ai.enabled(gen.settings):
+        MessageBox.information(parent, "Ask AI for a preset", "Choose an AI in Settings → AI first.")
+        return
+    want, ok = InputDialog.getText(
+        parent, "Ask AI for a preset",
+        "What do you want to look at? Your AI picks the channels connected to it.\n"
+        "e.g. \"check for a boost leak\", \"why it hesitates at 3000 rpm\", \"is the thermostat ok\"")
+    if ok and want.strip():
+        gen.ask(want, parent)
+
+
 class SmartBar(QScrollArea):
     """The row of smart preset chips above the graph (scrolls sideways when they don't fit)."""
     apply = Signal(dict)
@@ -550,6 +683,7 @@ class SmartBar(QScrollArea):
         super().__init__(parent)
         self.page, self.gen = page, generator
         self.verb = verb      # what a click does: Analyze "show", Logger "tick these channels"
+        self.on_ask = None    # set by the page: opens Ask AI (the last chip)
         self.detail = detail  # optional detail(layout) -> extra tooltip line (Logger: groups, rate)
         self.setWidgetResizable(True)
         self.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -640,7 +774,9 @@ class SmartBar(QScrollArea):
         if gen.layouts or gen.busy or gen.needs_approval():
             self.row.addWidget(self._lead())
         for layout in gen.layouts:
-            chip = _Chip(icon_for(layout["name"]), layout["name"], layout.get("description", ""), self.body)
+            glyph = "warning" if layout.get("fault") else "auto_awesome" if layout.get("asked") \
+                else icon_for(layout["name"])
+            chip = _Chip(glyph, layout["name"], layout.get("description", ""), self.body)
             chip.setToolTip(self._tip(layout))
             chip.clicked.connect(lambda l=layout: self.apply.emit(l))
             self.row.addWidget(chip)
@@ -654,6 +790,13 @@ class SmartBar(QScrollArea):
             chip.setToolTip(f"Ask your AI for presets made for {gen.profile.subject}. You'll see exactly "
                             "what's sent first (only the channel names).")
             chip.clicked.connect(lambda: gen.generate(self.page))
+            self.row.addWidget(chip)
+        from . import ai
+        if self.on_ask is not None and ai.enabled(gen.settings) and not gen.busy:
+            chip = _Chip("add", "Ask AI…", "Describe what you want to see", self.body)
+            chip.setToolTip("Say what you want to look at, e.g. \"check for a boost leak\" or \"why it "
+                            "hesitates at 3000 rpm\": your AI picks the channels connected to it.")
+            chip.clicked.connect(self.on_ask)
             self.row.addWidget(chip)
         self.row.addStretch(1)
         self.body.adjustSize()

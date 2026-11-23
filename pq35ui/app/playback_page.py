@@ -387,6 +387,9 @@ class PlaybackPage(QWidget):
         self.smart = smart_presets.Generator(state.settings, self)
         self.smart_bar = smart_presets.SmartBar(self, self.smart)
         self.smart_bar.apply.connect(self._apply_smart)
+        self.smart.asked.connect(self._apply_smart)  # an Ask AI answer: shown at once
+        self.smart_bar.on_ask = lambda: smart_presets.ask_dialog(self, self.smart)
+        state.faults_changed.connect(lambda _n: self.times is not None and self._load_smart())
         self.smart_bar.hide()
         rl.addWidget(self.smart_bar)
         rl.addWidget(self.tabs, 1)
@@ -666,8 +669,7 @@ class PlaybackPage(QWidget):
         self._rebuild_curves()
         self._show_all()
         self._stats_mode_changed(save=False)
-        self.smart.load(list(self.headers))
-        self._sync_smart_bar()
+        self._load_smart()
 
     # --- following a recording live (Logger → Watch in Analyze) ---
 
@@ -826,6 +828,12 @@ class PlaybackPage(QWidget):
 
     def _smart_bar_toggled(self, on):
         self.state.settings.set(smart_presets.BAR_KEY, bool(on))
+        self._sync_smart_bar()
+
+    def _load_smart(self):
+        """This log's smart presets, led by layouts for the engine's fault codes (last check)."""
+        self.smart.profile.faults = smart_presets.faults_for(self.state.settings, "engine")
+        self.smart.load(list(self.headers))
         self._sync_smart_bar()
 
     def _sync_smart_bar(self):
@@ -1087,10 +1095,14 @@ class PlaybackPage(QWidget):
         headers = list(self.headers) if self.times is not None else []
         T.menu_header(menu, "Smart presets")
         gen = self.smart
+        T.menu_action(menu, "Ask AI for a preset…", "auto_awesome", lambda: smart_presets.ask_dialog(self, gen),
+                      enabled=self.times is not None and not gen.busy,
+                      tip="Say what you want to look at; your AI picks the channels connected to it")
         for layout in gen.layouts:
             rows = len(layout["charts"])
-            T.menu_action(menu, f"{layout['name']}  ({rows} row{'s' if rows != 1 else ''})",
-                          smart_presets.icon_for(layout["name"]), lambda _=False, l=layout: self._apply_smart(l),
+            glyph = "warning" if layout.get("fault") else "auto_awesome" if layout.get("asked") \
+                else smart_presets.icon_for(layout["name"])
+            T.menu_action(menu, f"{layout['name']}  ({rows} row{'s' if rows != 1 else ''})", glyph, lambda _=False, l=layout: self._apply_smart(l),
                           tip=layout.get("description", ""))
         if not gen.layouts:
             menu.addAction("Open a log to see them" if self.times is None else "None for this log").setEnabled(False)
@@ -1106,6 +1118,8 @@ class PlaybackPage(QWidget):
                       bool(self.state.settings.get(smart_presets.AI_KEY, True)),
                       lambda on: self.state.settings.set(smart_presets.AI_KEY, bool(on)),
                       tip="When a log with new channels opens, ask your AI for layouts (only channel names are sent)")
+        if any(l.get("asked") for l in gen.layouts):
+            T.menu_action(sm, "Remove my Ask AI presets", "delete", gen.forget_asked)
         if gen.error:
             sm.addSeparator()
             sm.addAction(f"Last AI attempt: {gen.error[:70]}").setEnabled(False)

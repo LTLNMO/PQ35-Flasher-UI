@@ -42,3 +42,23 @@ class LoggerFit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FaultPresets(unittest.TestCase):
+    HEADERS = ["Engine speed (rpm)", "Boost pressure (actual) (mbar)", "Boost pressure (specified) (mbar)",
+               "Boost control valve duty (N75) (%)", "Engine load (actual) (%)", "Lambda (actual)",
+               "Lambda (specified)", "Lambda control bank 1 (%)", "Coolant temperature (°C)"]
+
+    def test_faults_lead_with_matching_sets(self):
+        from pq35ui.app.smart_presets import fault_rule_layouts
+        out = fault_rule_layouts(self.HEADERS, ["P0299: Turbocharger underboost", "P0171: System too lean bank 1"])
+        self.assertEqual([l["fault"] for l in out], ["P0299", "P0171"])
+        self.assertIn("Boost pressure (actual) (mbar)", channels_of(out[0]))
+        self.assertIn("Lambda (actual)", channels_of(out[1]))
+
+    def test_prompt_mentions_faults_and_requests(self):
+        from pq35ui.app.smart_presets import extras
+        self.assertIn("P0299", extras(["P0299: underboost"]))
+        asked = extras(["P0299: underboost"], want="check for a boost leak")
+        self.assertIn("EXACTLY 1 layout", asked)
+        self.assertNotIn("P0299", asked)  # a request is about the request only
