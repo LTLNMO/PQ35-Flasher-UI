@@ -444,7 +444,8 @@ class PlaybackPage(QWidget):
         self.ov_box.setVisible(self.timeline_button.isChecked())
         self.cursor_idx = 0
 
-        self.sidebar.install(self.splitter, right, self._right_layout, self.ctrl_row, self.sidebar_button)
+        self.sidebar.install(self.splitter, right, self._right_layout, self.ctrl_row, self.sidebar_button,
+                             toggle_moves=not theme.is_mac())  # Mac: the toggle is a right-hand icon
         if theme.is_mac():  # mac_shell rule 6: the view segments go icon-only when row 1 doesn't fit
             from .mac_shell import fit_row
             self._row_fit = fit_row(self.splitter.widget(1), self.ctrl_row, self.view_buttons)
@@ -977,18 +978,17 @@ class PlaybackPage(QWidget):
         top.setSpacing(8)
         top.addWidget(pill)
         top.addStretch(1)  # only the log up here: Compare, ƒ, Presets, ⋯ are the graph's (row 2's end)
-        # Row 2 starts with the column's toggle; Select channels ▾ parks after it while the column
-        # is hidden, so it's in row 2 on every page (never in the title bar).
+        # Row 2: Select channels ▾ parks at its front while the column is hidden (never in the title
+        # bar); the column's toggle is the first right-hand icon, so it never moves (user 2026-11-23).
         from .mac_shell import first_row
         views = first_row(QHBoxLayout())
-        views.addWidget(self.sidebar_button)
         views.addWidget(seg)
         views.addStretch(1)
         views.addWidget(muted("Axis"))
         views.addWidget(self.axis_button)
         views.addSpacing(6)
         from .mac_shell import row_icons  # rule 7: the one right-hand order
-        row_icons(views, tools=(self.compare_button, self.math_button),
+        row_icons(views, tools=(self.sidebar_button, self.compare_button, self.math_button),
                   presets=self.presets_button, more=self.more_button)
         for w in (self.legend_button, self.timeline_button):  # switched from ⋮ instead
             w.setParent(self)

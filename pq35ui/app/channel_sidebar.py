@@ -171,13 +171,16 @@ class ChannelSidebar(QWidget):
             if w is not None:
                 w.hide()
 
-    def install(self, splitter, content, content_layout, toolbar, sidebar_button):
+    def install(self, splitter, content, content_layout, toolbar, sidebar_button, toggle_moves=True):
         """Put the sidebar and the page's content in `splitter` and wire up showing / hiding:
         `sidebar_button` (checkable) toggles it. Select channels ▾ and the toggle go together, top
         left: the sidebar's first row while it shows, the front of `toolbar` while it's hidden
-        (user 2026-11-23: Select channels in one spot on every page, its toggle beside it)."""
+        (user 2026-11-23: Select channels in one spot on every page, its toggle beside it).
+        toggle_moves=False: the page placed the toggle itself (Mac Analyze: with the right-hand
+        icons), so it stays put; only Select channels moves."""
         self.splitter, self.toolbar, self.content_layout = splitter, toolbar, content_layout
         self.toggle_button = sidebar_button
+        self.toggle_moves = toggle_moves
         if not hasattr(self, "_home"):  # Classic: the row above the list
             self._home = self.pick_row
             self.close_button.hide()  # the toggle is right there beside Select channels
@@ -207,7 +210,8 @@ class ChannelSidebar(QWidget):
             main_layout(self.content_layout)  # the main area beside the column (mac_shell rules)
         else:
             self.content_layout.setContentsMargins(8 if shown else 16, 16, 16, 16)
-        pair = [w for w in (self.select_button, self.toggle_button) if w is not None]
+        moving = (self.select_button, self.toggle_button if self.toggle_moves else None)
+        pair = [w for w in moving if w is not None]
         for w in pair:
             self._home.removeWidget(w)
             self.toolbar.removeWidget(w)
