@@ -46,10 +46,26 @@ def _measure():
                 if sb.isVisible() and sb.orientation().name == "Horizontal" and sb.maximum() > 0 \
                         and isinstance(sb.parent().parent(), QAbstractScrollArea) and page.isAncestorOf(sb):
                     hbars.append(_name(sb.parent().parent()) or type(sb.parent().parent()).__name__)
-            tabs[key] = dict(icons=icons, ctrls=ctrls, hbars=hbars)
+            views = []  # graphs, lists, tables, logs: the content views
+            for v in w.findChildren(QAbstractScrollArea):
+                if v.isVisible() and page.isAncestorOf(v) and v.width() > 200 and v.height() > 100 \
+                        and not _in_column(v):
+                    p = v.mapTo(w, v.rect().topLeft())
+                    views.append(dict(name=_name(v), cls=type(v).__name__, x=p.x(), y=p.y()))
+            tabs[key] = dict(icons=icons, ctrls=ctrls, hbars=hbars, views=views)
         out[interface] = tabs
         L.close_window(w)
     return out
+
+
+def _in_column(c):
+    """In a Mac side column (#macPanel): its own first row and heading come before its list."""
+    p = c.parentWidget()
+    while p is not None:
+        if p.objectName() == "macPanel" and p.property("table") is not True:
+            return True
+        p = p.parentWidget()
+    return False
 
 
 def _in_header(w, c):
@@ -157,6 +173,16 @@ class LayoutRules(unittest.TestCase):
                 if b["icon"] and b["in_slot"] and b["x"] not in columns:
                     bad.append(f"mac/{k}: {b['name']!r} x{b['x']} not on the icon grid")
         self.assertEqual(bad, [], "right-hand icons off the grid")
+
+    def test_mac_content_under_row1(self):
+        """Rule 3: content views right under row 1 (graph, list, table, log) start ROW_GAP below it,
+        at the same y on every tab (Analyze's graph once sat 10 px lower than Logger's list)."""
+        from pq35ui.app.mac_shell import ROW_GAP, ROW_H
+        top = self.ROW1_Y + ROW_H + ROW_GAP
+        bad = [f"mac/{k}: {v['cls']} {v['name']!r} starts at y{v['y']}, not y{top}"
+               for k, t in self._tabs("mac") if any(b["icon"] for b in self._row1(t)[0])
+               for v in t["views"] if v["x"] >= self.MAIN_X and top - 10 < v["y"] < top + 24 and v["y"] != top]
+        self.assertEqual(bad, [], "content not at row 1's gap")
 
     def test_mac_nothing_past_the_margins(self):
         """Rule 4: no row 1 control runs past the right content margin."""

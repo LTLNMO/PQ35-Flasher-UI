@@ -126,6 +126,8 @@ class DynoPage(QWidget):
             title.setText("Sessions")  # a column heading, as Analyze's and Diagnostics' (no capitals)
             title.setObjectName("macPaneTitle")
             first_row(head)
+            from .mac_shell import ROW_GAP
+            sl.setSpacing(ROW_GAP)  # the list starts where every page's content does (rule 3)
             column(side)
         split.setStretchFactor(0, 0)
         split.setStretchFactor(1, 1)

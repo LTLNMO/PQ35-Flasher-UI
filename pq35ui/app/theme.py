@@ -689,6 +689,7 @@ QTabBar::tab:last {{ margin-right: 2px; }}
 QTabBar::tab:hover {{ background: {btn}; color: {text}; }}
 QTabBar::tab:selected {{ background: {seg_on}; color: {text}; font-weight: 500; }}
 QTabWidget::pane {{ border: none; background: transparent; top: 10px; }}
+QTabWidget#viewTabs::pane {{ top: 0; }}  /* Analyze's views: tabs hidden, so no gap for them (rule 3: content at y127) */
 QPushButton#chip {{ border-radius: 6px; padding: 2px 11px; font-weight: 600; }}
 /* Badges (mockup .badge: radius 5, 2 px 7 px, 11 px semibold) */
 QLabel[level="ok"], QLabel[level="warning"], QLabel[level="error"], QLabel[level="info"], QLabel[level="idle"] {{
