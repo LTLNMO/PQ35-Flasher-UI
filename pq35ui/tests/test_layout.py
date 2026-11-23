@@ -58,10 +58,37 @@ def _measure():
                         and not _in_column(v):
                     p = v.mapTo(w, v.rect().topLeft())
                     views.append(dict(name=_name(v), cls=type(v).__name__, x=p.x(), y=p.y()))
-            tabs[key] = dict(icons=icons, ctrls=ctrls, hbars=hbars, views=views)
+            bottoms = {}
+            if key in BOTTOM_TABS:
+                bottoms["default"] = _painted_bottom(w)
+                if key == "playback":  # the strip under the graph, with both its parts off
+                    pb = page
+                    was = (pb.legend_button.isChecked(), pb.timeline_button.isChecked())
+                    pb.legend_button.setChecked(False)
+                    pb.timeline_button.setChecked(False)
+                    L.settle()
+                    bottoms["legend and timeline off"] = _painted_bottom(w)
+                    pb.legend_button.setChecked(was[0])
+                    pb.timeline_button.setChecked(was[1])
+                    L.settle()
+            tabs[key] = dict(icons=icons, ctrls=ctrls, hbars=hbars, views=views, bottoms=bottoms)
         out[interface] = tabs
         L.close_window(w)
     return out
+
+
+BOTTOM_TABS = ("logger", "liveview", "playback")  # their content is a card down to the bottom margin
+
+
+def _painted_bottom(w):
+    """The lowest painted row of the content, probed at a fixed x right of any column."""
+    img = w.grab().toImage()
+    x = img.width() - 300
+    bg = img.pixel(x, img.height() - 3)
+    for y in range(img.height() - 3, img.height() - 200, -1):
+        if img.pixel(x, y) != bg:
+            return y
+    return None
 
 
 def _in_column(c):
@@ -189,6 +216,15 @@ class LayoutRules(unittest.TestCase):
                for k, t in self._tabs("mac") if any(b["icon"] for b in self._row1(t)[0])
                for v in t["views"] if v["x"] >= self.MAIN_X and top - 10 < v["y"] < top + 24 and v["y"] != top]
         self.assertEqual(bad, [], "content not at row 1's gap")
+
+    def test_mac_content_ends_on_the_bottom_margin(self):
+        """Rule 4: the content's card ends CONTENT_MARGINS' bottom above the window's edge on every
+        tab that fills down (Analyze's graph once ended 8 px short with legend and timeline off)."""
+        from pq35ui.app.mac_shell import CONTENT_MARGINS
+        line = L.HEIGHT - CONTENT_MARGINS[3] - 1
+        bad = [f"mac/{k} ({how}): ends at y{y}, not y{line}"
+               for k, t in self._tabs("mac") for how, y in t["bottoms"].items() if y != line]
+        self.assertEqual(bad, [], "content not on the bottom margin")
 
     def test_mac_nothing_past_the_margins(self):
         """Rule 4: no row 1 control runs past the right content margin."""
