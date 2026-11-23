@@ -832,8 +832,6 @@ class PlaybackPage(QWidget):
         """The chip row shows on Single / Split with a log open, unless switched off."""
         on = smart_presets.bar_on(self.state.settings)  # switched in Presets ▾ (or Settings)
         self.smart_bar.setVisible(on and self.times is not None and self._view() in ("single", "split"))
-        if hasattr(self, "smart_label"):
-            self.smart_label.setVisible(self.smart_bar.isVisible())
 
     def _apply_smart(self, layout):
         """A smart preset: its channels on the graph, one Split row per chart (Single for one)."""
@@ -995,8 +993,6 @@ class PlaybackPage(QWidget):
             w.hide()
         row2 = QHBoxLayout()
         row2.setSpacing(10)
-        self.smart_label = muted("Smart presets")
-        row2.addWidget(self.smart_label)
         row2.addWidget(self.smart_bar, 1)
         from PySide6.QtWidgets import QSizePolicy
         self.axis_button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)

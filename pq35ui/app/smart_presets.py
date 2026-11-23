@@ -563,6 +563,7 @@ class SmartBar(QScrollArea):
         self.setWidget(self.body)
         generator.changed.connect(self.rebuild)
         theme.on_apply(self._paint)
+        theme.on_apply(self.rebuild)  # the sparkle's colour follows the theme
         theme.on_apply(self.fit_to_font)  # the text size lives in the theme's stylesheet
         self._paint()
         self.fit_to_font()
@@ -618,9 +619,26 @@ class SmartBar(QScrollArea):
         return (f"<b>{layout['name']}</b><br>{layout.get('description', '')}{extra}<br><br>"
                 + "<br>".join(rows) + f"<br><br><span style='color:{muted}'>{src} · click to {self.verb}</span>")
 
+    def _lead(self):
+        """The row's label: the AI sparkle (what the chips are says its tooltip), not words."""
+        from PySide6.QtWidgets import QLabel
+        from .main_window import _material_icon
+        c = theme.colors()
+        px = theme.icon_px("body") if theme.is_mac() else 18
+        icon = QLabel(self.body)
+        icon.setPixmap(_material_icon("auto_awesome", px, c["muted"]).pixmap(px, px))
+        src = "suggested by your AI" if self.gen.source == "ai" else "built in (your AI's come when it answers)" \
+            if self.gen.busy else "built in"
+        icon.setToolTip(f"Smart presets: ready-made sets for {self.gen.profile.subject}, {src}. "
+                        "Switch the row off in Presets → Smart preset options.")
+        icon.setContentsMargins(0, 0, 2, 0)
+        return icon
+
     def rebuild(self):
         self._clear()
         gen = self.gen
+        if gen.layouts or gen.busy or gen.needs_approval():
+            self.row.addWidget(self._lead())
         for layout in gen.layouts:
             chip = _Chip(icon_for(layout["name"]), layout["name"], layout.get("description", ""), self.body)
             chip.setToolTip(self._tip(layout))
