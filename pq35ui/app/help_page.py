@@ -322,7 +322,7 @@ In <i>Shared</i>, <b>click a line</b> to give that channel its own
 y axis on the right, in its colour; click it again to put it back. Right-clicking a channel in the
 sidebar has the same <b>Own y axis</b> switch. Axis applies to the Single graph and to Split rows
 holding several channels.</li>
-<li><b>Smart presets</b> (chips above the graph; ✦ in the toolbar shows or hides them): ready-made
+<li><b>Smart presets</b> (chips above the graph; Presets → Smart preset options → Show smart preset chips shows or hides them): ready-made
 layouts for this log, like Datazap's. Click one: its channels go on the graph, one Split row per chart.
 With an AI chosen in Settings → AI they're suggested by your AI the first time a log's channels are seen
 (only the channel names are sent, never the values) and remembered for logs with the same channels;

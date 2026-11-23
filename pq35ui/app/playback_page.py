@@ -213,11 +213,6 @@ class PlaybackPage(QWidget):
                                                 "channels on the graph, or save your own",
                                                 dropdown=True)
         self.presets_button.clicked.connect(lambda: analyze_tools.popup_menu(self._presets_menu(), self.presets_button))
-        self.smart_button = ToolIcon("auto_awesome", "Smart presets: show or hide the row of "
-                                              "ready-made layouts above the graph", checkable=True)
-        self.smart_button.setChecked(smart_presets.bar_on(state.settings))
-        self.smart_button.toggled.connect(self._smart_bar_toggled)
-        ctrl.addWidget(self.smart_button)
         ctrl.addWidget(self.presets_button)
         self.axis_button = QPushButton()
         self.axis_button.setToolTip("Shared: every channel on one y axis in its real units.\n"
@@ -834,19 +829,8 @@ class PlaybackPage(QWidget):
 
     def _sync_smart_bar(self):
         """The chip row shows on Single / Split with a log open, unless switched off."""
-        on = smart_presets.bar_on(self.state.settings)
-        if self.smart_button.isChecked() != on:  # changed in Settings
-            self.smart_button.blockSignals(True)
-            self.smart_button.setChecked(on)
-            self.smart_button.blockSignals(False)
-            self.smart_button.retint()
+        on = smart_presets.bar_on(self.state.settings)  # switched in Presets ▾ (or Settings)
         self.smart_bar.setVisible(on and self.times is not None and self._view() in ("single", "split"))
-        # Nothing to show or hide without a log: greyed out, so a click never seems to do nothing
-        has_log = self.times is not None
-        self.smart_button.setEnabled(has_log)
-        self.smart_button.setToolTip(
-            "Smart presets: show or hide the row of ready-made layouts above the graph" if has_log
-            else "Smart presets: open a log to get ready-made layouts for its channels")
         if hasattr(self, "smart_label"):
             self.smart_label.setVisible(self.smart_bar.isVisible())
 
@@ -1004,7 +988,7 @@ class PlaybackPage(QWidget):
         views.addWidget(self.axis_button)
         views.addSpacing(6)
         from .mac_shell import row_icons  # rule 7: the one right-hand order
-        row_icons(views, tools=(self.compare_button, self.math_button, self.smart_button),
+        row_icons(views, tools=(self.compare_button, self.math_button),
                   presets=self.presets_button, more=self.more_button)
         for w in (self.legend_button, self.timeline_button):  # switched from ⋮ instead
             w.setParent(self)
@@ -1121,7 +1105,7 @@ class PlaybackPage(QWidget):
                               tip="Ask your AI again for this log's channels" if ai.enabled(self.state.settings)
                               else "Choose an AI in Settings → AI first")
         T.menu_toggle(sm, "Show smart preset chips", "view_carousel",
-                      smart_presets.bar_on(self.state.settings), self.smart_button.setChecked)
+                      smart_presets.bar_on(self.state.settings), self._smart_bar_toggled)
         T.menu_toggle(sm, "Generate with AI automatically", "auto_awesome",
                       bool(self.state.settings.get(smart_presets.AI_KEY, True)),
                       lambda on: self.state.settings.set(smart_presets.AI_KEY, bool(on)),
@@ -2190,7 +2174,7 @@ QTableView#rawTable QTableCornerButton::section {{ background: {c['surface']}; b
         # The timeline sits under whichever of Single / Split is showing.
         view = self._view()
         graph = view in ("single", "split")
-        for b in (self.legend_button, self.timeline_button, self.axis_button, self.smart_button):
+        for b in (self.legend_button, self.timeline_button, self.axis_button):
             if theme.is_mac() and b in (self.legend_button, self.timeline_button):
                 continue  # Mac: these two are ⋯ menu items, never shown as buttons (no row holds them)
             b.setVisible(graph)  # graph-only
