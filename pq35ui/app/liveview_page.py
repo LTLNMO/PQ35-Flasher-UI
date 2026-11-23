@@ -28,6 +28,7 @@ from . import toolbar
 
 WINDOW_SECONDS = (("30 s", 30), ("1 min", 60), ("2 min", 120), ("5 min", 300))
 MAX_POINTS = 6000
+TRIM_SLACK = 1000  # a channel may run this far past MAX_POINTS before its oldest points go
 
 # Grid arrangements: (name, groups, columns). Normally each group is a row
 # with N slots; with columns=True each group is a column with N slots stacked.
@@ -1592,9 +1593,9 @@ class LiveViewPage(QWidget):
         ch["y"].append(value)
         ch["last"] = value
         ch["last_text"] = units.fmt(value)
-        if len(ch["x"]) > MAX_POINTS:
-            ch["x"] = ch["x"][-MAX_POINTS:]
-            ch["y"] = ch["y"][-MAX_POINTS:]
+        if len(ch["x"]) > MAX_POINTS + TRIM_SLACK:  # trim in one go now and then, in place: copying
+            del ch["x"][:-MAX_POINTS]                # all MAX_POINTS on every reading once full was
+            del ch["y"][:-MAX_POINTS]                # most of a long session's work
 
     def _paint(self):
         states = self._check_alarms() if (self.running or self.mirroring) else {}
