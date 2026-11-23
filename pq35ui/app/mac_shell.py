@@ -32,8 +32,9 @@ BADGE_TAB = "diagnostics"
 # System Settings / Music / Xcode. Columns (Analyze's Channels, Diagnostics' Modules) start under it
 # with their own small headings, as Mail's and Notes' do.
 # RULE (2026-11-21): page.mac_bar holds only the page's main action and its readout (● Record /
-# ▶ Start / Analyze's log pill + status), left-aligned. Nothing at the right: every other button
-# belongs to the content and goes at the right end of the content's first row.
+# ▶ Start / Analyze's log pill + status). Since 2026-11-23 they sit at the title bar's RIGHT end (Header
+# _trailing: readout, then the main action at the far right on the content margin), the title alone at
+# the left, as macOS toolbars. Every other button belongs to the content: the right end of row 1.
 COLUMN_PAGES = set()
 HEADER_H = 52  # the mockup's .tb height
 DRAG_H = 52  # the top strip that moves the window, like a title bar
@@ -342,14 +343,45 @@ class Header(QFrame):
         bar = getattr(page, "mac_bar", None)
         if bar is not None and self.bars.indexOf(bar) < 0:
             bar.setParent(None)
+            _trailing(bar)
             self.bars.addWidget(bar)
         self.bars.setCurrentWidget(bar if bar is not None else self._empty)
         self.car_label.setVisible(False)  # one title line on every page; the car is in the sidebar card
 
 
+def _trailing(bar):
+    """A page's title-bar actions at the right end, as macOS toolbars have them (user 2026-11-23):
+    readouts first (right-aligned, next to the buttons), then the buttons with the page's main
+    action (declared first) at the far right, its edge on the content's right margin. Pages
+    declare their actions in any order of importance; only this places them."""
+    from PySide6.QtWidgets import QLabel
+    lay = bar.layout()
+    if lay is None:
+        return
+    widgets = []
+    for i in range(lay.count()):
+        w = lay.itemAt(i).widget()
+        if w is not None:
+            widgets.append((w, lay.stretch(i)))
+    while lay.count():
+        lay.takeAt(0)  # spacers go: the stretch below replaces them
+    labels = [(w, st) for w, st in widgets if isinstance(w, QLabel)]
+    buttons = [(w, st) for w, st in widgets if not isinstance(w, QLabel)]
+    lay.addStretch(1)
+    for w, st in labels:
+        w.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(w, st)
+    if labels and buttons:
+        lay.addSpacing(4)
+    for w, st in reversed(buttons):
+        lay.addWidget(w, st)
+    m = lay.contentsMargins()
+    lay.setContentsMargins(m.left(), m.top(), max(0, CONTENT_MARGINS[2] - HEADER_MARGINS[2]), m.bottom())
+
+
 def adopt_bar(page, layout):
     """Mac: a page's top toolbar row (a QHBoxLayout not yet in any layout) becomes page.mac_bar,
-    shown in the window header beside the page title. Returns True if it was taken."""
+    shown at the right end of the window header (Header._trailing). Returns True if it was taken."""
     if not theme.is_mac():
         return False
     w = QWidget()

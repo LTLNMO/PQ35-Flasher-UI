@@ -1005,7 +1005,7 @@ class PlaybackPage(QWidget):
         from PySide6.QtWidgets import QSizePolicy
         self.axis_button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         from .mac_shell import adopt_bar
-        adopt_bar(self, top)  # the title bar, beside "Analyze"
+        adopt_bar(self, top)  # the title bar's right end (mac_shell.Header)
         rl.insertLayout(0, views)
         rl.insertLayout(2, row2)  # after the compare row
         self.ctrl_row = views  # Select channels parks here (after the toggle) while the column is hidden
