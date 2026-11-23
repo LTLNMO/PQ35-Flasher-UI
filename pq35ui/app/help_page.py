@@ -231,6 +231,11 @@ Live View. The engine ECU also has a ready-made
 <b>Integrated Engineering Logger</b> preset: the same 27 values Integrated Engineering's POWERlink logger reads. The normal
 log still uses the ECU's own names. Loading it also makes <b>Export…</b> start on Integrated Engineering CSV,
 so an exported log looks like a POWERlink log (pick another format there if you don't want that).</li>
+<li><b>Smart presets</b> (top of Presets ▾): sets of this module's channels for one job each (boost, timing,
+fuel, mixture, …), suggested by your AI (only the channel names are sent) or built in when AI is off. Each set keeps
+to at most 4 measuring groups, because every extra group slows every channel down; the menu shows how many channels
+and groups each one has. Click one to switch on exactly its channels. Presets → Smart preset options: Regenerate with
+AI, <i>Show smart preset chips</i> (a row of them under the controls), and whether to ask your AI automatically.</li>
 <li><b>Raw groups</b> (the last category in the list): <i>＋ Add group…</i> logs every field of any measuring group by
 number, unnamed (<i>Group 115 field 1</i>, <i>field 2</i>…), e.g. a group with no named values. A raw group is always
 logged while it's in the list; its <b>✕</b> removes it.</li>

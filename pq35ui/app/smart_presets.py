@@ -87,9 +87,10 @@ def _base(name):
     return log_export.split_header(name)[0].strip().lower()
 
 
-def signature(headers):
+def signature(headers, ns=""):
+    """The cache key for a set of channels; ns keeps Logger's sets apart from Analyze's layouts."""
     names = sorted({_base(h) for h in headers if h})
-    return hashlib.sha1("\n".join(names).encode()).hexdigest()[:16]
+    return ns + hashlib.sha1("\n".join(names).encode()).hexdigest()[:16]
 
 
 def _cache_path():
@@ -105,15 +106,15 @@ def _read_cache():
         return {"version": CACHE_VERSION, "logs": {}}
 
 
-def cached(headers):
+def cached(headers, ns=""):
     """AI layouts saved for this set of channels (by base name), or None."""
-    entry = _read_cache()["logs"].get(signature(headers))
+    entry = _read_cache()["logs"].get(signature(headers, ns))
     return resolve(entry["layouts"], headers) if entry else None
 
 
-def store(headers, layouts):
+def store(headers, layouts, ns=""):
     data = _read_cache()
-    data["logs"][signature(headers)] = {
+    data["logs"][signature(headers, ns)] = {
         "layouts": [{"name": l["name"], "description": l.get("description", ""),
                      "charts": [{"title": c.get("title", ""), "channels": [_base(n) for n in c["channels"]]}
                                 for c in l["charts"]]} for l in layouts]}
@@ -123,9 +124,9 @@ def store(headers, layouts):
         pass
 
 
-def forget(headers):
+def forget(headers, ns=""):
     data = _read_cache()
-    if data["logs"].pop(signature(headers), None) is not None:
+    if data["logs"].pop(signature(headers, ns), None) is not None:
         try:
             _cache_path().write_text(json.dumps(data, indent=1), encoding="utf-8")
         except OSError:
@@ -251,14 +252,99 @@ def parse(text):
     return data
 
 
+class AnalyzeProfile:
+    """What Analyze asks for: views of a log's channels."""
+    ns = ""
+    system = SYSTEM
+    subject = "this log's channels"
+
+    def prompt(self, headers):
+        return prompt(headers)
+
+    def fit(self, layouts):
+        return layouts
+
+
+LOGGER_SYSTEM = (
+    "You pick channel sets to record for engine datalogs in a VW/Audi (PQ35 platform: 2.0 TFSI, 1.8T, "
+    "1.4 TSI) ECU tuning app, the way an experienced tuner sets up a logger. Reply with JSON only: "
+    "no prose, no code fences.")
+
+
+class LoggerProfile:
+    """What the Logger asks for: small sets of the module's channels to record. The module reads
+    measuring groups in turn, so every extra group slows each channel's update rate: the AI is
+    told each channel's group and asked to keep a set to a few groups."""
+    ns = "logger:"
+    system = LOGGER_SYSTEM
+    subject = "this module's channels"
+    MAX_GROUPS = 4
+
+    def __init__(self):
+        self.groups = {}  # channel name (as listed) -> measuring group
+
+    def fit(self, layouts):
+        """Every set within MAX_GROUPS measuring groups (the AI's too, and the built-in rules,
+        which were made for logs, not a module's whole list). Groups are kept in the order their
+        channels come (rpm, then the main chart, ...); a later channel in a group already read
+        stays, it costs nothing. Sets left with under 2 channels, or the same as another, go."""
+        out, seen = [], set()
+        for l in layouts:
+            keep = []
+            for n in channels_of(l):
+                g = self.groups.get(n)
+                if g is None:
+                    continue
+                if g not in keep and len(keep) >= self.MAX_GROUPS:
+                    continue
+                if g not in keep:
+                    keep.append(g)
+            charts = [{"title": c.get("title", ""), "channels": [n for n in c["channels"] if self.groups.get(n) in keep]}
+                      for c in l["charts"]]
+            charts = [c for c in charts if c["channels"]]
+            sig = frozenset(n for c in charts for n in c["channels"])
+            if len(sig) >= 2 and sig not in seen:
+                seen.add(sig)
+                out.append(dict(l, charts=charts))
+        return out
+
+    def prompt(self, headers):
+        names = "\n".join(f"- {h}  [group {self.groups[h]}]" if h in self.groups else f"- {h}"
+                          for h in headers)
+        return (
+            "These are the channels this engine module can log, each with the measuring group it is "
+            "read in:\n" + names + "\n\n"
+            "Make 4 to 7 channel sets to record, each for one job a tuner logs for.\n\n" + RULES_TEXT + "\n\n"
+            "Logger rules (these win over the ones above):\n"
+            f"A. The module reads one group at a time, so each extra group slows every channel down. "
+            f"Use at most {self.MAX_GROUPS} different groups per set; prefer channels that share a group.\n"
+            "B. Copy channel names exactly, WITHOUT the [group N] part.\n"
+            "C. Charts here just group related channels; the set is all their channels together.\n\n"
+            'Answer as: {"layouts": [{"name": "Boost control", "description": "Boost vs target, N75 duty, load", '
+            '"charts": [{"title": "Engine speed", "channels": ["Engine speed (rpm)"]}, '
+            '{"title": "Boost", "channels": ["exact actual name", "exact specified name"]}]}]}\n'
+            "name: at most 3 words. description: at most 60 characters, listing what's recorded.")
+
+
+def channels_of(layout):
+    """Every channel in a layout, in order, once."""
+    out = []
+    for c in layout.get("charts") or []:
+        for n in c["channels"]:
+            if n not in out:
+                out.append(n)
+    return out
+
+
 class Generator(QObject):
-    """Smart presets for one log: built-in ones at once, then the AI's (cached, or asked for
-    in the background). Signals arrive on the UI thread."""
+    """Smart presets for one log (or the Logger's module): built-in ones at once, then the AI's
+    (cached, or asked for in the background). Signals arrive on the UI thread."""
     changed = Signal()      # layouts / busy / source changed
 
-    def __init__(self, settings, parent=None):
+    def __init__(self, settings, parent=None, profile=None):
         super().__init__(parent)
         self.settings = settings
+        self.profile = profile or AnalyzeProfile()
         self.layouts, self.source, self.busy, self.error = [], "", False, ""
         self.headers = []
         self._req = None
@@ -284,11 +370,11 @@ class Generator(QObject):
         self.cancel()
         self.headers = [h for h in headers if h]
         self.error = ""
-        found = cached(self.headers)
+        found = cached(self.headers, self.profile.ns)
         if found:
-            self.layouts, self.source = found, "ai"
+            self.layouts, self.source = self.profile.fit(found), "ai"
         else:
-            self.layouts, self.source = rule_layouts(self.headers), "rules"
+            self.layouts, self.source = self.profile.fit(rule_layouts(self.headers)), "rules"
             if self.ai_wanted() and self.ai_ready():
                 self.generate()
                 return
@@ -299,12 +385,13 @@ class Generator(QObject):
         from . import ai
         if not self.headers or not ai.enabled(self.settings):
             return
-        if parent is not None and not ai.confirm_send(parent, self.settings, SYSTEM + "\n\n" + prompt(self.headers)):
+        system, text = self.profile.system, self.profile.prompt(self.headers)
+        if parent is not None and not ai.confirm_send(parent, self.settings, system + "\n\n" + text):
             return
         self.cancel()
         self.busy, self.error, self._reply = True, "", ""
         self.changed.emit()
-        self._req = ai.Ask(self.settings, SYSTEM, [{"role": "user", "content": prompt(self.headers)}], "medium", self)
+        self._req = ai.Ask(self.settings, system, [{"role": "user", "content": text}], "medium", self)
         self._req.text.connect(self._chunk)
         self._req.done.connect(self._done)
         self._req.failed.connect(self._failed)
@@ -327,11 +414,11 @@ class Generator(QObject):
     def _done(self):
         self._req, self.busy = None, False
         try:
-            layouts = resolve(parse(self._reply), self.headers)
+            layouts = self.profile.fit(resolve(parse(self._reply), self.headers))
         except Exception as e:
             layouts, self.error = [], f"Couldn't read the AI's answer ({e})."
         if layouts:
-            store(self.headers, layouts)
+            store(self.headers, layouts, self.profile.ns)
             self.layouts, self.source = layouts, "ai"
         elif not self.error:
             self.error = "The AI didn't suggest any layouts for these channels."
@@ -340,6 +427,11 @@ class Generator(QObject):
     def _failed(self, msg):
         self._req, self.busy, self.error = None, False, msg
         self.changed.emit()
+
+    def regenerate(self, parent=None):
+        """Forget the cached answer for these channels and ask the AI again."""
+        forget(self.headers, self.profile.ns)
+        self.generate(parent)
 
 
 # ── the chip row ──
@@ -454,9 +546,11 @@ class SmartBar(QScrollArea):
     """The row of smart preset chips above the graph (scrolls sideways when they don't fit)."""
     apply = Signal(dict)
 
-    def __init__(self, page, generator, parent=None):
+    def __init__(self, page, generator, parent=None, verb="show", detail=None):
         super().__init__(parent)
         self.page, self.gen = page, generator
+        self.verb = verb      # what a click does: Analyze "show", Logger "tick these channels"
+        self.detail = detail  # optional detail(layout) -> extra tooltip line (Logger: groups, rate)
         self.setWidgetResizable(True)
         self.setFrameShape(QScrollArea.Shape.NoFrame)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -520,8 +614,9 @@ class SmartBar(QScrollArea):
             rows.append(f"<b>{i}.</b> {dots}")
         src = "Suggested by your AI" if self.gen.source == "ai" else "Built in"
         muted = theme.colors()["muted"]
-        return (f"<b>{layout['name']}</b><br>{layout.get('description', '')}<br><br>"
-                + "<br>".join(rows) + f"<br><br><span style='color:{muted}'>{src} · click to show</span>")
+        extra = f"<br>{self.detail(layout)}" if self.detail else ""
+        return (f"<b>{layout['name']}</b><br>{layout.get('description', '')}{extra}<br><br>"
+                + "<br>".join(rows) + f"<br><br><span style='color:{muted}'>{src} · click to {self.verb}</span>")
 
     def rebuild(self):
         self._clear()
@@ -534,12 +629,12 @@ class SmartBar(QScrollArea):
         if gen.busy:
             chip = _Chip("auto_awesome", "Generating…", "Asking your AI for smart presets", self.body)
             chip.setCursor(Qt.CursorShape.BusyCursor)
-            chip.setToolTip("Your AI is suggesting layouts for this log's channels (only the names are sent).")
+            chip.setToolTip(f"Your AI is suggesting presets for {gen.profile.subject} (only the names are sent).")
             self.row.addWidget(chip)
         elif gen.needs_approval() and gen.source != "ai":
             chip = _Chip("auto_awesome", "Generate with AI", "Smart presets for these channels", self.body)
-            chip.setToolTip("Ask your AI for layouts made for this log. You'll see exactly what's sent first "
-                            "(only the channel names).")
+            chip.setToolTip(f"Ask your AI for presets made for {gen.profile.subject}. You'll see exactly "
+                            "what's sent first (only the channel names).")
             chip.clicked.connect(lambda: gen.generate(self.page))
             self.row.addWidget(chip)
         self.row.addStretch(1)

@@ -64,10 +64,12 @@ class PresetButton(ToolIcon):
 
     get_ids() -> iterable of the currently ticked value ids
     apply_ids(ids) -> tick exactly these ids
-    on_loaded(name, builtin) -> optional, called after a preset is loaded"""
+    on_loaded(name, builtin) -> optional, called after a preset is loaded
+    extra_menu(menu) -> optional, fills a section at the top of the menu (Logger: smart presets)"""
 
-    def __init__(self, state, get_ids, apply_ids, parent=None, on_loaded=None):
+    def __init__(self, state, get_ids, apply_ids, parent=None, on_loaded=None, extra_menu=None):
         self.state, self.get_ids, self.apply_ids, self.on_loaded = state, get_ids, apply_ids, on_loaded
+        self.extra_menu = extra_menu
         super().__init__("bookmark", "Presets: load a ready-made or saved set of channels, or save the ticked ones",
                          dropdown=True, menu=self.fill_menu, parent=parent)
 
@@ -91,6 +93,8 @@ class PresetButton(ToolIcon):
     def fill_menu(self, menu):
         from . import analyze_tools as T
         from .smart_presets import icon_for
+        if self.extra_menu:
+            self.extra_menu(menu)
         builtins = self._builtins()
         if builtins:
             T.menu_header(menu, "Ready-made")

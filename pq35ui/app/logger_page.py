@@ -453,9 +453,20 @@ class LoggerPage(QWidget):
                                           "live on the Analyze page while it records")
         self.watch_button.clicked.connect(self._watch)
         self.watch_button.setEnabled(False)
+        # Smart presets: sets of this module's channels suggested by your AI (or built-in rules),
+        # in Presets ▾ and as an optional row of chips under row 1, as on Analyze
+        from . import smart_presets
+        self.smart_profile = smart_presets.LoggerProfile()
+        self.smart = smart_presets.Generator(state.settings, self, profile=self.smart_profile)
+        self._smart_ids = {}  # channel name sent to the AI -> value id
+        self.smart_bar = smart_presets.SmartBar(self, self.smart, verb="tick these channels",
+                                                detail=self._smart_detail)
+        self.smart_bar.apply.connect(self._apply_smart)
+        self.smart_bar.hide()
         # Presets: the same button as Analyze's (bookmark ▾), beside ⚙
         self.presets = PresetButton(state, lambda: {v["id"] for v in self._checked_values()},
-                                    lambda ids: self._build_tree(ids), on_loaded=self._preset_loaded)
+                                    lambda ids: self._build_tree(ids), on_loaded=self._preset_loaded,
+                                    extra_menu=self._smart_menu)
         self.options = ToolIcon("instant_mix", "Logger settings: rate, group rates, how long Rolling keeps",
                                   menu=self._fill_options)
         # The settings' values live in these; the ⚙ menu and the Triggered popup set them.
@@ -509,6 +520,7 @@ class LoggerPage(QWidget):
                    left=(self.channels, self.mode), middle=self.name_preview, segments=self.mode.buttons,
                    tools=(self.sidebar.columns_button, self.sidebar.bars_button, self.watch_button),
                    recent=self.recent_button, presets=self.presets, settings=self.options, more=self.more_button)
+        cl.addWidget(self.smart_bar)
         self._load_recording()
         for w in (self.mode, self.trigger_op):
             w.currentIndexChanged.connect(self._recording_changed)
@@ -545,6 +557,7 @@ class LoggerPage(QWidget):
             self.catalog = []
             self.raw_groups = set()
             self._build_tree()
+            self._load_smart()  # none until the new module's channels arrive
             if module is not None:
                 self.state.offline("catalog", self.state.catalog_params(module), self._catalog_loaded,
                                    lambda e: self.banner.show_message(self.error_text(e), "error"))
@@ -587,6 +600,7 @@ class LoggerPage(QWidget):
         saved = self.state.settings.get(self._settings_key()) or {}
         self.raw_groups = set(saved.get("raw_groups", []))
         self._build_tree(set(saved.get("values", [])))
+        self._load_smart()
         if not self.catalog:
             self.summary.setText("No named values for this module in this flasher build. "
                                  "Add whole groups below.")
@@ -690,6 +704,82 @@ class LoggerPage(QWidget):
         self._fill_trigger_channels(values)
 
     # --- per-group rates ---
+
+    # --- smart presets ---
+
+    SMART_BAR_KEY = "logger:smart_bar"
+
+    def _load_smart(self):
+        """The module's channels (names with their module units, as sent to the AI) -> presets."""
+        self._smart_ids, groups = {}, {}
+        for v in self.catalog:
+            unit = v.get("unit") or ""
+            name = f"{v['name']} ({unit})" if unit else v["name"]
+            if name not in self._smart_ids:
+                self._smart_ids[name] = v["id"]
+                groups[name] = v["group"]
+        self.smart_profile.groups = groups
+        self.smart.load(list(self._smart_ids))
+        self._sync_smart_bar()
+
+    def _smart_groups(self, layout):
+        from .smart_presets import channels_of
+        return sorted({self.smart_profile.groups[n] for n in channels_of(layout) if n in self.smart_profile.groups})
+
+    def _smart_detail(self, layout):
+        from .smart_presets import channels_of
+        groups = self._smart_groups(layout)
+        n = len(channels_of(layout))
+        return (f"{n} channel{'s' if n != 1 else ''} · {len(groups)} measuring group{'s' if len(groups) != 1 else ''}"
+                f" ({', '.join(map(str, groups))}): fewer groups read faster")
+
+    def _apply_smart(self, layout):
+        """A smart preset: tick exactly its channels (as loading a preset does)."""
+        if self.running:
+            return
+        from .smart_presets import channels_of
+        ids = {self._smart_ids[n] for n in channels_of(layout) if n in self._smart_ids}
+        if ids:
+            self._build_tree(ids)
+
+    def _sync_smart_bar(self):
+        on = bool(self.state.settings.get(self.SMART_BAR_KEY, False))
+        self.smart_bar.setVisible(on and bool(self.catalog))
+
+    def _smart_bar_toggled(self, on):
+        self.state.settings.set(self.SMART_BAR_KEY, bool(on))
+        self._sync_smart_bar()
+
+    def _smart_menu(self, menu):
+        """Presets ▾, top section: the smart presets for this module, then their options."""
+        from . import ai, smart_presets
+        T_ = T
+        gen = self.smart
+        T_.menu_header(menu, "Smart presets")
+        for layout in gen.layouts:
+            n, g = len(smart_presets.channels_of(layout)), len(self._smart_groups(layout))
+            T_.menu_action(menu, f"{layout['name']}  ({n} · {g} group{'s' if g != 1 else ''})",
+                           smart_presets.icon_for(layout["name"]), lambda _=False, l=layout: self._apply_smart(l),
+                           enabled=not self.running, tip=layout.get("description", ""))
+        if gen.busy:
+            menu.addAction("Generating with your AI…").setEnabled(False)
+        elif not gen.layouts:
+            menu.addAction("Choose a module first" if not self.catalog else "None for this module").setEnabled(False)
+        sm = T_.menu_sub(menu, "Smart preset options", "auto_awesome")
+        on = ai.enabled(self.state.settings)
+        T_.menu_action(sm, "Generating…" if gen.busy else "Regenerate with AI", "refresh",
+                       lambda: gen.regenerate(self), enabled=bool(gen.headers) and on and not gen.busy,
+                       tip="Ask your AI again for this module's channels" if on
+                       else "Choose an AI in Settings → AI first")
+        T_.menu_toggle(sm, "Show smart preset chips", "view_carousel",
+                       bool(self.state.settings.get(self.SMART_BAR_KEY, False)), self._smart_bar_toggled)
+        T_.menu_toggle(sm, "Generate with AI automatically", "auto_awesome",
+                       bool(self.state.settings.get(smart_presets.AI_KEY, True)),
+                       lambda v: self.state.settings.set(smart_presets.AI_KEY, bool(v)),
+                       tip="When a module with new channels is chosen, ask your AI for sets (only channel names are sent)")
+        if gen.error:
+            sm.addSeparator()
+            sm.addAction(f"Last AI attempt: {gen.error[:70]}").setEnabled(False)
 
     def _preset_loaded(self, name, builtin):
         """The Integrated Engineering Logger preset also makes Export… start on Integrated

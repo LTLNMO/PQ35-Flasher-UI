@@ -34,6 +34,8 @@ changes are in logging, diagnostics and the interface.
   scan is compared with the last one, and you can copy or save the scan log.
 - **Logger**:
   - A channel picker with presets, including an Integrated Engineering preset.
+  - Smart presets: channel sets for your module suggested by your AI (or built-in rules), each kept
+    to a few measuring groups so it reads fast; in Presets and as optional chips.
   - Three recording modes: Continuous, Triggered (records around a trigger) and Rolling
     (keeps the last few minutes).
   - Alarms (the same limits as Live View's): a channel past its limit turns red, the window
