@@ -638,7 +638,8 @@ QTextBrowser#macLog {{ background: {surface}; border: 1px solid {card_border}; b
 #macPanel QTreeWidget, #macPanel QListWidget {{ border: none; background: transparent; }}
 /* The Logger's channel list: the sidebar widget used as the page's main table, so a card */
 #macPanel[table="true"] {{ background: {group}; border: 1px solid {card_border}; border-radius: 10px; }}
-#macPanel[table="true"] QHeaderView, #macPanel[table="true"] QHeaderView::section {{ background: transparent; }}
+/* List headers in a column or card: just the names over a thin line, no lighter (square) band */
+#macPanel QHeaderView, #macPanel QHeaderView::section {{ background: transparent; }}
 QPushButton#viewTab {{ background: transparent; border: none; padding: 3px 12px; color: {text}; font-weight: 500; }}
 QPushButton#viewTab:hover {{ background: {btn}; color: {text}; }}
 QPushButton#viewTab[active="true"] {{ background: {seg_on}; color: {text}; font-weight: 500; border: none; }}
