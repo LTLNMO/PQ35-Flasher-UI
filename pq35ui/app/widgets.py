@@ -630,9 +630,11 @@ class RoundPopups(QObject):
 
 
 class AppEventFilter(QObject):
-    """WheelGuard and RoundPopups as one app-wide filter. Every event in the app goes through
-    an app-wide filter, and the costly part is Qt handing each event to Python, so one filter
-    instead of two halves that cost."""
+    """The app's ONE app-wide event filter: WheelGuard, RoundPopups, and any handler added with
+    add() (Mac: table header alignment, dragging the window by its top strip). Every event in the
+    app goes through an app-wide filter, and the costly part is Qt handing each event to Python,
+    so everything shares this one instead of installing its own (two extra filters cost ~1.5 s
+    of a window build alone, and ran on every repaint after)."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -640,6 +642,17 @@ class AppEventFilter(QObject):
         self.popups = RoundPopups(self)
         self._wheel_type = WheelGuard._WHEEL
         self._popup_types = (RoundPopups._POLISH, RoundPopups._SHOW)
+        self._extra = {}  # event type -> [handler objects with eventFilter(obj, event)]
+
+    def add(self, handler, kinds):
+        """Send events of `kinds` (QEvent types) to handler.eventFilter; True from it eats the event."""
+        for kind in kinds:
+            self._extra.setdefault(kind, []).append(handler)
+
+    def remove(self, handler):
+        for handlers in self._extra.values():
+            if handler in handlers:
+                handlers.remove(handler)
 
     def eventFilter(self, obj, event):
         kind = event.type()
@@ -647,7 +660,23 @@ class AppEventFilter(QObject):
             return bool(self.wheel.eventFilter(obj, event))
         if kind in self._popup_types:
             self.popups.eventFilter(obj, event)
+        handlers = self._extra.get(kind)
+        if handlers:
+            for h in tuple(handlers):
+                if h.eventFilter(obj, event):
+                    return True
         return False
+
+
+def app_filter(app=None):
+    """The app's AppEventFilter (installed now if the app doesn't have one yet)."""
+    from PySide6.QtWidgets import QApplication
+    app = app or QApplication.instance()
+    f = app.findChild(AppEventFilter)
+    if f is None:
+        f = AppEventFilter(app)
+        app.installEventFilter(f)
+    return f
 
 
 RoundTooltips = RoundPopups  # old name

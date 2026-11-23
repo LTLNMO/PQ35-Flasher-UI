@@ -203,7 +203,7 @@ def apply(window):
 class TooltipGate:
     """App-wide switch for hover tooltips (Settings → General → Tooltips). While tooltips are off
     a filter on the QApplication swallows every tooltip event; while they're on (the usual case)
-    no filter is installed at all, because an app-wide filter is called for every event in the app."""
+    nothing is added (it rides on widgets.AppEventFilter, the app's one filter, only for ToolTip events)."""
 
     _instance = None
 
@@ -226,12 +226,13 @@ class TooltipGate:
         return bool(self.settings.get("tooltips", True))
 
     def sync(self):
-        """Install or remove the filter to match the setting."""
-        from PySide6.QtWidgets import QApplication
+        """Add or remove the handler on the app's one event filter to match the setting."""
+        from PySide6.QtCore import QEvent
+        from .widgets import app_filter
         want = not self.enabled()
         if want != self.installed:
-            app = QApplication.instance()
-            (app.installEventFilter if want else app.removeEventFilter)(self.filter)
+            f = app_filter()
+            f.add(self.filter, (QEvent.Type.ToolTip,)) if want else f.remove(self.filter)
             self.installed = want
 
     @classmethod

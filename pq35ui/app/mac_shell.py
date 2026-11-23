@@ -667,9 +667,8 @@ class SideWindow(QWidget):
             # toolbar), title bar see-through; the top strip still moves the window.
             self.setWindowFlag(Qt.WindowType.NoTitleBarBackgroundHint, True)
             self.setAttribute(Qt.WidgetAttribute.WA_ContentsMarginsRespectsSafeArea, False)
-            from PySide6.QtWidgets import QApplication
             self._drag = WindowDrag(self)
-            QApplication.instance().installEventFilter(self._drag)
+            self._drag.attach()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -779,6 +778,14 @@ class WindowDrag(QObject):
         super().__init__(window)
         self.window_ = window
 
+    def attach(self):
+        """Watch presses through the app's one filter; stop when the window goes."""
+        from PySide6.QtCore import QEvent
+        from .widgets import app_filter
+        f = app_filter()
+        f.add(self, (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick))
+        self.window_.destroyed.connect(lambda *_: f.remove(self))
+
     def eventFilter(self, obj, event):
         from PySide6.QtCore import QEvent
         kind = event.type()
@@ -804,10 +811,13 @@ class WindowDrag(QObject):
 
 
 def install_app_tweaks(app, window=None):
+    """Mac: header alignment and window dragging, through the app's one event filter."""
+    from PySide6.QtCore import QEvent
+    from .widgets import app_filter
     f = HeaderAlign(app)
-    app.installEventFilter(f)
+    app_filter(app).add(f, (QEvent.Type.Polish,))
     app._pq35_header_align = f
     if window is not None and sys.platform == "darwin":
         d = WindowDrag(window)
-        app.installEventFilter(d)
+        d.attach()
         app._pq35_window_drag = d
