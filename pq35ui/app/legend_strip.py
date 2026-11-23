@@ -136,7 +136,7 @@ class LegendStrip(QScrollArea):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # grows instead
         self.body = QWidget()
         self.flow = FlowLayout(self.body, spacing=2)
-        self.flow.setContentsMargins(4, 6, 4, 6)  # one row = as tall as the timeline (fit_height)
+        self.flow.setContentsMargins(4, 11, 4, 11)  # one row = as tall as the timeline (fit_height), centred
         self._band_h = BAND_H
         self._fit_w = None
         self.setWidget(self.body)
@@ -152,7 +152,7 @@ class LegendStrip(QScrollArea):
         and the legend is at least that tall, growing a row at a time as channels are added."""
         chip = self.fontMetrics().height() + 6
         self.add_button.setFixedSize(chip + 4, chip)
-        self._band_h = chip + 14
+        self._band_h = chip + 24  # a little room around the chips / the timeline's lines (user 2026-11-23)
         ov = getattr(self.page, "overview", None)
         if ov is not None:
             ov.setFixedHeight(self._band_h)  # slim: it sits right under the graph's time axis
