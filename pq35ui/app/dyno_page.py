@@ -108,11 +108,16 @@ class DynoPage(QWidget):
         split.addWidget(self.view)
         # The column's toggle right after the pull picker (as Analyze's after Select channels)
         top.removeWidget(self.sidebar_button)
-        self.view.control_row.insertWidget(1, self.sidebar_button)
-        # The controls row ends with the icons in the one right-hand order (both interfaces)
+        # The controls row ends with the icons in the one right-hand order (both interfaces). Mac:
+        # the Sessions toggle is the first of them (as Analyze's channels toggle), so it never moves
+        # and doesn't split the pull picker from the controls; Classic: right after the picker.
         from .mac_shell import row_icons
         row = self.view.control_row
-        row_icons(row, tools=(self.load_button,), more=self.more_button)
+        if theme.is_mac():
+            row_icons(row, tools=(self.sidebar_button, self.load_button), more=self.more_button)
+        else:
+            row.insertWidget(1, self.sidebar_button)
+            row_icons(row, tools=(self.load_button,), more=self.more_button)
         for i in range(row.count()):  # controls at their own width, icons at the right
             row.setStretch(i, 0)
         row.insertStretch(row.indexOf(self.load_button.parentWidget()), 1)
