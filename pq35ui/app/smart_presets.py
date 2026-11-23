@@ -679,9 +679,10 @@ class SmartBar(QScrollArea):
     """The row of smart preset chips above the graph (scrolls sideways when they don't fit)."""
     apply = Signal(dict)
 
-    def __init__(self, page, generator, parent=None, verb="show", detail=None):
+    def __init__(self, page, generator, parent=None, verb="show", detail=None, centered=False):
         super().__init__(parent)
         self.page, self.gen = page, generator
+        self.centered = centered  # chips in the middle (Logger's empty list), else from the left
         self.verb = verb      # what a click does: Analyze "show", Logger "tick these channels"
         self.on_ask = None    # set by the page: opens Ask AI (the last chip)
         self.detail = detail  # optional detail(layout) -> extra tooltip line (Logger: groups, rate)
@@ -771,6 +772,8 @@ class SmartBar(QScrollArea):
     def rebuild(self):
         self._clear()
         gen = self.gen
+        if self.centered:
+            self.row.addStretch(1)
         if gen.layouts or gen.busy or gen.needs_approval():
             self.row.addWidget(self._lead())
         for layout in gen.layouts:

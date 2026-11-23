@@ -10,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QDialogButtonBox,
@@ -351,6 +351,21 @@ class RecordingModePicker(QWidget):
             self.currentIndexChanged.emit(index)
 
 
+class _Follow(QObject):
+    """Calls `place` whenever `widget` is resized or shown (keeps an overlay in place)."""
+
+    def __init__(self, widget, place):
+        super().__init__(widget)
+        self.place = place
+        widget.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        from PySide6.QtCore import QEvent
+        if event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+            self.place()
+        return False
+
+
 class LoggerPage(QWidget):
     """Data logger: controls row (channels dropdown first) and the live table.
 
@@ -466,6 +481,14 @@ class LoggerPage(QWidget):
         self.smart_bar.on_ask = lambda: smart_presets.ask_dialog(self, self.smart)
         state.faults_changed.connect(lambda _n: self.catalog and self._load_smart())  # new scan: fault sets
         self.smart_bar.hide()
+        # The empty list's starting points: the same chips, centred under "No channels yet"
+        self.empty_starts = smart_presets.SmartBar(self, self.smart, self.tree.viewport(), verb="tick these channels",
+                                                   detail=self._smart_detail, centered=True)
+        self.empty_starts.apply.connect(self._apply_smart)
+        self.empty_starts.on_ask = self.smart_bar.on_ask
+        self.empty_starts.hide()
+        self._empty_place = _Follow(self.tree.viewport(), self._place_empty_starts)
+        self.smart.changed.connect(self._place_empty_starts)
         # Presets: the same button as Analyze's (bookmark ▾), beside ⚙
         self.presets = PresetButton(state, lambda: {v["id"] for v in self._checked_values()},
                                     lambda ids: self._build_tree(ids), on_loaded=self._preset_loaded,
@@ -591,6 +614,7 @@ class LoggerPage(QWidget):
                                      "(engine, transmission or Haldex).", "info")
         elif not self.running and self.banner.property("level") == "info":
             self.banner.hide()
+        self._place_empty_starts()  # recording hides the starting points
 
     def error_text(self, error):
         return error.get("message", str(error)) if isinstance(error, dict) else str(error)
@@ -653,6 +677,7 @@ class LoggerPage(QWidget):
         self.tree.sync_rows(self.state.settings)
         self._selection_changed()
         self.sidebar.fit_width()  # Select channels (n/N) may have grown, as in Analyze
+        self._place_empty_starts()
 
     def _describe(self, key):
         """The Select channels description box: the value under the mouse."""
@@ -752,6 +777,27 @@ class LoggerPage(QWidget):
     def _sync_smart_bar(self):
         on = bool(self.state.settings.get(self.SMART_BAR_KEY, False))
         self.smart_bar.setVisible(on and bool(self.catalog))
+        self._place_empty_starts()
+
+    EMPTY_TEXT = "No channels yet.\nUse Select channels to add some."
+    EMPTY_TEXT_STARTS = "No channels yet.\nUse Select channels, or start from one of these:"
+
+    def _place_empty_starts(self):
+        """Under the empty list's message while nothing is ticked: the smart presets as starting
+        points (not when the chip row above already shows them, or while recording)."""
+        bar = getattr(self, "empty_starts", None)
+        if bar is None:
+            return
+        empty = not any(not it.isHidden() for it in self.tree.items())
+        show = (empty and bool(self.catalog) and not self.running and not self.smart_bar.isVisible()
+                and bool(self.smart.layouts or self.smart.busy))
+        self.tree.empty_text = self.EMPTY_TEXT_STARTS if show else self.EMPTY_TEXT
+        bar.setVisible(show)
+        if show:
+            vp = self.tree.viewport()
+            width = max(0, vp.width() - 32)
+            bar.setGeometry(16, vp.height() // 2 + 26, width, bar.height())
+        self.tree.viewport().update()
 
     def _smart_bar_toggled(self, on):
         self.state.settings.set(self.SMART_BAR_KEY, bool(on))
