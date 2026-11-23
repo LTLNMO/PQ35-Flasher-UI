@@ -176,31 +176,39 @@ class ProjectsPage(QWidget):
         split.setHandleWidth(6)
         outer.addWidget(split, 1)
 
-        side = QWidget()
-        side.setObjectName("page")
-        sb = QVBoxLayout(side)
-        sb.setContentsMargins(16, 16, 8, 16)
+        mac = theme.is_mac()
         self.list = QListWidget()
         self.list.currentItemChanged.connect(lambda item, _p: self._open(item))
-        sb.addWidget(self.list, 1)
-        row = QHBoxLayout()
-        new = QPushButton("New project…")
-        new.setObjectName("primary")
-        new.clicked.connect(self._new)
-        row.addWidget(new)
+        # Rename / Delete: buttons on Classic; on Mac the ⋯ menu's items, whose enabled state and
+        # tooltip these (hidden) buttons keep
         self.rename_button = QPushButton("Rename…")
         self.rename_button.clicked.connect(self._rename)
-        row.addWidget(self.rename_button)
         self.delete_button = QPushButton("Delete…")
         self.delete_button.setToolTip("Move this project's folder (its notes and tune version copies) to the Trash")
         self.delete_button.clicked.connect(self._delete)
-        row.addWidget(self.delete_button)
-        sb.addLayout(row)
-        folder = QPushButton("Open projects folder")
-        folder.clicked.connect(lambda: (projects_dir().mkdir(parents=True, exist_ok=True),
-                                        QDesktopServices.openUrl(QUrl.fromLocalFile(str(projects_dir())))))
-        sb.addWidget(folder)
-        if not theme.is_mac():
+        if mac:
+            for b in (self.rename_button, self.delete_button):
+                b.setParent(self)
+                b.hide()
+            self._mac_column(split)
+        else:
+            side = QWidget()
+            side.setObjectName("page")
+            sb = QVBoxLayout(side)
+            sb.setContentsMargins(16, 16, 8, 16)
+            sb.addWidget(self.list, 1)
+            row = QHBoxLayout()
+            new = QPushButton("New project…")
+            new.setObjectName("primary")
+            new.clicked.connect(self._new)
+            row.addWidget(new)
+            row.addWidget(self.rename_button)
+            row.addWidget(self.delete_button)
+            sb.addLayout(row)
+            folder = QPushButton("Open projects folder")
+            folder.clicked.connect(lambda: (projects_dir().mkdir(parents=True, exist_ok=True),
+                                            QDesktopServices.openUrl(QUrl.fromLocalFile(str(projects_dir())))))
+            sb.addWidget(folder)
             split.addWidget(scrollable(side))
 
         right = QWidget()
@@ -208,11 +216,19 @@ class ProjectsPage(QWidget):
         rl = QVBoxLayout(right)
         rl.setContentsMargins(8, 16, 16, 16)
         self.heading = h1("")
-        rl.addWidget(self.heading)
         car_row = QHBoxLayout()
-        car_row.addWidget(muted("Car"))
+        if mac:  # the project's name, car and Active on one row above the tabs (mac_shell rules 2–4)
+            from .mac_shell import first_row, main_layout
+            main_layout(rl)
+            self.heading.setObjectName("macPaneTitle")
+            first_row(car_row)
+            car_row.addWidget(self.heading)
+            car_row.addSpacing(6)  # no "Car" label: the pop-up shows the car's name already
+        else:
+            rl.addWidget(self.heading)
+            car_row.addWidget(muted("Car"))
         self.car_combo = QComboBox()
-        self.car_combo.setMinimumContentsLength(24)
+        self.car_combo.setMinimumContentsLength(14 if mac else 24)
         self.car_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.car_combo.setToolTip("The car this project is for (one of your Cars)")
         self.car_combo.currentIndexChanged.connect(self._car_picked)
@@ -312,8 +328,6 @@ class ProjectsPage(QWidget):
         nl.addWidget(muted("Saved automatically."))
         self.tabs.addTab(nbox, "Notes")
         rl.addWidget(self.tabs, 1)
-        if theme.is_mac():
-            self._mac_layout(split, side, sb, row, folder, rl, car_row)
         split.addWidget(scrollable(right))
         split.setSizes([280, 800])
         if theme.is_mac():
@@ -325,9 +339,9 @@ class ProjectsPage(QWidget):
 
     # --- list ---
 
-    def _mac_layout(self, split, side, sb, row, folder, rl, car_row):
-        """Mac (Mockups/Swift native 02-projects): a Projects column (title, +, ⋮, the list, where
-        they're kept) and the project's name, car and Active on one row above the tabs."""
+    def _mac_column(self, split):
+        """Mac (Mockups/Swift native 02-projects): the Projects column: the list, + and ⋯ under it,
+        where projects are kept."""
         from PySide6.QtWidgets import QFrame
         _pdir = projects_dir
         panel = QFrame()
@@ -356,7 +370,6 @@ class ProjectsPage(QWidget):
                 _pdir().mkdir(parents=True, exist_ok=True),
                 QDesktopServices.openUrl(QUrl.fromLocalFile(str(_pdir())))))
         head.addWidget(ToolIcon("more_horiz", "Rename, delete, open the projects folder", menu=fill_more))
-        sb.removeWidget(self.list)
         lay.addWidget(self.list, 1)
         line = QFrame()
         line.setObjectName("macFootLine")
@@ -368,23 +381,8 @@ class ProjectsPage(QWidget):
         foot.setWordWrap(True)
         foot.setContentsMargins(24, 4, 16, 20)
         lay.addWidget(foot)
-        side.setParent(self)  # keeps Rename/Delete (their enabled state drives the menu)
-        side.hide()
-        split.insertWidget(0, panel)
+        split.addWidget(panel)
         split.setHandleWidth(1)
-        # Right: name, car and Active on one row, then the tabs; the mockup's 26 px sides.
-        from .mac_shell import main_layout
-        main_layout(rl)  # rules 2–4 beside the column
-        rl.removeWidget(self.heading)
-        self.heading.setObjectName("macPaneTitle")
-        rl.removeItem(car_row)
-        car_label = car_row.takeAt(0).widget()  # "Car": the pop-up shows the car's name already
-        car_label.hide()
-        car_row.insertWidget(0, self.heading)
-        car_row.insertSpacing(1, 6)
-        from .mac_shell import first_row
-        rl.insertLayout(0, first_row(car_row))
-        self.car_combo.setMinimumContentsLength(14)
 
     def reload(self, select=None):
         current = select or (self.project.root if self.project else None)
