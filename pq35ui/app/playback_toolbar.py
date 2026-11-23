@@ -63,71 +63,90 @@ class ToolbarMixin:
             return
         self.axis_button.setText(f"Axis: {self._axis().capitalize()}  \u25be")
 
-    def _mac_toolbar(self, rl, ctrl, view_row):
-        """Mac interface (Mockups/Swift native, Analyze): one top bar with the log's name as a
-        button, the views as a segmented control and the icons on the right; under it Axis and the
-        smart presets. Same buttons as Classic, only placed differently."""
-        from PySide6.QtWidgets import QFrame
-        for lay in (ctrl, view_row):
-            while lay.count():
-                lay.takeAt(0)
-            rl.removeItem(lay)
-        rl.removeWidget(self.smart_bar)
+    OPEN_TIP = ("Open a log: a recent recording, or a file from this app or another tool (the logs "
+                "Datazap takes: COBB, MHD, VCDS, ME7Logger, Torque, MegaLogViewer, Integrated Engineering …)")
+
+    def _classic_toolbar(self, rl):
+        """Classic: [channels toggle] … legend, timeline, ƒ, Presets ▾, Axis, ⋮; the compare row and
+        the banner; the view buttons, the log's name, Open ▾, Compare ▾; smart presets; the views."""
+        self.open_button = ToolIcon("file_open", self.OPEN_TIP, dropdown=True)
+        self.open_button.clicked.connect(self._open_menu)
+        # speed_4_progress, by codepoint: the glyph is in the font but its name ligature draws junk.
+        # It and Select channels are a pair at the top left (ChannelSidebar.install).
+        self.sidebar_button = ToolIcon("\U000ffe94", "Show or hide the channels sidebar", checkable=True)
+        ctrl = self.ctrl_row = QHBoxLayout()
+        ctrl.setSpacing(8)  # one gap for every toolbar row (Logger, Live View too)
+        ctrl.addWidget(self.sidebar_button)
+        ctrl.addStretch(1)
+        for w in (self.legend_button, self.timeline_button, self.math_button, self.presets_button,
+                  self.axis_button, self.more_button):
+            ctrl.addWidget(w)
+        rl.addLayout(ctrl)
+        rl.addWidget(self.compare_row)
+        rl.addWidget(self.banner)
+        view_row = QHBoxLayout()
+        view_row.setContentsMargins(0, 0, 0, 0)
+        view_row.setSpacing(2)
+        for b in self.view_buttons:
+            view_row.addWidget(b)
+        view_row.addSpacing(12)
+        view_row.addWidget(self.file_label, 1)  # takes the rest of the row; long names get …
+        view_row.addSpacing(6)
+        view_row.addWidget(self.open_button)
+        view_row.addSpacing(6)
+        view_row.addWidget(self.compare_button)
+        rl.addLayout(view_row)
+        rl.addWidget(self.smart_bar)
+        rl.addWidget(self.tabs, 1)
+
+    def _mac_toolbar(self, rl):
+        """Mac: the log's name as a button at the title bar's right end; row 1 = the views as a
+        segmented control … Axis [Independent ▾] ◧ Compare ƒ Presets ▾ ⋯; the compare row, the
+        smart presets, the banner, the views. Same buttons as Classic, placed once for the Mac
+        (legend and timeline are ⋯ menu items here, never buttons)."""
+        from PySide6.QtWidgets import QFrame, QSizePolicy
+        from .mac_shell import adopt_bar, first_row, row_icons
+        from .widgets import segment_track
+        self.file_label.setParent(self)
         self.file_label.hide()
-        old_open = self.open_button
-        old_open.hide()
         pill = QPushButton(menus.menu_icon("description"), "Open a log…")
         pill.setObjectName("macFilePill")
-        pill.setToolTip(old_open.toolTip())
+        pill.setToolTip(self.OPEN_TIP)
         pill.setCursor(Qt.CursorShape.PointingHandCursor)
         pill.clicked.connect(self._open_menu)
         self.open_button = pill
-        from .widgets import segment_track
         seg = QFrame()
         segment_track(seg, QHBoxLayout(seg), self.view_buttons)  # the macOS segmented control
-        # Every page: the title bar = what you're working on + page actions; the row under it =
-        # the content's own controls. Analyze's "what" is the log, so the file sits where the
-        # Logger's Record / Live View's Start sit.
-        # Title bar: Analyze [📄 log ▾] (nothing at the right: no button there is page-wide)
-        # Channels column: Channels · n of N [cols][bars] / Select channels ▾ / search / list
-        # Content: [◧][Single|Split|Heatmap|Scatter|Raw] … Axis [Independent ▾] [Compare] [ƒ] [Presets ▾] [⋯];
-        # then smart presets.
         self.sidebar.mac_header_buttons()  # list buttons into the column's heading row
-        old_toggle = self.sidebar_button
-        old_toggle.setParent(self)
-        old_toggle.hide()
-        self.sidebar_button = ToolIcon(
-            "left_panel_close", "Show or hide the channels column", checkable=True)
+        self.sidebar_button = ToolIcon("left_panel_close", "Show or hide the channels column", checkable=True)
         self.sidebar_button.setProperty("plain", True)  # a sidebar toggle: no grey square when on
         top = QHBoxLayout()
         top.setSpacing(8)
         top.addWidget(pill)
-        top.addStretch(1)  # only the log up here: Compare, ƒ, Presets, ⋯ are the graph's (row 2's end)
-        # Row 2: Select channels ▾ parks at its front while the column is hidden (never in the title
+        top.addStretch(1)
+        adopt_bar(self, top)  # the title bar's right end (mac_shell.Header)
+        # Row 1: Select channels ▾ parks at its front while the column is hidden (never in the title
         # bar); the column's toggle is the first right-hand icon, so it never moves (user 2026-11-23).
-        from .mac_shell import first_row
-        views = first_row(QHBoxLayout())
+        views = self.ctrl_row = first_row(QHBoxLayout())
         views.addWidget(seg)
         views.addStretch(1)
         views.addWidget(muted("Axis"))
+        self.axis_button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         views.addWidget(self.axis_button)
         views.addSpacing(6)
-        from .mac_shell import row_icons  # rule 7: the one right-hand order
         row_icons(views, tools=(self.sidebar_button, self.compare_button, self.math_button),
                   presets=self.presets_button, more=self.more_button)
-        for w in (self.legend_button, self.timeline_button):  # switched from ⋮ instead
+        for w in (self.legend_button, self.timeline_button):  # switched from ⋯ instead
             w.setParent(self)
             w.hide()
-        row2 = QHBoxLayout()
-        row2.setSpacing(10)
-        row2.addWidget(self.smart_bar, 1)
-        from PySide6.QtWidgets import QSizePolicy
-        self.axis_button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
-        from .mac_shell import adopt_bar
-        adopt_bar(self, top)  # the title bar's right end (mac_shell.Header)
-        rl.insertLayout(0, views)
-        rl.insertLayout(2, row2)  # after the compare row
-        self.ctrl_row = views  # Select channels parks here (after the toggle) while the column is hidden
+        smart = QHBoxLayout()
+        smart.setSpacing(10)
+        smart.addWidget(self.smart_bar, 1)
+        rl.addLayout(views)
+        rl.addWidget(self.compare_row)
+        rl.addLayout(smart)
+        rl.addWidget(self.banner)
+        rl.addWidget(self.tabs, 1)
         self._update_axis_button()
 
     def _axis_menu(self, menu=None):

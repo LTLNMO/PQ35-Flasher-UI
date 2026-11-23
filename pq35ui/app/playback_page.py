@@ -101,48 +101,31 @@ class PlaybackPage(LiveFollowMixin, ToolbarMixin, RawMixin, TimelineMixin, Colum
         rl.setContentsMargins(8, 16, 16, 16)
         rl.setSpacing(10)
 
-        # Top controls. Left: sidebar. Right: legend, timeline, math, presets, axis, more.
-        # (Open and compare sit on the view-tab row, right of the log's name.)
-        ctrl = self.ctrl_row = QHBoxLayout()
-        ctrl.setSpacing(8)  # one gap for every toolbar row (Logger, Live View too)
-        self.open_button = ToolIcon("file_open", "Open a log: a recent recording, or a file "
-                                             "from this app or another tool (the logs Datazap takes: "
-                                             "COBB, MHD, VCDS, ME7Logger, Torque, MegaLogViewer, "
-                                             "Integrated Engineering …)", dropdown=True)
-        self.open_button.clicked.connect(self._open_menu)
-        # speed_4_progress, by codepoint: the glyph is in the font but its name ligature draws junk
-        self.sidebar_button = ToolIcon("\U000ffe94", "Show or hide the channels "
-                                                "sidebar", checkable=True)
+        # The toolbar's widgets are made here; _classic_toolbar / _mac_toolbar (playback_toolbar)
+        # place them, once, for the interface in use (the open-log button and the channels toggle
+        # are made there too: they differ by interface).
         self._right_layout = rl  # its left margin follows the sidebar (ChannelSidebar._shown)
-        ctrl.addWidget(self.sidebar_button)
-        # It and Select channels are a pair at the top left (ChannelSidebar.install): the column's
-        # first row while it shows, the front of this row while it's hidden.
         self.compare_button = ToolIcon("compare", "Compare logs: overlay a second log on the "
                                                 "graph, or compare several logs with AI", dropdown=True)
         self.compare_button.clicked.connect(
             lambda: menus.popup_menu(self._compare_menu(), self.compare_button))
-        ctrl.addStretch(1)
 
         self.legend_button = ToolIcon("list", "Show or hide the legend under the graph "
                                                "(click a channel there to hide or show its line)",
                                                checkable=True)
         self.legend_button.setChecked(bool(state.settings.get("playback:legend", True)))
         self.legend_button.toggled.connect(self._legend_toggled)
-        ctrl.addWidget(self.legend_button)
         self.timeline_button = ToolIcon("acute", "Show or hide the timeline under "
                                                  "the graph (the whole log in miniature)", checkable=True)
         self.timeline_button.setChecked(bool(state.settings.get("playback:timeline", True)))
         self.timeline_button.toggled.connect(self._timeline_toggled)
-        ctrl.addWidget(self.timeline_button)
         self.math_button = ToolIcon("function", "Math channels: add channels computed "
                                              "from formulas")
         self.math_button.clicked.connect(self._edit_math)
-        ctrl.addWidget(self.math_button)
         self.presets_button = ToolIcon("bookmark", "Presets: put a ready-made set of "
                                                 "channels on the graph, or save your own",
                                                 dropdown=True)
         self.presets_button.clicked.connect(lambda: menus.popup_menu(self._presets_menu(), self.presets_button))
-        ctrl.addWidget(self.presets_button)
         self.axis_button = QPushButton()
         self.axis_button.setToolTip("Shared: every channel on one y axis in its real units.\n"
                                     "Independent: every channel stretched to its own range, so small "
@@ -150,12 +133,9 @@ class PlaybackPage(LiveFollowMixin, ToolbarMixin, RawMixin, TimelineMixin, Colum
                                     "In Shared, click a line to give that channel its own y axis.\n"
                                     "Applies to the Single graph and to Split rows holding several channels.")
         self.axis_button.clicked.connect(lambda: menus.popup_menu(self._axis_menu(), self.axis_button))
-        ctrl.addWidget(self.axis_button)
         self.more_button = ToolIcon("more_vert", "Log details, edit, reset view, download")
         self.more_button.clicked.connect(lambda: menus.popup_menu(self._more_menu(), self.more_button))
         self._more_menu_width = 0
-        ctrl.addWidget(self.more_button)
-        rl.addLayout(ctrl)
         self._update_axis_button()
 
         # Settings without a control of their own: kept as plain widgets (not shown) so the
@@ -193,7 +173,6 @@ class PlaybackPage(LiveFollowMixin, ToolbarMixin, RawMixin, TimelineMixin, Colum
         self.clear_compare_button.clicked.connect(self._clear_compare)
         tools.addWidget(self.clear_compare_button)
         tools.addStretch(1)
-        rl.addWidget(self.compare_row)
         self.compare = None
         from PySide6.QtCore import QTimer
         self._stats_timer = QTimer(self)  # recompute stats/heatmap/scatter once dragging pauses
@@ -203,7 +182,6 @@ class PlaybackPage(LiveFollowMixin, ToolbarMixin, RawMixin, TimelineMixin, Colum
         self._set_compare_enabled()
 
         self.banner = Banner()
-        rl.addWidget(self.banner)
 
         # Graph
         from . import theme
@@ -282,15 +260,11 @@ class PlaybackPage(LiveFollowMixin, ToolbarMixin, RawMixin, TimelineMixin, Colum
         # their icon and name (no hover animation); the tab bar itself is hidden.
         self.tabs.tabBar().hide()
 
-        view_row = QHBoxLayout()
-        view_row.setContentsMargins(0, 0, 0, 0)
-        view_row.setSpacing(2)
         self.view_buttons = []
         from .widgets import segment_button
         for i, (_key, _w, label, _glyph) in enumerate(self._views):
             b = segment_button(label)  # no tooltip: like the top bar's tabs
             b.clicked.connect(lambda _=False, i=i: self.tabs.setCurrentIndex(i))
-            view_row.addWidget(b)
             self.view_buttons.append(b)
         self.tabs.currentChanged.connect(lambda _: self._tint_tabs())
         self._tint_tabs()
@@ -305,13 +279,6 @@ class PlaybackPage(LiveFollowMixin, ToolbarMixin, RawMixin, TimelineMixin, Colum
         self.file_label.setContentsMargins(0, 2, 0, 0)  # letters line up with the tab text
         self.file_label.setCursor(Qt.CursorShape.PointingHandCursor)
         self.file_label.clicked.connect(lambda: self._show_file_details())
-        view_row.addSpacing(12)
-        view_row.addWidget(self.file_label, 1)  # takes the rest of the row; long names get …
-        view_row.addSpacing(6)
-        view_row.addWidget(self.open_button)
-        view_row.addSpacing(6)
-        view_row.addWidget(self.compare_button)
-        rl.addLayout(view_row)
         # Smart presets (like Datazap's): chips of ready-made layouts for this log, above the graph.
         self.smart = smart_presets.Generator(state.settings, self)
         self.smart_bar = smart_presets.SmartBar(self, self.smart)
@@ -320,10 +287,7 @@ class PlaybackPage(LiveFollowMixin, ToolbarMixin, RawMixin, TimelineMixin, Colum
         self.smart_bar.on_ask = lambda: smart_presets.ask_dialog(self, self.smart)
         state.faults_changed.connect(lambda _n: self.times is not None and self._load_smart())
         self.smart_bar.hide()
-        rl.addWidget(self.smart_bar)
-        rl.addWidget(self.tabs, 1)
-        if theme.is_mac():
-            self._mac_toolbar(rl, ctrl, view_row)
+        (self._mac_toolbar if theme.is_mac() else self._classic_toolbar)(rl)
 
         # Overview timeline: the whole log in miniature. Drag the band to zoom the graph,
         # drag its edges or scroll to zoom, click to move the cursor, double-click for all.
