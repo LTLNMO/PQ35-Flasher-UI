@@ -451,35 +451,9 @@ class AutoScanView(QWidget):
         self.info.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.info.setMinimumWidth(0)
         head.addWidget(self.info, 1)
-        # Icon buttons like Analyze's toolbar.
-        from .analyze_tools import menu_action
-        from .toolbar import ToolIcon
-
-        def fill_more(menu):
-            has = bool(self.text)
-            menu_action(menu, "Copy log", "content_copy", lambda: QGuiApplication.clipboard().setText(self.text),
-                        enabled=has, tip="Copy the whole log, e.g. to paste into a forum post")
-            menu_action(menu, "Export scan log…", "ios_share", self.save_as, enabled=has,
-                        tip="Copy this scan log somewhere else (every scan is saved to Documents/PQ35 Flasher/Scans "
-                            "on its own)")
-        self.more_button = ToolIcon("more_vert", "More: copy or export the scan log", menu=fill_more)
-        self.history_button = ToolIcon("history", "History: earlier scans of this car",
-                                       menu=self._fill_history, dropdown=True)
-        self.history_menu = self.history_button.menu_
-        # Freeze frames: a toggle icon (frame_inspect: a captured frame, looked at closely; accent = on).
-        self.freeze = ToolIcon("frame_inspect", "", checkable=True)
-        self.freeze.setChecked(bool(self.state.settings.get("scan_freeze_frames", True)))
-
-        def freeze_toggled(on):
-            self.state.settings.set("scan_freeze_frames", on)
-            self.freeze.setToolTip(
-                f"Freeze frames: {'on' if on else 'off'}. When on, scans and re-reads also read each "
-                "fault's snapshot (how often, at what mileage, readings at that moment); about half "
-                "a second extra per fault. Click to turn " + ("off" if on else "on") + ".")
-        self.freeze.toggled.connect(freeze_toggled)
-        freeze_toggled(self.freeze.isChecked())
-        for widget in (self.freeze, self.history_button, self.more_button):
-            head.addWidget(widget)
+        freeze, history, more = self._log_buttons()
+        from .mac_shell import row_icons  # the one right-hand order, as on every page
+        row_icons(head, tools=(freeze,), recent=history, more=more)
         right.add(head)
         self.compare = right.add(Banner())
         self.viewing_banner = right.add(Banner())

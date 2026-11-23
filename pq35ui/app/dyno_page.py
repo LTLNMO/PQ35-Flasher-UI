@@ -63,10 +63,8 @@ class DynoPage(QWidget):
         # The car and what was in it, behind one car icon (the sheet's details line shows both)
         self.load_button = ToolIcon("directions_car", "", dropdown=True)
         self.load_button.clicked.connect(self._open_load)
-        top.addWidget(self.load_button)
         self.more_button = ToolIcon("more_vert", "More: export the graph, its numbers or the log",
                                     menu=self._fill_more)
-        top.addWidget(self.more_button)
         theme.on_apply(self._show_meta)
         from .mac_shell import CONTENT_MARGINS, adopt_bar
         if adopt_bar(self, top):
@@ -111,16 +109,15 @@ class DynoPage(QWidget):
         # The column's toggle right after the pull picker (as Analyze's after Select channels)
         top.removeWidget(self.sidebar_button)
         self.view.control_row.insertWidget(1, self.sidebar_button)
+        # The controls row ends with the icons in the one right-hand order (both interfaces)
+        from .mac_shell import row_icons
+        row = self.view.control_row
+        row_icons(row, tools=(self.load_button,), more=self.more_button)
+        for i in range(row.count()):  # controls at their own width, icons at the right
+            row.setStretch(i, 0)
+        row.insertStretch(row.indexOf(self.load_button.parentWidget()), 1)
         if theme.is_mac():  # mac_shell's layout rules: Sessions a full-height column, the controls row 1 beside it
             self.sidebar_button.setProperty("plain", True)
-            for b in (self.load_button, self.more_button):
-                top.removeWidget(b)
-            from .mac_shell import row_icons  # rule 7: the one right-hand order
-            row_icons(self.view.control_row, tools=(self.load_button,), more=self.more_button)
-            row = self.view.control_row  # rule 2: controls at their own width, icons at the right
-            for i in range(row.count()):
-                row.setStretch(i, 0)
-            row.insertStretch(row.indexOf(self.load_button), 1)
             from .mac_shell import column, first_row, main_layout
             first_row(row)
             main_layout(self.view.layout())

@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from . import alarms, channel_info, log_export, log_info, recent_logs, theme
+from . import alarms, channel_info, log_export, log_info, recent_logs
 from . import units as unitconv
 from .storage import datalogs_dir
 from .presets import PresetButton
@@ -430,48 +430,34 @@ class LoggerPage(QWidget):
         cl.setSpacing(10)
         outer.addWidget(scrollable(content), 1)
 
-        # Controls row: actions, recording mode, ⚙ (settings) at the right
-        ctrl = self.ctrl_row = QHBoxLayout()
-        ctrl.setSpacing(8)
+        # Row 1 (page_frame places it): Record + readout, Select channels, recording modes, the
+        # log's name, then the right-hand icons.
         self.rate = QComboBox()
         for label, interval in RATES:
             self.rate.addItem(label, interval)
         self.start_button = T.RunButton("fiber_manual_record", "err")  # ● record / ■ stop (filled)
         self.start_button.setToolTip("Record: start reading the ticked values and saving them to a datalog.")
         self.start_button.clicked.connect(self.toggle)
-        # Actions first (left, always in reach), then the options; wraps when narrow.
-        ctrl.addWidget(self.channels)
-        ctrl.addWidget(self.start_button)
         # The readout while logging (time · reads · rows …), right beside the record button
         from .widgets import ElidedLabel
         self.status = ElidedLabel("")  # one line; shortens with … (full text on hover)
         self.status.setObjectName("muted")
         self.status.setMinimumWidth(0)
         self.status.hide()  # shown once logging starts
-        ctrl.addSpacing(4)
-        ctrl.addWidget(self.status, 100)  # takes the free room (the stretch after it only when hidden)
 
-        # Recording mode (continuous, triggered, rolling) as view buttons on their own row under
-        # the toolbar, like Analyze's Single / Split / … row; Triggered's ▾ opens its settings.
-        # Everything else is in the ⚙ menu.
+        # Recording mode (continuous, triggered, rolling) as segments; Triggered's ▾ opens its
+        # settings. Everything else is in the ⚙ menu.
         self.mode = RecordingModePicker(self._open_trigger_settings)
-        ctrl.addStretch(1)
-        # The list's buttons (as on Analyze's sidebar): which values show, gauge bars on/off
-        ctrl.addWidget(self.sidebar.columns_button)
-        ctrl.addWidget(self.sidebar.bars_button)
         # Watch in Analyze: the recording in progress, graphed live there
         self.watch_button = ToolIcon("troubleshoot", "Watch in Analyze: graph this recording "
                                           "live on the Analyze page while it records")
         self.watch_button.clicked.connect(self._watch)
         self.watch_button.setEnabled(False)
-        ctrl.addWidget(self.watch_button)
         # Presets: the same button as Analyze's (bookmark ▾), beside ⚙
         self.presets = PresetButton(state, lambda: {v["id"] for v in self._checked_values()},
                                     lambda ids: self._build_tree(ids), on_loaded=self._preset_loaded)
-        ctrl.addWidget(self.presets)
         self.options = ToolIcon("instant_mix", "Logger settings: rate, group rates, how long Rolling keeps",
                                   menu=self._fill_options)
-        ctrl.addWidget(self.options)
         # The settings' values live in these; the ⚙ menu and the Triggered popup set them.
         for w in (self.rate,):
             w.setParent(self)
@@ -499,14 +485,7 @@ class LoggerPage(QWidget):
         self.keep_min.setRange(0.5, 120)
         self.keep_min.setValue(5)
         self.keep_min.hide()
-        if not theme.is_mac():
-            cl.addLayout(ctrl)
-        mode_row = QHBoxLayout()
-        mode_row.setContentsMargins(0, 0, 0, 0)
-        mode_row.setSpacing(8)  # the toolbar's gap
-        mode_row.addWidget(self.mode)
-        mode_row.addSpacing(12)
-        # Right of the mode row: every recording saves itself into Datalogs; Recent logs ▾ lists
+        # Right of row 1: every recording saves itself into Datalogs; Recent logs ▾ lists
         # them, ⋮ exports (another format or place) and opens Datalogs.
         from .widgets import ElidedLabel
         self.name_preview = ElidedLabel("")  # the log being recorded, or the last one
@@ -525,13 +504,11 @@ class LoggerPage(QWidget):
                           tip="Where exports go")
         self.more_button = ToolIcon("more_vert", "More: export the last log, open the Datalogs folder",
                                     menu=fill_more)
-        mode_row.addWidget(self.name_preview, 1)
-        for b in (self.recent_button, self.more_button):
-            mode_row.addWidget(b)
-        if theme.is_mac():
-            self._mac_layout(ctrl, mode_row, cl)
-        else:
-            cl.addLayout(mode_row)
+        from .page_frame import page_frame
+        page_frame(self, cl, action=(self.start_button, self.status), stretch_action=self.status,
+                   left=(self.channels, self.mode), middle=self.name_preview, segments=self.mode.buttons,
+                   tools=(self.sidebar.columns_button, self.sidebar.bars_button, self.watch_button),
+                   recent=self.recent_button, presets=self.presets, settings=self.options, more=self.more_button)
         self._load_recording()
         for w in (self.mode, self.trigger_op):
             w.currentIndexChanged.connect(self._recording_changed)
@@ -555,32 +532,6 @@ class LoggerPage(QWidget):
         except OSError:
             pass
         self._show_name()
-
-    def _mac_layout(self, ctrl, mode_row, cl):
-        """Mac: the same split as every page (see playback_page._mac_toolbar)."""
-        from .mac_shell import page_bar
-        for lay in (ctrl, mode_row):
-            while lay.count():
-                lay.takeAt(0)
-        from .mac_shell import CONTENT_MARGINS
-        cl.setContentsMargins(*CONTENT_MARGINS)
-        # Title bar = only the page's main action and its readout: [● Record] readout. Every other
-        # button belongs to the content, so it sits at the right of row 2: Select channels ▾, the
-        # recording modes … the next log's name, columns / bars, Watch, Presets, Recent ▾, ⚙, ⋯.
-        self.mac_bar, bar = page_bar()
-        bar.addWidget(self.start_button)
-        bar.addWidget(self.status, 100)
-        bar.addStretch(1)  # keeps Record at the left when the readout is empty
-        from .mac_shell import first_row
-        row2 = first_row(QHBoxLayout())
-        row2.addWidget(self.channels)
-        row2.addWidget(self.mode)
-        row2.addSpacing(12)
-        row2.addWidget(self.name_preview, 1)  # right-aligned
-        from .mac_shell import row_icons  # rule 7: the one right-hand order
-        row_icons(row2, tools=(self.sidebar.columns_button, self.sidebar.bars_button, self.watch_button),
-                  recent=self.recent_button, presets=self.presets, settings=self.options, more=self.more_button)
-        cl.addLayout(row2)
 
     # --- module and catalog ---
 

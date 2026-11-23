@@ -769,25 +769,20 @@ class LiveViewPage(QWidget):
         self.right_layout.setSpacing(10)
         outer.addWidget(scrollable(right), 1)
 
-        # Controls row: channels, Start / Clear on the left; layout, dashboards and ⚙ on the right
-        ctrl = QHBoxLayout()
-        ctrl.setSpacing(8)
-        ctrl.addWidget(self.channels)
+        # Row 1 (page_frame places it): ▶ Start, Clear, the reading rate; Select channels; then the
+        # panels' icons (Math, Presets, layout, dashboards, ⚙).
         self.start_button = T.RunButton("play_arrow", "ok")  # ▶ start (green, like "stopped") / ■ stop
         self.start_button.setToolTip("Start: show live values (nothing is saved)")
         self.start_button.clicked.connect(self.toggle)
-        ctrl.addWidget(self.start_button)
 
         self.clear_button = ToolIcon("clear_all", "Clear: empty the graphs and readings "
                                           "(keeps the channels)")
         self.clear_button.clicked.connect(self._clear_data)
-        ctrl.addWidget(self.clear_button)
         # Sample rate: its changing width only eats into the stretch, so nothing moves.
         self.rate_label = muted("")
         self.rate_label.setToolTip("Readings received per second from the module")
         self.rate_label.hide()
-        ctrl.addSpacing(4)
-        ctrl.addWidget(self.rate_label)
+        self.rate_label.setContentsMargins(4, 0, 0, 0)  # a little apart from Clear
 
         # Time shown and Scale keep their values in these (never shown) dropdowns, which the
         # graphs and saved dashboards read; the ⚙ menu sets them.
@@ -802,26 +797,19 @@ class LiveViewPage(QWidget):
         self.options = ToolIcon("instant_mix", "Live View settings: time shown, scale",
                                 menu=self._fill_options)
         # Right side: how the panels look (layout, saved dashboards) next to ⚙.
-        ctrl.addStretch(1)
         # Math channels, then Presets (both as on Analyze), then layout, dashboards, ⚙
         self.math_button = ToolIcon("function", "Math channels: make channels from formulas, "
                                          "e.g. boost in psi or AFR")
         self.math_button.clicked.connect(self._edit_math)
-        ctrl.addWidget(self.math_button)
         self.presets = PresetButton(state, lambda: {v["id"] for v in self._checked_values()},
                                     lambda ids: self._build_tree(ids))
-        ctrl.addWidget(self.presets)
         self.layout_picker = LayoutPicker(self._grid_clicked)  # one button; arrangements in its menu
-        ctrl.addWidget(self.layout_picker)
         self.dashboard_button = DashboardButton(self)
-        ctrl.addWidget(self.dashboard_button)
-        ctrl.addWidget(self.options)
 
-        from . import theme
-        if theme.is_mac():
-            self._mac_rows(ctrl)
-        else:
-            self.right_layout.addLayout(ctrl)
+        from .page_frame import page_frame
+        page_frame(self, self.right_layout, action=(self.start_button, self.clear_button, self.rate_label),
+                   left=(self.channels,), tools=(self.math_button, self.layout_picker, self.dashboard_button),
+                   presets=self.presets, settings=self.options)
 
         self.banner = Banner()
         self.right_layout.addWidget(self.banner)
@@ -1072,29 +1060,6 @@ class LiveViewPage(QWidget):
                 if s.panel is not None and isinstance(s.panel, GraphPanel)]
 
     # --- catalog / tree ---
-
-    def _mac_rows(self, ctrl):
-        """Mac: the same split as every page (see playback_page._mac_toolbar). Title bar: [▶ Start]
-        Clear, the reading rate … Presets, settings. Row 2: Select channels ▾ … how the panels
-        look (Math, layout, dashboards)."""
-        from .mac_shell import CONTENT_MARGINS, page_bar
-        while ctrl.count():
-            ctrl.takeAt(0)
-        self.right_layout.setContentsMargins(*CONTENT_MARGINS)
-        self.mac_bar, bar = page_bar()
-        bar.addWidget(self.start_button)
-        bar.addWidget(self.clear_button)
-        bar.addSpacing(4)
-        bar.addWidget(self.rate_label)
-        bar.addStretch(1)
-        from .mac_shell import first_row
-        row2 = first_row(QHBoxLayout())  # everything but Start / Clear belongs to the panels: row 2's right end
-        row2.addWidget(self.channels)
-        row2.addStretch(1)
-        from .mac_shell import row_icons  # rule 7: the one right-hand order
-        row_icons(row2, tools=(self.math_button, self.layout_picker, self.dashboard_button),
-                  presets=self.presets, settings=self.options)
-        self.right_layout.insertLayout(0, row2)
 
     def refresh(self):
         family = self.state.setup_family

@@ -460,6 +460,12 @@ ROW_SPACING = 10  # between a row's controls and icons (Logger's): icons land on
 ICON_SLOT = 42  # every right-hand icon's slot: an icon with a ▾ fills it, a plain one sits at its left
 
 
+def icon_slot():
+    """A right-hand icon's slot in this interface: as wide as an icon with a ▾ (Mac ICON_SLOT)."""
+    from .analyze_tools import tool_metrics
+    return tool_metrics(dropdown=True)[0]
+
+
 class _SlotFollow(QObject):
     """A slot shows and hides with its icon (a hidden icon leaves no gap)."""
 
@@ -492,9 +498,9 @@ def row_icons(row, tools=(), recent=None, presets=None, settings=None, more=None
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         lay.addWidget(w, 0, Qt.AlignmentFlag.AlignLeft)  # full row height, glyph at the slot's left
-        width = w.sizeHint().width()  # 30 plain, 42 with ▾
+        width = w.sizeHint().width()  # Mac 30 plain, 42 with ▾; Classic 36 / 50
         # the last slot is just its icon (⋯ / ⚙, plain on every tab), so it ends on the margin
-        cell.setFixedWidth(width if w is icons[-1] else max(ICON_SLOT, width))
+        cell.setFixedWidth(width if w is icons[-1] else max(icon_slot(), width))
         _SlotFollow(cell, w)
         row.addWidget(cell)
     return row
@@ -507,6 +513,7 @@ class _RowFit(QObject):
         super().__init__(area)
         self.area, self.row, self.buttons = area, row, list(buttons)
         self.labels = [b.text() for b in self.buttons]
+        self.tips = [b.toolTip() for b in self.buttons]  # kept: a segment's own description
         self.full = None  # the row's width with every name shown (measured while they are)
         self.compact = False
         area.installEventFilter(self)
@@ -518,16 +525,16 @@ class _RowFit(QObject):
         return False
 
     def fit(self):
-        if not self.compact:
-            self.full = self.row.sizeHint().width()
+        if not self.compact:  # what the row needs with names shown (stretch labels at their least)
+            self.full = self.row.minimumSize().width()
         room = self.area.width() - CONTENT_MARGINS[0] - CONTENT_MARGINS[2]
         compact = bool(self.full) and self.full > room
         if compact == self.compact:
             return
         self.compact = compact
-        for b, label in zip(self.buttons, self.labels):
+        for b, label, tip in zip(self.buttons, self.labels, self.tips):
             b.setText("" if compact else label)
-            b.setToolTip(label if compact else "")
+            b.setToolTip((f"{label}: {tip}" if tip else label) if compact else tip)
 
 
 def fit_row(area, row, buttons):
