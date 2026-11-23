@@ -1,0 +1,29 @@
+# Runs every test on each push and pull request, so a change that breaks something is flagged
+# before other installs pick it up with the Update button (it updates from this repo).
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      QT_QPA_PLATFORM: offscreen   # no screen on the runner
+      PQ35_DEMO: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Install (same as install.sh)
+        run: uv sync --frozen
+      - name: App tests (incl. the layout rules on every tab, both interfaces)
+        run: uv run python -m unittest discover -s pq35ui/tests -t . -v
+        env:
+          PYTHONPATH: ".:flasher"
+      - name: Flasher tests
+        working-directory: flasher
+        run: uv run --project .. python -m unittest discover -s tests -p 'test_*.py'
+        env:
+          PYTHONPATH: "."
