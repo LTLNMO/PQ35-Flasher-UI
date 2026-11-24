@@ -285,7 +285,11 @@ line up in time. Status codes and bit fields are shown as read. The CSV itself s
 writes the recorded values.</p>
 <h3>Saving and Export</h3>
 <p>There's nothing to save by hand: the log in Datalogs is the Standard CSV (Datazap-compatible) that Analyze reads.
-<b>Export…</b> always means a copy in another format or place.
+<b>Export…</b> always means a copy in another format or place. Which style it starts on is shown on the menu item
+(e.g. <i>Export last log… (Integrated Engineering CSV)</i>) and set in <b>sliders icon → Saving → Export style</b>
+(it also follows the format you last picked in the Export dialog; loading the Integrated Engineering Logger preset
+switches it to Integrated Engineering CSV). The log name next to the recording modes says what's saved, e.g.
+<i>Last log: engine_….csv · Standard CSV</i>.
 <b>Auto-export</b> (sliders icon → Saving): pick a format (Integrated Engineering, MegaLogViewer or Generic)
 and every time you stop, a copy in that format goes straight into Datalogs too, no dialog, named as Export… would
 name it. The stop message says where it went (Show in Finder). Off by default.</p>

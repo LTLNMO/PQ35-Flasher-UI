@@ -299,6 +299,20 @@ def auto_export(source: Path, fmt: str, vin=None) -> Path:
     return written
 
 
+SAVED_FORMAT = "datazap"  # every recording is saved as this, automatically, in Datalogs
+
+
+def format_label(key) -> str:
+    """'Standard CSV (Datazap)', 'Integrated Engineering CSV', … for a format key."""
+    return next((label for k, label, _e, _f in FORMATS if k == key), str(key))
+
+
+def export_style(settings) -> str:
+    """The format Export… starts on (the last one used, or chosen in ⚙ → Saving)."""
+    fmt = settings.get("export_format") or "datazap"
+    return fmt if any(f[0] == fmt for f in FORMATS) else "datazap"
+
+
 def export_dialog(parent, state, source: Path, banner=None, stem=None):
     """Export… (Logger and Analyze): a save dialog that starts in Datalogs on the format used
     last (Standard the first time), then writes the copy and says where it went (with Show in
@@ -309,12 +323,12 @@ def export_dialog(parent, state, source: Path, banner=None, stem=None):
     from .recent_logs import mark_exported
     from .widgets import reveal_file
     filters = ";;".join(f[3] for f in FORMATS)
-    last = state.settings.get("export_format") or "datazap"
-    last = last if any(f[0] == last for f in FORMATS) else "datazap"
+    last = export_style(state.settings)
     vin = log_vin(source, state.vin())
     default = default_path(source, last, vin, stem=stem)
     selected = next(f[3] for f in FORMATS if f[0] == last)
-    path, chosen = QFileDialog.getSaveFileName(parent, "Export datalog", str(default), filters, selected)
+    path, chosen = QFileDialog.getSaveFileName(parent, f"Export datalog as {format_label(last)}", str(default),
+                                               filters, selected)
     if not path:
         return None
     fmt = next((f[0] for f in FORMATS if f[3] == chosen), last)
@@ -332,5 +346,5 @@ def export_dialog(parent, state, source: Path, banner=None, stem=None):
     mark_exported(source, written)
     if banner is not None:
         reveal = "Show in Finder" if sys.platform == "darwin" else "Show in folder"
-        banner.show_message(f"Exported to {written}", "ok", {reveal: lambda: reveal_file(written)})
+        banner.show_message(f"Exported as {format_label(fmt)} to {written}", "ok", {reveal: lambda: reveal_file(written)})
     return written

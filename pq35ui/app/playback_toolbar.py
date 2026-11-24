@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QMenu, QHBoxLayout, QPushButton,
     QVBoxLayout,
 )
-from . import ai, recent_logs
+from . import ai, log_export, recent_logs
 from . import analyze_tools, smart_presets, theme
 from .storage import datalogs_dir
 from .widgets import muted
@@ -335,7 +335,9 @@ class ToolbarMixin:
         menus.menu_header(menu, "This log")
         menus.menu_action(menu, "Log details", "info", lambda: self._show_file_details(self.more_button), loaded)
         menus.menu_action(menu, "Edit log…", "edit", self._edit_log, loaded)
-        menus.menu_action(menu, "Export…", "ios_share", self._export, loaded)
+        menus.menu_action(menu, f"Export… ({log_export.format_label(log_export.export_style(self.state.settings))})",
+                          "ios_share", self._export, loaded,
+                          tip="Save a copy in another format or place (the style is your last choice, or ⚙ → Saving in Logger)")
         menus.menu_header(menu, "View")
         menus.menu_action(menu, "Reset view", "fit_screen", self._reset_view, loaded)
         if theme.is_mac():  # their toolbar buttons are off the Mac top bar (four icons, as in the mockup)

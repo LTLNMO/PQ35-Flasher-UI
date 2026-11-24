@@ -368,7 +368,7 @@ class LoggerPage(QWidget):
         self._export_ok = False
 
         def fill_more(menu):
-            menus.menu_action(menu, "Export last log…", "ios_share", lambda: self._export(self.last_log), self._export_ok,
+            menus.menu_action(menu, f"Export last log… ({log_export.format_label(log_export.export_style(self.state.settings))})", "ios_share", lambda: self._export(self.last_log), self._export_ok,
                           tip="Save the last log to Datalogs (or anywhere) as Standard CSV, Integrated "
                               "Engineering, MegaLogViewer or generic CSV")
             menus.menu_action(menu, "Open Datalogs folder", "folder_open", self._open_datalogs,
@@ -679,7 +679,9 @@ class LoggerPage(QWidget):
         if builtin and name == "Integrated Engineering Logger" and \
                 self.state.settings.get("export_format") != "ie":
             self.state.settings.set("export_format", "ie")
-            self.banner.show_message("Export… will now start on Integrated Engineering CSV.", "info")
+            self.banner.show_message("Export style is now Integrated Engineering CSV (the automatic save stays "
+                                     "Standard CSV). Change it in ⚙ → Saving → Export style.", "info")
+            self._show_name()
 
     def _rates_key(self):
         return f"logger_rates:{self.state.setup_family['name']}" if self.state.setup_family else None
@@ -778,13 +780,21 @@ class LoggerPage(QWidget):
         choices("Keep last", "autorenew", lengths, self.keep_min.value(), self.keep_min.setValue,
                 "Rolling recording keeps this much, saved when you press Stop")
         menus.menu_header(menu, "Saving")
+        # What's saved by itself, then what Export… starts on, then the optional extra copy
+        saved = menu.addAction(f"Saved automatically as {log_export.format_label(log_export.SAVED_FORMAT)}, in Datalogs")
+        saved.setEnabled(False)
+        choices("Export style", "ios_share",
+                [(label, key) for key, label, _ext, _f in log_export.FORMATS],
+                log_export.export_style(self.state.settings),
+                lambda v: (self.state.settings.set("export_format", v), self._show_name()),
+                "What Export… starts on (you can still pick another format in its dialog)", enabled=True)
         # Every log is saved in Datalogs (Standard format) as it records. Auto-export
         # also puts a copy in your format into Datalogs at every Stop, without the dialog.
         choices("Auto-export", "ios_share",
                 [("Off", None)] + [(label, key) for key, label, _ext, _f in log_export.FORMATS
                                    if key != "datazap"],  # the log itself is already Standard, in Datalogs
                 self._auto_export_format(),
-                lambda v: self.state.settings.set("logger:auto_export", v),
+                lambda v: (self.state.settings.set("logger:auto_export", v), self._show_name()),
                 "When you stop, also save a copy in this format to Datalogs (no dialog). "
                 "The log itself is always saved in Datalogs (Standard CSV) too.", enabled=True)
 
@@ -819,8 +829,15 @@ class LoggerPage(QWidget):
             self.name_preview.setToolTip("")
             self._export_ok = False
             return
-        self.name_preview.setText(prefix + name)
-        self.name_preview.setToolTip(f"{prefix}{name}\nSaved in Datalogs. Export… for another format or place.")
+        saved = log_export.format_label(log_export.SAVED_FORMAT).split(" (")[0]  # "Standard CSV"
+        auto = self._auto_export_format()
+        extra = f" + {log_export.format_label(auto).split(' (')[0]} copy" if auto else ""
+        self.name_preview.setText(f"{prefix}{name} · {saved}{extra}")
+        self.name_preview.setToolTip(
+            f"{prefix}{name}\nSaved automatically as {log_export.format_label(log_export.SAVED_FORMAT)} in Datalogs"
+            + (f", plus a {log_export.format_label(auto)} copy at every Stop (Auto-export)" if auto else "")
+            + f".\nExport… starts on {log_export.format_label(log_export.export_style(self.state.settings))} "
+              "(⚙ → Saving → Export style).")
         self._export_ok = not self.running
 
     def _fill_recent(self, menu):
