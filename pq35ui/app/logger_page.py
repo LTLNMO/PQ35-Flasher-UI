@@ -582,7 +582,13 @@ class LoggerPage(QWidget):
             if name not in self._smart_ids:
                 self._smart_ids[name] = v["id"]
                 groups[name] = v["group"]
+        from . import channel_knowledge
         self.smart_profile.groups = groups
+        self.smart_profile.ids = dict(self._smart_ids)
+        by_id = {v["id"]: v for v in self.catalog}
+        self.smart_profile.descriptions = {
+            name: channel_knowledge.first_sentence(channel_info.describe(by_id[cid]))
+            for name, cid in self._smart_ids.items() if cid in by_id}
         family = self.state.setup_family
         self.smart_profile.faults = smart_presets.faults_for(self.state.settings, family["name"]) if family else []
         self.smart.load(list(self._smart_ids))
@@ -1120,23 +1126,39 @@ class LoggerPage(QWidget):
     def ai_context(self):
         """What the Assistant sees of this page (None: nothing logged yet)."""
         col = self.sidebar.col
-        rows = []
+        from . import channel_knowledge as K
+        values = self._checked_values()
+        groups = sorted({v["group"] for v in values} | self.raw_groups)
+        rows, ids = [], []
         for item in self.tree.items():
-            reading = item.text(col["now"])
-            if item.isHidden() or reading in ("", "–") or item.data(0, STALE_ROLE):
+            value = item.data(0, VALUE_ROLE) or {}
+            if item.isHidden() or not value or value.get("raw_group") is not None:
                 continue
-            rows.append(f"- {item.text(0)}: {reading} (min {item.text(col['min'])}, "
-                        f"max {item.text(col['max'])}, avg {item.text(col['avg'])})")
+            reading = item.text(col["now"])
+            where = f"group {value['group']}.{value['field']}" if "group" in value else ""
+            if reading in ("", "–") or item.data(0, STALE_ROLE):
+                rows.append(f"- {item.text(0)} [{where}]: no reading yet")
+            else:
+                rows.append(f"- {item.text(0)} [{where}]: {reading} (min {item.text(col['min'])}, "
+                            f"max {item.text(col['max'])}, avg {item.text(col['avg'])})")
+            if value.get("id"):
+                ids.append(value["id"])
         if not rows:
             return None
         family = self.state.setup_family or {}
+        refresh = len(groups) * K.READ_S
+        mode = self.mode.label()
+        notes = K.notes_text(ids=ids)
         context = (f"Module: {family.get('label', '?')}, part {self.state.part() or '?'}\n"
-                   f"Logger {'recording' if self.running else 'stopped'}: {self.status.fullText()}\n"
-                   "Values (reading now, then min/max/avg since Start; units in brackets):\n"
-                   + "\n".join(rows))
+                   f"Logger {'recording' if self.running else 'stopped'} ({mode} mode): {self.status.fullText()}\n"
+                   f"Channels come from {len(groups)} measuring groups ({', '.join(map(str, groups))}), so each "
+                   f"refreshes about every {refresh:.1f} s.\n\n" + K.READING + "\n\n"
+                   "Channels (reading now, then min/max/avg since Start; units in brackets):\n"
+                   + "\n".join(rows) + ("\n\n" + notes if notes else ""))
         return {"title": "Logger", "context": context,
                 "question": "Explain what these logged values say about the car: what's normal, what looks "
-                            "off, and what to check or log next."}
+                            "off, and what to check or log next (say which groups to add or drop to read "
+                            "the important channels faster)."}
 
     # --- alarms (the same limits as Live View's: set in either, they work in both) ---
 

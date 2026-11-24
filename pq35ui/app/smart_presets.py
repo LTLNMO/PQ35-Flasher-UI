@@ -25,7 +25,7 @@ AI_KEY = "smart_presets:ai"          # generate with AI automatically (default o
 BAR_KEY = "playback:smart_bar"       # show the chip row (default off: see bar_on)
 BAR_RESET_KEY = "playback:smart_bar_off_once"
 CACHE_FILE = "smart_presets.json"
-CACHE_VERSION = 2  # 2: stricter prompt + unit check (older AI answers are asked again)
+CACHE_VERSION = 3  # 3: prompts carry channel descriptions + checked notes (older answers asked again)
 
 def bar_on(settings):
     """Whether Analyze shows the chip row. Off unless switched on (✨ or Settings → Data): the row
@@ -324,7 +324,9 @@ class AnalyzeProfile:
         self.faults = []  # the car's fault codes (faults_for): their layouts come first
 
     def prompt(self, headers, want=None):
-        return prompt(headers) + extras(self.faults, want)
+        from . import channel_knowledge as K
+        notes = K.notes_text(headers)
+        return prompt(headers) + ("\n\n" + notes if notes else "") + extras(self.faults, want)
 
     def fit(self, layouts):
         return layouts
@@ -348,6 +350,8 @@ class LoggerProfile:
     def __init__(self):
         self.groups = {}  # channel name (as listed) -> measuring group
         self.faults = []  # the car's fault codes (faults_for): their sets come first
+        self.descriptions = {}  # channel name -> one-line plain description (channel_info)
+        self.ids = {}  # channel name -> catalog id (for channel_knowledge notes)
 
     def fit(self, layouts):
         """Every set within MAX_GROUPS measuring groups (the AI's too, and the built-in rules,
@@ -375,11 +379,18 @@ class LoggerProfile:
         return out
 
     def prompt(self, headers, want=None):
-        names = "\n".join(f"- {h}  [group {self.groups[h]}]" if h in self.groups else f"- {h}"
-                          for h in headers)
+        from . import channel_knowledge as K
+
+        def line(h):
+            group = f"  [group {self.groups[h]}]" if h in self.groups else ""
+            what = self.descriptions.get(h)
+            return f"- {h}{group}" + (f" -- {what}" if what else "")
+        names = "\n".join(line(h) for h in headers)
+        notes = K.notes_text(ids=[self.ids[h] for h in headers if h in self.ids])
         return (
+            K.READING + "\n\n"
             "These are the channels this engine module can log, each with the measuring group it is "
-            "read in:\n" + names + "\n\n"
+            "read in and what it shows:\n" + names + "\n\n" + (notes + "\n\n" if notes else "") +
             "Make 4 to 7 channel sets to record, each for one job a tuner logs for.\n\n" + RULES_TEXT + "\n\n"
             "Logger rules (these win over the ones above):\n"
             f"A. The module reads one group at a time, so each extra group slows every channel down. "

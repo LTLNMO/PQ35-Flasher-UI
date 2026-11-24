@@ -156,9 +156,11 @@ def describe(value) -> str:
 
 
 def tooltip(value) -> str:
+    from .channel_knowledge import note_for
     unit = f" · {value['unit']}" if value.get("unit") else ""
+    note = note_for(cid=value.get("id"), name=value.get("name"))
     return f"<b>{escape(value['name'])}</b>{escape(unit)} · group {value['group']}.{value['field']}" \
-           f"<br>{escape(describe(value))}"
+           f"<br>{escape(describe(value))}" + (f"<br><i>Note: {escape(note)}</i>" if note else "")
 
 
 # --- Integrated Engineering logging format help ------------------------------------

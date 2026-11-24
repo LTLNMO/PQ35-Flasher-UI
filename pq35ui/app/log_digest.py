@@ -355,6 +355,10 @@ def digest(name, headers, times, columns, mask=None, focus=(), max_rows=120, max
         rows = [(f"{k}-{k + BIN - 1}", [r["n"]] + [r.get(role) for role, _h in present]) for k, r in sorted(b.items())]
         lines.append("")
         lines.append(_table(rows, cols, f"## By rpm, {scope} (average per {BIN} rpm; retard = worst cylinder)"))
+    from . import channel_knowledge
+    notes = channel_knowledge.notes_text(log.headers)
+    if notes:
+        lines.append("\n## " + notes)
     lines.append("\n## Every channel over the whole log (min / max / avg)")
     for h in log.headers:
         v = log.cols[h]
@@ -397,6 +401,10 @@ def compare(logs, pulls_only=True):
         scope = "pulls only" if pulls_only and pm.any() else "whole log"
         lines.append(f"### {letter}: " + "\n".join(_header_lines(log)) + f"\nCompared over: {scope}.")
     # Which channel each log uses for each role, when the names differ.
+    from . import channel_knowledge
+    notes = channel_knowledge.notes_text([h for log in items for h in log.headers])
+    if notes:
+        lines.append("\n## " + notes)
     lines.append("\n## Channels matched across the logs")
     for role, _inc, _exc, _sev in ROLES:
         names = [log.roles.get(role) for log in items]
