@@ -24,7 +24,8 @@ class Notes(unittest.TestCase):
                        "Lambda control bank 1 (actual)", "Timing retard cylinder 4 (°)",
                        "Boost pressure (actual absolute) (mbar)"):
             self.assertIsNotNone(K.note_for(name=header), header)
-        self.assertIsNone(K.note_for(name="Engine speed (rpm)"))
+        self.assertIsNone(K.note_for(name="Gear (actual)"))
+        self.assertIn("640-800", K.note_for(name="Engine speed (rpm)"))
 
     def test_notes_text_once_per_note(self):
         text = K.notes_text([f"Timing retard cylinder {n} (°)" for n in range(1, 5)])

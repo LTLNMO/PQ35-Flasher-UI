@@ -49,7 +49,7 @@ NOTES = {
         "not the maximum. This is knock control acting, cylinder by cylinder."),
     "engine.lambda.bank1.actual": ("Lambda control bank 1 (actual)",
         "Measured lambda. 1.992 (B = 255, the formula's ceiling) appears on overrun fuel cut (pedal 0, "
-        "injection near 0): ignore it, it is not a lean condition. Under wide-open throttle the target is "
+        "injection near 0) and with the engine off: ignore it, it is not a lean condition. Under wide-open throttle the target is "
         "about 0.84."),
     "engine.lambda.bank1.specified": ("Lambda control bank 1 (specified)",
         "The lambda target: 1.0 at cruise, dropping to about 0.84 at wide-open throttle on this car."),
@@ -73,6 +73,57 @@ for _n in (2, 3, 4):  # per-cylinder twins share their note
                          ("engine.timing_retard.cylinder{}", "Timing retard cylinder {}"),
                          ("engine.misfire.cylinder{}.count", "Misfire counter cylinder {}")):
         NOTES[_base.format(_n)] = (_name.format(_n), NOTES[_base.format(1)][1])
+
+# Factory ranges and bit meanings, read off OBDeleven's descriptions for this car's ECU
+# (screenshots 2026-11-23, Documents/PQ35 Flasher/Verify). Same group/field positions as the catalog.
+# id -> (catalog name, text); appended to the note above when there is one.
+SPECS = {
+    "engine.rpm": ("Engine speed", "Spec at idle: 640-800 rpm (range 0-6,500)."),
+    "engine.coolant_temperature": ("Coolant temperature (G62)", "Spec warm: 80-115 C."),
+    "engine.intake_temperature": ("Intake air temperature (G42)", "Spec warm: below 80 C (max 115 C)."),
+    "engine.load.actual": ("Engine load (actual)", "Spec at idle: 16-35 %."),
+    "engine.maf": ("Mass air flow (G70)", "Spec: 2-5 g/s at idle, 150-170 g/s at full load (range 0-200)."),
+    "engine.injection_time": ("Injection duration", "Range 0-20 ms."),
+    "engine.terminal30_voltage": ("Terminal 30 voltage (engine ECU)", "Battery voltage; spec 11-15 V."),
+    "engine.ignition_timing": ("Ignition timing", "Range -20 to +50 degrees."),
+    "engine.altitude_correction_factor": ("Altitude correction factor",
+        "Linear with altitude: 0 % = sea level, -10 % per 1,000 m (-50 % = 5,000 m, +20 % = -2,000 m). "
+        "This car reads -13 to -15 %, i.e. about 1,300-1,500 m."),
+    "engine.lambda.control.bank1": ("Lambda control bank 1", "Spec -10 to +10 % (range -25 to +25 %)."),
+    "engine.lambda.bank1.sensor1.control": ("Lambda control bank 1 sensor 1",
+                                            "Spec -10 to +10 % (range -25 to +25 %)."),
+    "engine.lambda.bank1.sensor1.adaptation.idle": ("Lambda adaptation bank 1 sensor 1 (idle)",
+        "Long-term fuel trim at idle; spec -10 to +10 % (range -25 to +25 %). Beyond +10 % = running "
+        "lean and the ECU adds fuel (vacuum leak, weak fuel supply)."),
+    "engine.lambda.bank1.sensor1.adaptation.partial": ("Lambda adaptation bank 1 sensor 1 (partial)",
+        "Long-term fuel trim at part load; spec -10 to +10 % (range -25 to +25 %). Beyond +10 % = lean "
+        "under load (boost/intake leak, MAF reading low, fuel pressure)."),
+    "engine.lambda.bank1.sensor1.voltage": ("Lambda sensor voltage bank 1 sensor 1", "Range 0-5 V."),
+    "engine.timing_retard.cylinder1": ("Timing retard cylinder 1",
+        "Factory spec: up to 12 degrees of crank (shown as -12 here)."),
+    "engine.misfire.count": ("Misfire counter", "Spec 0-8 (total, all cylinders)."),
+    "engine.misfire.recognition": ("Misfire recognition",
+                                   "Whether misfire detection is enabled or blocked (blocked with the engine off)."),
+    "engine.load.status": ("Engine load status",
+        "Idle / part throttle / wide-open throttle (enrichment) / overrun (deceleration)."),
+    "engine.knock.cylinder1.sensor_voltage": ("Knock sensor voltage cylinder 1",
+        "OBDeleven shows the same 16.692 V engine-off reading, with a 0-40 V range."),
+    "engine.basic_setting.requirements": ("Basic setting requirements",
+        "8 bits, right to left, 1 = met: coolant above 80 C; rpm below 2,000; throttle closed; lambda "
+        "control OK; idle switch closed; A/C compressor off; catalyst above 380 C; no fault codes."),
+    "engine.lambda.bank1.sensor1.condition": ("Lambda sensor condition bank 1 sensor 1",
+        "5 bits, left to right: cylinder-1 lambda control active; catalyst purge active; sensor heating "
+        "on; sensor ready; lambda control active."),
+    "engine.lambda.bank1.sensor2.condition": ("Lambda sensor condition bank 1 sensor 2",
+        "4 bits, left to right: P-portion control active; sensor heating on; sensor ready; "
+        "I-portion control active."),
+}
+for _n in (2, 3, 4):
+    for _base in ("engine.timing_retard.cylinder{}", "engine.knock.cylinder{}.sensor_voltage"):
+        _one = SPECS[_base.format(1)]
+        SPECS[_base.format(_n)] = (_one[0][:-1] + str(_n), _one[1])
+for _cid, (_name, _spec) in SPECS.items():
+    NOTES[_cid] = (_name, f"{NOTES[_cid][1]} {_spec}" if _cid in NOTES else _spec)
 
 _BY_NAME = {name.lower(): note for name, note in NOTES.values()}
 
